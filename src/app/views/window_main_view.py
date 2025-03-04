@@ -1,6 +1,6 @@
 import flet as ft
 from typing import Any
-from app.core.app_state import state
+from app.core.app_state import AppState
 from app.views.login_view import LoginView
 from app.views.dashboard_view import DashboardView
 
@@ -20,6 +20,7 @@ class WindowMain:
         self._page.horizontal_alignment = ft.CrossAxisAlignment.CENTER
 
         # Seteamos nuestra pagina o windows main en page
+        state = AppState()
         state.page = self._page
 
         self._page.on_route_change = self.route_change
@@ -39,9 +40,9 @@ class WindowMain:
         self._page.update()
 
     def page_update(self):
-        ''''
-        Actualiza la informacion dentro de la ui
-        '''
+        """
+        Actualiza la información dentro de la ui
+        """
         try:
             self._page.update()
         except Exception as e:
