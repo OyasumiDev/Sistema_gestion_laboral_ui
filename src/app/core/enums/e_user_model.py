@@ -1,10 +1,10 @@
 from enum import Enum
 
 class EUserModel(Enum):
-    ID = 'id'
+    TABLE = 'usuarios_app'
+    ID = 'id_usuario'
     USERNAME = 'username'
     PASSWORD = 'password_hash'
     ROLE = 'role'
-
-    def __str__(self):
-        return self.value
+    FECHA_CREACION = 'fecha_creacion'
+    FECHA_MODIFICACION = 'fecha_modificacion'

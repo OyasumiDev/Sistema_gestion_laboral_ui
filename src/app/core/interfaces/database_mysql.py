@@ -33,20 +33,31 @@ class DatabaseMysql(Database):
             self.conn.close()
             print('Conexión cerrada a la base de datos')
 
-    def run_query(self, query, params=...) -> bool:
+    def run_query(self, query, params = None) -> bool:
         """ Ejecuta las consultas a la base de datos mysql """
         try:
+            if params:
+                with self.conn.cursor() as cr:
+                    cr.execute(query)
+                    self.conn.commit()
+                    return True
+
             with self.conn.cursor() as cursor:
                 cursor.execute(query, params)
                 self.conn.commit()
                 return True
         except Exception as ex:
-            print(f"Error de conexión: {ex}")
+            print(f"Error de conexión: {ex}, type: {type(ex).__name__}")
             return False
     
-    def get_data(self, query, params=...) -> dict:
+    def get_data(self, query, params = None) -> dict:
         """ Obtiene los datos de mysql en formato de diccionario """
         try:
+            if params:
+                with self.conn.cursor(dictionary=True) as cr:
+                    cr.execute(query)
+                    return cr.fetchone()
+
             with self.conn.cursor(dictionary=True) as cursor:
                 cursor.execute(query, params)
                 return cursor.fetchone()
@@ -54,7 +65,7 @@ class DatabaseMysql(Database):
             print(f"Error de conexión: {ex}")
             return {}
 
-    def get_data_list(self, query, params=...) -> list:
+    def get_data_list(self, query, params = None) -> list:
         """ Obtiene los datos de mysql en formato de lista """
         try:
             with self.conn.cursor() as cursor:
