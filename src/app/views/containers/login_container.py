@@ -78,9 +78,9 @@ class LoginContainer(ft.Container):
 
                 # Generar el hash de la contraseña ingresada (en minúsculas)
                 entered_hash = PasswordManager().encrypt_password(pass_value)
-                if entered_hash == user_data[EUserModel.PASSWORD]:
+                if entered_hash == user_data[EUserModel.PASSWORD.value]:
 
-                    self.login_message.value = f"Bienvenido {user_value} (rol: {user_data[EUserModel.ROLE]})"
+                    self.login_message.value = f"Bienvenido {user_value} (rol: {user_data[EUserModel.ROLE.value]})"
                     self.page.client_storage.set('app.user', user_data)
                     e.page.go('/dashboard')
                 else:
