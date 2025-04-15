@@ -7,6 +7,7 @@ class Database(ABC):
         self.user: str = None
         self.password: str = None
         self.database: str = None
+        self.db_type: str = None
         self.conn = None
         self._connect()
 

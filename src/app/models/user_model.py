@@ -1,35 +1,22 @@
-from app.core.database_manager import DatabaseManager
 from app.core.interfaces.database import Database
 from app.core.enums.e_user_model import EUserModel
+from app.core.interfaces.database_mysql import DatabaseMysql
 
 class UserModel:
     """
-    Modelo de usuarios
+    Modelo de usuarios.
     """
-    _exits_table: bool
 
     def __init__(self):
-        self.db: Database = DatabaseManager()
-
-        # Verifica si la tabla existe, y si no, la crea.
-        if not self.check_table():
-            self.__init__db()
-
-        # Verifica y crea el usuario root si no existe.
+        # Se obtiene la instancia centralizada de la base de datos.
+        self.db: Database = DatabaseMysql()
+        
+        # Se delega la verificación y creación de tablas al módulo central.
+        self.db.verificar_y_crear_tablas()
+        
+        # Se verifica y crea el usuario root si no existe.
         self.check_root_user()
-
-    def __init__db(self):
-        query = f"""
-            CREATE TABLE IF NOT EXISTS {EUserModel.TABLE.value} (
-                {EUserModel.ID.value} INT AUTO_INCREMENT PRIMARY KEY,
-                {EUserModel.USERNAME.value} VARCHAR(50) NOT NULL UNIQUE,
-                {EUserModel.PASSWORD.value} VARCHAR(255) NOT NULL, -- Se guarda el hash de la contraseña
-                {EUserModel.ROLE.value} ENUM('ROOT','USER') NOT NULL DEFAULT 'USER',
-                {EUserModel.FECHA_CREACION.value} TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                {EUserModel.FECHA_MODIFICACION.value} TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-            )
-        """
-        result_query = self.db.run_query(query)
+        
 
     def check_table(self):
         """

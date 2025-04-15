@@ -1,40 +1,37 @@
-DROP DATABASE IF EXISTS gestion_laboral;
-CREATE DATABASE gestion_laboral;
+CREATE DATABASE IF NOT EXISTS gestion_laboral;
 USE gestion_laboral;
 
-
 /*
-										CREACION DE LAS TABLAS 
+    CREACION DE LAS TABLAS 
 */
 
 -- Tabla de empleados
-CREATE TABLE empleados (
-    numero_nomina SMALLINT UNSIGNED PRIMARY KEY,  -- Número de empleado
+CREATE TABLE IF NOT EXISTS empleados (
+    numero_nomina SMALLINT UNSIGNED PRIMARY KEY,  -- número de empleado
     nombre_completo VARCHAR(255) NOT NULL,
-    estado ENUM('Activo', 'Inactivo') NOT NULL,
-    tipo_trabajador ENUM('Taller', 'Empresa', 'no definido') NOT NULL,
-    sueldo_diario DECIMAL(8, 2) NOT NULL  -- Sueldo diario base
+    estado ENUM('activo', 'inactivo') NOT NULL,
+    tipo_trabajador ENUM('taller', 'externo', 'no definido') NOT NULL,
+    sueldo_diario DECIMAL(8, 2) NOT NULL  -- sueldo diario base
 );
 
 -- Tabla de asistencias
--- Crear la tabla asistencias con la columna horas_trabajadas
-CREATE TABLE asistencias (
+CREATE TABLE IF NOT EXISTS asistencias (
     id_asistencia INT AUTO_INCREMENT PRIMARY KEY,
     numero_nomina SMALLINT UNSIGNED NOT NULL,
     fecha DATE NOT NULL,
     hora_entrada TIME NULL,
     hora_salida TIME NULL,
-    duracion_comida TIME NULL,  -- Duración de la comida
-    tipo_registro ENUM('Automático', 'Manual') NOT NULL,
+    duracion_comida TIME NULL,  -- duración de la comida
+    tipo_registro ENUM('automático', 'manual') NOT NULL,
     horas_trabajadas TIME,
     FOREIGN KEY (numero_nomina) REFERENCES empleados(numero_nomina) ON DELETE CASCADE
 );
 
--- Tabla de pagos (Nómina)
-CREATE TABLE pagos (
+-- Tabla de pagos (nómina)
+CREATE TABLE IF NOT EXISTS pagos (
     id_pago INT AUTO_INCREMENT PRIMARY KEY,
     numero_nomina SMALLINT UNSIGNED NOT NULL,
-    fecha_pago DATE NOT NULL, -- Cambio a DATE
+    fecha_pago DATE NOT NULL, -- cambio a date
     monto_total DECIMAL(10, 2) NOT NULL,
     saldo DECIMAL(10, 2) DEFAULT 0,
     pago_deposito DECIMAL(10, 2) NOT NULL,
@@ -43,25 +40,24 @@ CREATE TABLE pagos (
     FOREIGN KEY (numero_nomina) REFERENCES empleados(numero_nomina) ON DELETE CASCADE
 );
 
-CREATE TABLE prestamos (
+CREATE TABLE IF NOT EXISTS prestamos (
     id_prestamo INT AUTO_INCREMENT PRIMARY KEY,
     numero_nomina SMALLINT UNSIGNED NOT NULL,
     monto DECIMAL(10, 2) NOT NULL,
     saldo_prestamo DECIMAL(10, 2) NOT NULL,
-    estado ENUM('Aprobado', 'Pendiente', 'Rechazado') NOT NULL,
-    fecha_solicitud DATE NOT NULL, -- Mantiene DATE
+    estado ENUM('aprobado', 'pendiente', 'rechazado') NOT NULL,
+    fecha_solicitud DATE NOT NULL, -- mantiene date
     historial_pagos JSON NULL,
     descuento_semanal DECIMAL(10, 2) DEFAULT 50,
-    tipo_descuento ENUM('Monto fijo', 'Porcentaje') NOT NULL DEFAULT 'Monto fijo',
+    tipo_descuento ENUM('monto fijo', 'porcentaje') NOT NULL DEFAULT 'monto fijo',
     fecha_creacion TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    fecha_modificacion TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP, -- Mantiene TIMESTAMP
+    fecha_modificacion TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP, -- mantiene timestamp
     FOREIGN KEY (numero_nomina) REFERENCES empleados(numero_nomina) ON DELETE CASCADE,
     INDEX (numero_nomina)
 );
 
-
 -- Tabla de desempeño
-CREATE TABLE desempeno (
+CREATE TABLE IF NOT EXISTS desempeno (
     id_desempeno INT AUTO_INCREMENT PRIMARY KEY,
     numero_nomina SMALLINT UNSIGNED NOT NULL,
     puntualidad TINYINT UNSIGNED NULL CHECK(puntualidad BETWEEN 0 AND 100),
@@ -69,13 +65,13 @@ CREATE TABLE desempeno (
     bonificacion DECIMAL(10, 2) NULL,
     historial_faltas JSON NULL,
     fecha_creacion TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    fecha_modificacion TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP, -- Mantiene TIMESTAMP
+    fecha_modificacion TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP, -- mantiene timestamp
     FOREIGN KEY (numero_nomina) REFERENCES empleados(numero_nomina) ON DELETE CASCADE,
     INDEX (numero_nomina)
 );
 
 -- Tabla de reportes semanales
-CREATE TABLE reportes_semanales (
+CREATE TABLE IF NOT EXISTS reportes_semanales (
     id_reporte INT AUTO_INCREMENT PRIMARY KEY,
     numero_nomina SMALLINT UNSIGNED NOT NULL,
     fecha_inicio DATE NOT NULL,
@@ -89,6 +85,7 @@ CREATE TABLE reportes_semanales (
     FOREIGN KEY (numero_nomina) REFERENCES empleados(numero_nomina) ON DELETE CASCADE,
     INDEX (numero_nomina)
 );
+
 
 
 /*

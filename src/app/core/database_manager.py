@@ -4,7 +4,7 @@ from app.config.config import DB_TYPE
 
 @class_singleton
 class DatabaseManager:
-     
+    
     def __new__(cls, db_type=DB_TYPE):
         """
         Sobreescribimos __new__ para que DatabaseManager herede directamente
