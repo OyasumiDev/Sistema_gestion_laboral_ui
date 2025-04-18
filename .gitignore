@@ -1,3 +1,11 @@
+# Evitar subir archivos JSON con claves o configuración
+*.secret.json
+*.credentials.json
+*.key.json
+*.firebase.json
+*.service-account.json
+
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
