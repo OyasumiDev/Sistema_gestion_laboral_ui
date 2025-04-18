@@ -1,4 +1,3 @@
-
 def class_singleton(cls):
     instances = {}
 

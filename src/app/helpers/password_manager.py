@@ -4,34 +4,13 @@ class PasswordManager:
     @staticmethod
     def encrypt_password(password: str) -> str:
         """
-        Genera el hash SHA-256 en formato hexadecimal (en minúsculas)
-        para que coincida con el valor almacenado en la base de datos.
+        Genera el hash SHA-256 en formato hexadecimal (minúsculas).
+        Maneja errores si la entrada no es una cadena válida.
         """
-        return hashlib.sha256(password.encode("utf-8")).hexdigest()
-    
+        if not isinstance(password, str):
+            raise TypeError("La contraseña debe ser una cadena de texto.")
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+        try:
+            return hashlib.sha256(password.encode("utf-8")).hexdigest()
+        except Exception as e:
+            raise ValueError(f"No se pudo encriptar la contraseña: {e}")

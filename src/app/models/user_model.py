@@ -1,4 +1,3 @@
-from app.core.interfaces.database import Database
 from app.core.enums.e_user_model import EUserModel
 from app.core.interfaces.database_mysql import DatabaseMysql
 
@@ -9,16 +8,13 @@ class UserModel:
 
     def __init__(self):
         # Se obtiene la instancia centralizada de la base de datos.
-        self.db: Database = DatabaseMysql()
-        
-        # Se delega la verificación y creación de tablas al módulo central.
-        self.db.verificar_y_crear_tablas()
+        self.db = DatabaseMysql()
         
         # Se verifica y crea el usuario root si no existe.
         self.check_root_user()
         
 
-    def check_table(self):
+    def check_table(self) -> bool:
         """
         Verifica si la tabla existe.
         :return: True si la tabla existe, False en caso contrario.
@@ -26,27 +22,30 @@ class UserModel:
         query = "SHOW TABLES"
         result_tables = self.db.get_data_list(query)
 
-        for tabla in result_tables:
-            if tabla[0] == EUserModel.TABLE.value:
-                self._exits_table = True
-                return True
+        # Detectamos el nombre de la columna (usualmente: 'Tables_in_<nombre_base>')
+        if result_tables:
+            key = list(result_tables[0].keys())[0]
+            for tabla in result_tables:
+                if tabla[key] == EUserModel.TABLE.value:
+                    self._exits_table = True
+                    return True
         return False
 
     def check_root_user(self):
         """
         Verifica si existe el usuario root y en caso de que no exista, lo crea.
         """
-        query = f"SELECT * FROM {EUserModel.TABLE.value} WHERE {EUserModel.USERNAME.value} = 'root'"
-        result = self.db.get_data_list(query)
+        # Consulta parametrizada para evitar inyección y problemas de comillas.
+        query = f"SELECT * FROM {EUserModel.TABLE.value} WHERE {EUserModel.USERNAME.value} = %s"
+        result = self.db.get_data_list(query, ('root',))
         if not result:
-            # Si no existe el usuario root, se agrega con nombre y contraseña 'root' y rol 'ROOT'
-            self.add("root", "root", "ROOT")
+            default_password = 'root'  # Se recomienda cambiar y hashear esta contraseña en producción.
+            self.add('root', default_password, role='root')
 
-    
-    def add(self, username: str, password_hash: str, role: str = 'USER') -> dict:
+    def add(self, username: str, password_hash: str, role: str = 'user') -> dict:
         try:
             query = f"""
-            INSERT INTO {EUserModel.TABLE.value} 
+            INSERT INTO {EUserModel.TABLE.value}
                 ({EUserModel.USERNAME.value}, {EUserModel.PASSWORD.value}, {EUserModel.ROLE.value})
             VALUES (%s, %s, %s)
             """
@@ -80,19 +79,19 @@ class UserModel:
         except Exception as ex:
             return {"status": "error", "message": f"Error al obtener usuario por ID: {ex}"}
 
-
-    def get_by_username(self, username: str) -> dict:   
+    def get_by_username(self, username: str) -> dict | None:
         """
-        Este metodo obtener por usuario lo que hace es una consulta a la base de datos mysql los usuarios que en este caso serian
-        nuestros parametros de entrada y retornara un diccionario con toda la informacion de los usuarios (id_usuario,username,password_hash,role,fehca_creacion,fecha_modificacion)
-        :param username:
-        :return:
+        Retorna un diccionario con los datos del usuario o None si no existe.
         """
         try:
-            query = "SELECT * FROM usuarios_app WHERE username = %s"
-            return self.db.get_data(query, (username,))
+            query = f"SELECT * FROM {EUserModel.TABLE.value} WHERE {EUserModel.USERNAME.value} = %s"
+            result = self.db.get_data(query, (username,))
+            print(result)
+            return result
         except Exception as ex:
-            raise Exception(f"Error de en la consulta: {ex}")
+            print(f"Error al obtener usuario por nombre de usuario: {ex}")
+            return None
+
 
     def get_users(self) -> dict:
         """
@@ -101,14 +100,14 @@ class UserModel:
         try:
             query = f"""
                 SELECT 
-                    {EUserModel.ID.value}, 
-                    {EUserModel.USERNAME.value}, 
-                    {EUserModel.ROLE.value}, 
-                    {EUserModel.FECHA_CREACION.value}, 
+                    {EUserModel.ID.value},
+                    {EUserModel.USERNAME.value},
+                    {EUserModel.ROLE.value},
+                    {EUserModel.FECHA_CREACION.value},
                     {EUserModel.FECHA_MODIFICACION.value}
                 FROM {EUserModel.TABLE.value}
             """
             result = self.db.get_data_list(query)
             return {"status": "success", "data": result}
         except Exception as ex:
-            return {"status": "error", "message": f"Error al obtener lista de usuarios: {ex}"}    
+            return {"status": "error", "message": f"Error al obtener lista de usuarios: {ex}"}

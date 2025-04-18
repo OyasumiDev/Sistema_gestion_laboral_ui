@@ -3,9 +3,10 @@ from typing import Any
 from app.core.app_state import AppState
 from app.views.login_view import LoginView
 from app.views.dashboard_view import DashboardView
+from app.helpers.class_singleton import class_singleton
 
+@class_singleton
 class WindowMain:
-
     def __init__(self):
         self._page = None
 
