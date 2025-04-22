@@ -3,6 +3,7 @@ from typing import Any
 from app.core.app_state import AppState
 from app.views.login_view import LoginView
 from app.views.dashboard_view import DashboardView
+from app.views.containers.navbar_container import DashboardNavBar
 # from app.views.
 # from app.views.
 # from app.views.

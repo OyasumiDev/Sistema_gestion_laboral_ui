@@ -1,7 +1,7 @@
 # Constante de tabla de asistencia
 from enum import Enum
 
-class EAsistencia(Enum):
+class E_ASSISTANCE(Enum):
     TABLE = 'asistencias'
     ID = 'id_asistencia'
     NUMERO_NOMINA = 'numero_nomina'
@@ -11,3 +11,4 @@ class EAsistencia(Enum):
     DURACION_COMIDA = 'duracion_comida'
     TIPO_REGISTRO = 'tipo_registro'
     HORAS_TRABAJADAS = 'horas_trabajadas'
+    

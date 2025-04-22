@@ -1,6 +1,6 @@
 import flet as ft
 from app.models.user_model import UserModel
-from app.core.enums.e_user_model import EUserModel
+from app.core.enums.e_user_model import E_USER
 from app.core.app_state import AppState
 
 
@@ -86,9 +86,9 @@ class LoginContainer(ft.Container):
             if user_data is None:
                 self.login_message.value = "El usuario o la contraseña no son correctos."
             else:
-                if pass_value == user_data[EUserModel.PASSWORD.value]:
-                    user_data[EUserModel.FECHA_CREACION.value] = str(user_data[EUserModel.FECHA_CREACION.value])
-                    user_data[EUserModel.FECHA_MODIFICACION.value] = str(user_data[EUserModel.FECHA_MODIFICACION.value])
+                if pass_value == user_data[E_USER.PASSWORD.value]:
+                    user_data[E_USER.FECHA_CREACION.value] = str(user_data[E_USER.FECHA_CREACION.value])
+                    user_data[E_USER.FECHA_MODIFICACION.value] = str(user_data[E_USER.FECHA_MODIFICACION.value])
 
                     page.client_storage.set("app.user", user_data)
                     page.go("/dashboard")

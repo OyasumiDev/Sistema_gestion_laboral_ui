@@ -1,7 +1,7 @@
 # Constante de la tabla desempeño
 from enum import Enum
 
-class EDesempeno(Enum):
+class E_PERFORMANCE(Enum):
     TABLE = 'desempeno'
     ID = 'id_desempeno'
     NUMERO_NOMINA = 'numero_nomina'

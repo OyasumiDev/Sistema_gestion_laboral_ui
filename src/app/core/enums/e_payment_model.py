@@ -1,7 +1,7 @@
 # Constante de la tabla pago
 from enum import Enum
 
-class EPago(Enum):
+class E_PAYMENT(Enum):
     TABLE = 'pagos'
     ID = 'id_pago'
     NUMERO_NOMINA = 'numero_nomina'

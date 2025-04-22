@@ -7,7 +7,7 @@ class DashboardView(ft.View):
         super().__init__(
             route="/dashboard",
             controls=[]
-                        )
+        )
 
         self.page = AppState().page
         self.tab = tab
@@ -20,24 +20,18 @@ class DashboardView(ft.View):
         self.nav_bar = DashboardNavBar(is_root=self.is_root)
 
         # Contenedor dinámico de contenido
-        self.content_area = ft.Container(
-            expand=True
-        )
+        self.content_area = ft.Container(expand=True)
 
-        # Estructura principal: barra lateral + contenido
+        # Layout principal: barra lateral + contenido
         layout = ft.Row(
-        expand=True,  # Aquí sí está permitido y correcto
-        controls=[
-            self.nav_bar,
-            self.content_area
+            expand=True,
+            controls=[
+                self.nav_bar,
+                self.content_area
             ]
         )
 
-
-
         self.controls.append(layout)
-
-        # Cargamos contenido inicial basado en el tab
         self.update_content(self.tab)
 
     def update_content(self, section: str):
@@ -54,6 +48,10 @@ class DashboardView(ft.View):
 
         self.page.update()
 
+    def set_tema(self, oscuro: bool):
+        self.bgcolor = ft.colors.BLACK if oscuro else ft.colors.WHITE
+        self.content_area.bgcolor = ft.colors.BLACK if oscuro else ft.colors.WHITE
+        self.page.update()
 
 
 # import flet as ft

@@ -1,6 +1,6 @@
 from enum import Enum
 
-class EUserModel(Enum):
+class E_USER(Enum):
     TABLE = 'usuarios_app'
     ID = 'id_usuario'
     USERNAME = 'username'

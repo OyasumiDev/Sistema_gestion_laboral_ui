@@ -1,7 +1,7 @@
 # Constante de la tabla reportes_semanales
 from enum import Enum
 
-class EReporteSemanal(Enum):
+class E_WEEKLY_REPORT(Enum):
     TABLE = 'reportes_semanales'
     ID = 'id_reporte'
     NUMERO_NOMINA = 'numero_nomina'

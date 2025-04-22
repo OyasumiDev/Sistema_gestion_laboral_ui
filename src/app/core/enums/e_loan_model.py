@@ -2,7 +2,7 @@
 
 from enum import Enum
 
-class EPrestamo(Enum):
+class E_LOAN(Enum):
     TABLE = 'prestamos'
     ID = 'id_prestamo'
     NUMERO_NOMINA = 'numero_nomina'

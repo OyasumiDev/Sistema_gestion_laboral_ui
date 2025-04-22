@@ -1,4 +1,4 @@
-from app.core.enums.e_user_model import EUserModel
+from app.core.enums.e_user_model import E_USER
 from app.core.interfaces.database_mysql import DatabaseMysql
 
 class UserModel:
@@ -20,13 +20,13 @@ class UserModel:
         :return: True si la tabla existe, False en caso contrario.
         """
         query = "SHOW TABLES"
-        result_tables = self.db.get_data_list(query)
+        result_tables = self.db.get_data_list(query) 
 
         # Detectamos el nombre de la columna (usualmente: 'Tables_in_<nombre_base>')
         if result_tables:
             key = list(result_tables[0].keys())[0]
             for tabla in result_tables:
-                if tabla[key] == EUserModel.TABLE.value:
+                if tabla[key] == E_USER.TABLE.value:
                     self._exits_table = True
                     return True
         return False
@@ -36,7 +36,7 @@ class UserModel:
         Verifica si existe el usuario root y en caso de que no exista, lo crea.
         """
         # Consulta parametrizada para evitar inyección y problemas de comillas.
-        query = f"SELECT * FROM {EUserModel.TABLE.value} WHERE {EUserModel.USERNAME.value} = %s"
+        query = f"SELECT * FROM {E_USER.TABLE.value} WHERE {E_USER.USERNAME.value} = %s"
         result = self.db.get_data_list(query, ('root',))
         if not result:
             default_password = 'root'  # Se recomienda cambiar y hashear esta contraseña en producción.
@@ -45,8 +45,8 @@ class UserModel:
     def add(self, username: str, password_hash: str, role: str = 'user') -> dict:
         try:
             query = f"""
-            INSERT INTO {EUserModel.TABLE.value}
-                ({EUserModel.USERNAME.value}, {EUserModel.PASSWORD.value}, {EUserModel.ROLE.value})
+            INSERT INTO {E_USER.TABLE.value}
+                ({E_USER.USERNAME.value}, {E_USER.PASSWORD.value}, {E_USER.ROLE.value})
             VALUES (%s, %s, %s)
             """
             self.db.run_query(query, (username, password_hash, role))
@@ -59,7 +59,7 @@ class UserModel:
         Retorna todos los usuarios registrados (incluye contraseña hash).
         """
         try:
-            query = f"SELECT * FROM {EUserModel.TABLE.value}"
+            query = f"SELECT * FROM {E_USER.TABLE.value}"
             result = self.db.get_data_list(query)
             return {"status": "success", "data": result}
         except Exception as ex:
@@ -71,8 +71,8 @@ class UserModel:
         """
         try:
             query = f"""
-                SELECT * FROM {EUserModel.TABLE.value}
-                WHERE {EUserModel.ID.value} = %s
+                SELECT * FROM {E_USER.TABLE.value}
+                WHERE {E_USER.ID.value} = %s
             """
             result = self.db.get_data(query, (user_id,))
             return {"status": "success", "data": result}
@@ -84,7 +84,7 @@ class UserModel:
         Retorna un diccionario con los datos del usuario o None si no existe.
         """
         try:
-            query = f"SELECT * FROM {EUserModel.TABLE.value} WHERE {EUserModel.USERNAME.value} = %s"
+            query = f"SELECT * FROM {E_USER.TABLE.value} WHERE {E_USER.USERNAME.value} = %s"
             result = self.db.get_data(query, (username,))
             return result
             # print(result)
@@ -100,12 +100,12 @@ class UserModel:
         try:
             query = f"""
                 SELECT 
-                    {EUserModel.ID.value},
-                    {EUserModel.USERNAME.value},
-                    {EUserModel.ROLE.value},
-                    {EUserModel.FECHA_CREACION.value},
-                    {EUserModel.FECHA_MODIFICACION.value}
-                FROM {EUserModel.TABLE.value}
+                    {E_USER.ID.value},
+                    {E_USER.USERNAME.value},
+                    {E_USER.ROLE.value},
+                    {E_USER.FECHA_CREACION.value},
+                    {E_USER.FECHA_MODIFICACION.value}
+                FROM {E_USER.TABLE.value}
             """
             result = self.db.get_data_list(query)
             return {"status": "success", "data": result}

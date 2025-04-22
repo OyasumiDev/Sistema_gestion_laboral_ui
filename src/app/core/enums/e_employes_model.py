@@ -1,7 +1,7 @@
 # Constante de tabla de empleados
 from enum import Enum
 
-class EEmpleado(Enum):
+class E_EMPLOYE(Enum):
     TABLE = 'empleados'
     NUMERO_NOMINA = 'numero_nomina'
     NOMBRE_COMPLETO = 'nombre_completo'
