@@ -91,7 +91,7 @@ class LoginContainer(ft.Container):
                     user_data[E_USER.FECHA_MODIFICACION.value] = str(user_data[E_USER.FECHA_MODIFICACION.value])
 
                     page.client_storage.set("app.user", user_data)
-                    page.go("/dashboard")
+                    page.go("/home")
                 else:
                     self.login_message.value = "El usuario o la contraseña no son correctos."
         except Exception as ex:
