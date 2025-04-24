@@ -3,19 +3,13 @@ from typing import Any
 from app.core.app_state import AppState
 from app.views.login_view import LoginView
 from app.views.home_view import HomeView
-from app.views.usuario_view import UsuarioView
-from app.views.empleados_view import EmpleadosView
-from app.views.asistencias_view import AsistenciasView
-from app.views.pagos_view import PagosView
-from app.views.prestamos_view import PrestamosView
-from app.views.desempeno_view import DesempenoView
-from app.views.reportes_view import ReportesView
 from app.helpers.class_singleton import class_singleton
 
 @class_singleton
 class WindowMain:
     def __init__(self):
         self._page: ft.Page | None = None
+        self.home_view: HomeView | None = None
 
     def __call__(self, flet_page: ft.Page) -> Any:
         self._page = flet_page
@@ -32,47 +26,49 @@ class WindowMain:
         state = AppState()
         state.page = self._page
 
+        # Instancia única de HomeView para layout persistente
+        self.home_view = HomeView()
+
         # Asignar handler de rutas
         self._page.on_route_change = self.route_change
         # Iniciar en login
-        self._page.go('/login')
-
+        # self._page.go('/login')
+        self._page.go('/home')
     def route_change(self, route: ft.RouteChangeEvent):
         """
-        Mapeo de rutas de la aplicación con normalización de path.
+        Mapeo de rutas de la aplicación con layout persistente en /home
         """
-        # Normalize path to avoid trailing slash issues
+        # Normalize path
         path = route.route or '/login'
         if path.endswith('/') and len(path) > 1:
             path = path[:-1]
 
-        views = {
-            # Rutas públicas
-            '/login': LoginView(),
-            # Home
-            '/home': HomeView(),
-            # Sub-áreas
-            '/home/usuario': UsuarioView(),
-            '/home/empleados': EmpleadosView(),
-            '/home/asistencias': AsistenciasView(),
-            '/home/pagos': PagosView(),
-            '/home/prestamos': PrestamosView(),
-            '/home/desempeno': DesempenoView(),
-            '/home/reportes': ReportesView(),
-            # Atajos directos
-            '/usuarios': UsuarioView(),
-            '/empleados': EmpleadosView(),
-            '/asistencias': AsistenciasView(),
-            '/pagos': PagosView(),
-            '/prestamos': PrestamosView(),
-            '/desempeno': DesempenoView(),
-            '/reportes': ReportesView(),
-        }
+        # Ruta de login
+        if path == '/login':
+            self._page.views.clear()
+            self._page.views.append(LoginView())
 
-        # Render selected view or fallback to login
-        self._page.views.clear()
-        selected_view = views.get(path, LoginView())
-        self._page.views.append(selected_view)
+        # Rutas /home y alias que deben usar layout persistente
+        elif path == '/home' or path.startswith('/home/') or path.lstrip('/') in {
+            'usuario','empleados','asistencias','pagos','prestamos','desempeno','reportes'}:
+            # Determinar sección
+            if path == '/home':
+                section = 'overview'
+            elif path.startswith('/home/'):
+                section = path.split('/')[-1]
+            else:
+                section = path.lstrip('/')
+            # Actualizar contenido en HomeView
+            self.home_view.update_content(section)
+            # Mostrar layout persistente
+            self._page.views.clear()
+            self._page.views.append(self.home_view)
+
+        # Cualquier otra ruta: volver a login
+        else:
+            self._page.views.clear()
+            self._page.views.append(LoginView())
+
         self._page.update()
 
     def page_update(self):
