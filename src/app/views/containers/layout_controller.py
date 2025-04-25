@@ -1,6 +1,5 @@
 from app.helpers.class_singleton import class_singleton
 
-
 @class_singleton
 class LayoutController:
     def __init__(self):

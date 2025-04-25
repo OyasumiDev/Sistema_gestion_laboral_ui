@@ -1,10 +1,12 @@
 import flet as ft
 from app.views.containers.login_container import LoginContainer
+from app.views.containers.db_alerts import DBAlerts
 
 # Vista Login
 class LoginView(ft.View):
 
     def __init__(self):
+        DBAlerts().show()
         """
         Vista de login
         """

@@ -32,8 +32,8 @@ class WindowMain:
         # Asignar handler de rutas
         self._page.on_route_change = self.route_change
         # Iniciar en login
-        # self._page.go('/login')
-        self._page.go('/home')
+        self._page.go('/login')
+        # self._page.go('/home')
     def route_change(self, route: ft.RouteChangeEvent):
         """
         Mapeo de rutas de la aplicación con layout persistente en /home
