@@ -1,3 +1,5 @@
+# app/views/containers/control_buttons_area.py
+
 import flet as ft
 
 class ControlButtonsArea(ft.Column):
@@ -7,8 +9,10 @@ class ControlButtonsArea(ft.Column):
         dark: bool,
         on_toggle_nav,
         on_toggle_theme,
+        on_settings,
         on_exit,
-        bg: str
+        bg: str,
+        mostrar_settings: bool = True  # <- NUEVO parámetro
     ):
         # Toggle layout
         layout_file = "layout_close-button.png" if expanded else "layout_open-button.png"
@@ -57,7 +61,29 @@ class ControlButtonsArea(ft.Column):
             )
         )
 
+        # ⚡ Aquí creamos dinámicamente los botones
+        controls = [btn_layout, btn_theme]
+
+        if mostrar_settings:
+            btn_settings = ft.GestureDetector(
+                on_tap=on_settings,
+                content=ft.Container(
+                    bgcolor=bg,
+                    padding=6,
+                    border_radius=6,
+                    content=ft.Image(
+                        src="assets/buttons/settings-button.png",
+                        width=24,
+                        height=24
+                    )
+                )
+            )
+            controls.append(btn_settings)
+
+        controls.append(btn_exit)
+
+        # Construimos el layout final
         super().__init__(
             spacing=16,
-            controls=[btn_layout, btn_theme, btn_exit]
+            controls=controls
         )

@@ -3,6 +3,7 @@ from typing import Any
 from app.core.app_state import AppState
 from app.views.login_view import LoginView
 from app.views.home_view import HomeView
+from app.views.settings_view import SettingsView  # ⬅️ Agrega este import
 from app.helpers.class_singleton import class_singleton
 
 @class_singleton
@@ -31,40 +32,41 @@ class WindowMain:
 
         # Asignar handler de rutas
         self._page.on_route_change = self.route_change
+
         # Iniciar en login
         self._page.go('/login')
         # self._page.go('/home')
+
     def route_change(self, route: ft.RouteChangeEvent):
         """
         Mapeo de rutas de la aplicación con layout persistente en /home
+        y sección de configuración en /settings
         """
-        # Normalize path
         path = route.route or '/login'
         if path.endswith('/') and len(path) > 1:
             path = path[:-1]
 
-        # Ruta de login
         if path == '/login':
             self._page.views.clear()
             self._page.views.append(LoginView())
 
-        # Rutas /home y alias que deben usar layout persistente
         elif path == '/home' or path.startswith('/home/') or path.lstrip('/') in {
-            'usuario','empleados','asistencias','pagos','prestamos','desempeno','reportes'}:
-            # Determinar sección
+            'usuario', 'empleados', 'asistencias', 'pagos', 'prestamos', 'desempeno', 'reportes', 'config'
+        }:
             if path == '/home':
                 section = 'overview'
             elif path.startswith('/home/'):
                 section = path.split('/')[-1]
             else:
                 section = path.lstrip('/')
-            # Actualizar contenido en HomeView
             self.home_view.update_content(section)
-            # Mostrar layout persistente
             self._page.views.clear()
             self._page.views.append(self.home_view)
 
-        # Cualquier otra ruta: volver a login
+        elif path == '/settings' or path.startswith('/settings/'):  # ⬅️ Agregamos la parte de Settings
+            self._page.views.clear()
+            self._page.views.append(SettingsView())
+
         else:
             self._page.views.clear()
             self._page.views.append(LoginView())
