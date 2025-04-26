@@ -3,7 +3,7 @@ from typing import Any
 from app.core.app_state import AppState
 from app.views.login_view import LoginView
 from app.views.home_view import HomeView
-from app.views.settings_view import SettingsView  # ⬅️ Agrega este import
+from app.views.settings_view import SettingsView
 from app.helpers.class_singleton import class_singleton
 
 @class_singleton
@@ -11,6 +11,7 @@ class WindowMain:
     def __init__(self):
         self._page: ft.Page | None = None
         self.home_view: HomeView | None = None
+        self.settings_view: SettingsView | None = None
 
     def __call__(self, flet_page: ft.Page) -> Any:
         self._page = flet_page
@@ -27,15 +28,15 @@ class WindowMain:
         state = AppState()
         state.page = self._page
 
-        # Instancia única de HomeView para layout persistente
+        # Instancias únicas de vistas principales
         self.home_view = HomeView()
+        self.settings_view = SettingsView()
 
         # Asignar handler de rutas
         self._page.on_route_change = self.route_change
 
         # Iniciar en login
         self._page.go('/login')
-        # self._page.go('/home')
 
     def route_change(self, route: ft.RouteChangeEvent):
         """
@@ -63,9 +64,14 @@ class WindowMain:
             self._page.views.clear()
             self._page.views.append(self.home_view)
 
-        elif path == '/settings' or path.startswith('/settings/'):  # ⬅️ Agregamos la parte de Settings
+        elif path == '/settings' or path.startswith('/settings/'):
+            if path == '/settings':
+                section = 'settings'
+            else:
+                section = path.split('/')[-1]
+            self.settings_view.update_content(section)
             self._page.views.clear()
-            self._page.views.append(SettingsView())
+            self._page.views.append(self.settings_view)
 
         else:
             self._page.views.clear()

@@ -1,54 +1,32 @@
 # app/views/settings_view.py
 
 import flet as ft
-from app.views.containers.settings_navbar_container import SettingsNavBarContainer
-from app.core.app_state import AppState
-from app.views.containers.theme_controller import ThemeController
+from app.views.containers.navbar_container import NavBarContainer
+from app.views.containers.database_settings_area import DatabaseSettingsArea  # <-- Importa tu área de DB
 
 class SettingsView(ft.View):
     def __init__(self):
-        super().__init__(route="/settings", controls=[])
-
-        self.page = AppState().page
-        self.theme_ctrl = ThemeController()
-
-        # Barra lateral tipo settings
-        self.nav_bar = SettingsNavBarContainer()
-
-        # Área de contenido dinámico
+        super().__init__(route="/settings")
+        self.navbar = NavBarContainer(is_root=True, modo_settings=True)
         self.content_area = ft.Container(expand=True)
 
-        # Layout principal
-        layout = ft.Row(
-            expand=True,
-            controls=[self.nav_bar, self.content_area]
-        )
-        self.controls.append(layout)
+        self.controls = [
+            ft.Row(
+                [
+                    self.navbar,
+                    self.content_area
+                ],
+                expand=True
+            )
+        ]
 
-        # Contenido inicial
-        self.update_content("database")
+        # Carga inicial
+        self.update_content("settings")
 
     def update_content(self, section: str):
-        # Refrescar NavBar si el tema cambió
-        if hasattr(self.nav_bar, "build"):
-            self.nav_bar.build()
-
-        # Obtener colores desde el singleton
-        colors = self.theme_ctrl.get_colors()
-        fg_color = colors["FG_COLOR"]
-
-        # Lógica de contenido
-        if section == "database":
-            content_text = "Gestión de base de datos (importar/exportar)"
+        self.navbar._build()  # 🔥 Siempre actualizar los colores si cambia el tema
+        
+        if section in ["settings", "db"]:
+            self.content_area.content = DatabaseSettingsArea()
         else:
-            content_text = "Vista no encontrada."
-
-        # Actualizar el área de contenido
-        self.content_area.content = ft.Container(
-            expand=True,
-            alignment=ft.alignment.center,
-            content=ft.Text(content_text, size=16, color=fg_color)
-        )
-
-        # Refrescar página
-        self.page.update()
+            self.content_area.content = ft.Text(f"Settings sección: {section}", size=20)

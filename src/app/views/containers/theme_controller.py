@@ -51,18 +51,18 @@ class ThemeController:
             return {
                 "BG_COLOR": ft.colors.BLACK,
                 "FG_COLOR": ft.colors.WHITE,
-                "AVATAR_ACCENT": ft.colors.GREY_300,
+                "AVATAR_ACCENT": ft.colors.GREY,
                 "DIVIDER_COLOR": ft.colors.GREY_800,
-                "BTN_BG": ft.colors.WHITE,
+                "BTN_BG": ft.colors.GREY,  # Corregido para gris oscuro
             }
         else:
             # Tema claro
             return {
                 "BG_COLOR": ft.colors.WHITE,
                 "FG_COLOR": ft.colors.BLACK,
-                "AVATAR_ACCENT": ft.colors.GREY_300,
+                "AVATAR_ACCENT": ft.colors.WHITE,
                 "DIVIDER_COLOR": ft.colors.GREY_300,
-                "BTN_BG": ft.colors.WHITE,
+                "BTN_BG": ft.colors.GREY_200,  # Corregido para gris claro
             }
 
     def get_fg_color(self) -> str:
