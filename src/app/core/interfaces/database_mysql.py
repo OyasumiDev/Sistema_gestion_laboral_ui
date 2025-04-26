@@ -3,7 +3,7 @@ from app.config.config import DB_HOST, DB_USER, DB_PASSWORD, DB_DATABASE, DB_POR
 import mysql.connector as mysql
 from mysql.connector import Error
 from pathlib import Path
-import shutil
+import re
 import traceback
 
 @class_singleton
@@ -16,53 +16,70 @@ class DatabaseMysql:
         self.password = DB_PASSWORD
         self.database = DB_DATABASE
 
-        # Ubicación del script SQL: app/core/interfaces/database/gestion_laboral.sql
-        base_dir = Path(__file__).parent.resolve()
+        # Ruta al script SQL interno en database
+        base_dir = Path(__file__).parent
         self.default_sql = base_dir / "database" / "gestion_laboral.sql"
         if not self.default_sql.is_file():
             print(f"⚠️ No se encontró gestion_laboral.sql en {self.default_sql}")
 
         # 1) Crear BD si no existe
-        try:
-            just_created = self.verificar_y_crear_base_datos()
-        except Exception as e:
-            self._handle_db_creation_error(e)
-            just_created = False
+        just_created = self.verificar_y_crear_base_datos()
 
-        # 2) Conectar a la base de datos
-        try:
-            self.connect()
-        except Exception as e:
-            self._handle_connection_error(e)
-            return      # abortar inicialización si falla conexión
+        # 2) Conectar a BD
+        self.connect()
+        # 2.b) Crear o actualizar SP init_gestion_laboral antes de usarlo
+        self._crear_sp_init()
 
-        # 3) Si BD recién creada, cargar esquema completo
+        # 3) Si la BD recién se creó, cargar esquema completo
         if just_created:
             print("Inicializando esquema desde archivo SQL...")
-            try:
-                self.ejecutar_sql_desde_archivo(self.default_sql)
-            except Exception as e:
-                self._handle_sql_execution_error(e)
+            self.ejecutar_sql_desde_archivo(self.default_sql)
 
         # 4) Verificar tablas y crear si faltan
+        self.verificar_y_crear_tablas()
+
+    def _crear_sp_init(self) -> None:
+        """Carga la definición del stored procedure init_gestion_laboral desde el .sql"""
         try:
-            self.verificar_y_crear_tablas()
+            text = self.default_sql.read_text(encoding='utf-8')
+            # Extraer bloque del SP desde DROP hasta END;
+            match = re.search(
+                r"DROP PROCEDURE IF EXISTS init_gestion_laboral;.*?END;",
+                text, re.S | re.I
+            )
+            if not match:
+                print("⚠️ No se encontró la definición del SP init_gestion_laboral en el script SQL.")
+                return
+            proc_block = match.group()
+            # Ejecutar cada sentencia via run_query
+            for stmt in proc_block.split(';'):
+                sql = stmt.strip()
+                if sql:
+                    self.run_query(sql)
+
+            # Verificar si el SP se creó correctamente
+            with self.conn.cursor() as cur:
+                cur.execute("SHOW PROCEDURE STATUS WHERE Name = 'init_gestion_laboral';")
+                if cur.fetchone():
+                    print("Stored procedure init_gestion_laboral creado/actualizado correctamente.")
+                else:
+                    print("⚠️ No se pudo crear/actualizar el SP init_gestion_laboral.")
         except Exception as e:
-            self._handle_table_verification_error(e)
+            print(f"Error al crear/actualizar SP init_gestion_laboral: {e}")
+            traceback.print_exc()
+
 
     def verificar_y_crear_base_datos(self) -> bool:
-        """Verifica si la base existe, si no, la crea y retorna True."""
         created = False
-        conn_tmp = None
         try:
-            conn_tmp = mysql.connect(
+            tmp = mysql.connect(
                 host=self.host,
                 port=self.port,
                 user=self.user,
                 password=self.password
             )
-            conn_tmp.autocommit = True
-            cur = conn_tmp.cursor()
+            tmp.autocommit = True
+            cur = tmp.cursor()
             cur.execute(
                 "SELECT SCHEMA_NAME FROM information_schema.schemata WHERE schema_name = %s",
                 (self.database,)
@@ -74,61 +91,58 @@ class DatabaseMysql:
                 )
                 created = True
             cur.close()
-        finally:
-            if conn_tmp:
-                conn_tmp.close()
+            tmp.close()
+        except Error as e:
+            print(f"Error al verificar/crear BD: {e}")
         return created
 
     def connect(self) -> None:
-        """Establece conexión a la BD usando mysql.connector."""
-        self.conn = mysql.connect(
-            host=self.host,
-            port=self.port,
-            user=self.user,
-            password=self.password,
-            database=self.database
-        )
-        print("Conexión exitosa a la base de datos")
+        try:
+            self.conn = mysql.connect(
+                host=self.host,
+                port=self.port,
+                user=self.user,
+                password=self.password,
+                database=self.database
+            )
+            print("Conexión exitosa a la base de datos")
+        except Error as e:
+            print(f"Error al conectar: {e}")
 
     def disconnect(self) -> None:
-        """Cierra la conexión si existe."""
         if hasattr(self, "conn") and self.conn:
             self.conn.close()
             print("Conexión cerrada a la base de datos")
 
     def run_query(self, query, params=None) -> bool:
-        """Ejecuta una query de modificación y retorna True si tuvo éxito."""
         try:
             with self.conn.cursor() as cur:
                 cur.execute(query, params or ())
             self.conn.commit()
             return True
         except Exception as ex:
-            self._handle_query_error(ex)
+            print(f"Error de conexión: {ex}")
             return False
 
     def get_data(self, query, params=None) -> dict:
-        """Ejecuta una consulta y retorna un solo registro como dict."""
         try:
             with self.conn.cursor(dictionary=True) as cur:
                 cur.execute(query, params or ())
                 return cur.fetchone() or {}
         except Exception as ex:
-            self._handle_query_error(ex)
+            print(f"Error al obtener datos: {ex}")
             return {}
 
     def get_data_list(self, query, params=None) -> list:
-        """Ejecuta una consulta y retorna todos los registros como lista de dicts."""
         try:
             with self.conn.cursor(dictionary=True) as cur:
                 cur.execute(query, params or ())
                 return cur.fetchall()
         except Exception as ex:
-            self._handle_query_error(ex)
+            print(f"Error al obtener lista: {ex}")
             return []
 
     def is_empty(self) -> bool:
-        """Comprueba si todas las tablas principales están vacías."""
         tablas = [
             "empleados", "asistencias", "pagos",
             "prestamos", "desempeno", "reportes_semanales", "usuarios_app"
@@ -144,86 +158,50 @@ class DatabaseMysql:
         return True
 
     def verificar_y_crear_tablas(self) -> None:
-        """Verifica existencia de tablas y crea esquema completo si faltan."""
         tablas_req = [
             "empleados", "asistencias", "pagos",
             "prestamos", "desempeno", "reportes_semanales", "usuarios_app"
         ]
-        with self.conn.cursor() as cur:
-            cur.execute(
-                "SELECT table_name FROM information_schema.tables WHERE table_schema = %s",
-                (self.database,)
-            )
-            existentes = {row[0] for row in cur.fetchall()}
+        cur = self.conn.cursor()
+        cur.execute(
+            "SELECT table_name FROM information_schema.tables WHERE table_schema = %s",
+            (self.database,)
+        )
+        existentes = {row[0] for row in cur.fetchall()}
+        cur.close()
 
         missing = [t for t in tablas_req if t not in existentes]
         if missing:
-            print(f"Tablas faltantes: {missing}. Intentando CALL init_gestion_laboral()...")
+            print(f"Tablas faltantes: {missing}. Intentando SP init_gestion_laboral...")
             try:
-                with self.conn.cursor() as cp:
-                    cp.execute("CALL init_gestion_laboral();")
+                cp = self.conn.cursor()
+                cp.callproc('init_gestion_laboral')
+                while cp.nextset():
+                    pass
+                cp.close()
                 self.conn.commit()
                 print("Esquema inicializado vía stored procedure.")
-                return
             except mysql.ProgrammingError as pe:
-                self._handle_stored_proc_error(pe)
-                print("FALLBACK: ejecutando script SQL completo...")
+                print(f"⚠️ Stored procedure falló: {pe}\nEjecutando SQL manual... (fallback)")
                 self.ejecutar_sql_desde_archivo(self.default_sql)
-            except Error as e:
-                self._handle_table_verification_error(e)
 
     def ejecutar_sql_desde_archivo(self, ruta: Path) -> None:
-        """
-        Carga y ejecuta todo el script SQL de inicialización de golpe.
-        Connector/Python 9.2+ soporta múltiples declaraciones y delimiters.
-        """
-        script = ruta.read_text(encoding="utf-8")
         try:
-            with self.conn.cursor() as cur:
-                cur.execute(script)
-            self.conn.commit()
-            print(f"Script ejecutado exitosamente: {ruta}")
-        except Exception as ex:
-            raise
+            script = ruta.read_text(encoding="utf-8")
+            for stmt in script.split(';'):
+                sql = stmt.strip()
+                if sql:
+                    self.run_query(sql)
+            print(f"Script ejecutado: {ruta}")
+        except Exception as e:
+            print(f"Error ejecutando SQL desde {ruta}: {e}")
+            traceback.print_exc()
 
     def import_db(self, sql_file: str) -> None:
-        """Reemplaza el script SQL de inicialización y recarga el esquema."""
-        new_path = Path(sql_file)
-        if not new_path.exists():
-            raise FileNotFoundError(f"No existe el archivo {sql_file}")
-        if not sql_file.lower().endswith('.sql'):
-            raise ValueError("El archivo debe terminar en .sql")
-        self._backup_default_sql()
-        new_path.replace(self.default_sql)
-        print(f"Script SQL reemplazado por: {new_path}")
+        if not sql_file.lower().endswith(".sql"):
+            raise ValueError("El archivo debe tener extensión .sql")
+        sql_path = Path(sql_file)
+        if self.database not in sql_path.name:
+            raise ValueError(f"El archivo no corresponde a '{self.database}'")
+        sql_path.replace(self.default_sql)
         self.ejecutar_sql_desde_archivo(self.default_sql)
-
-    # Backups y manejadores de errores
-    def _backup_default_sql(self) -> None:
-        bak = self.default_sql.with_suffix('.bak')
-        shutil.copy(self.default_sql, bak)
-        print(f"Backup creado en {bak}")
-
-    def _handle_db_creation_error(self, ex):
-        print(f"Error creando BD: {ex}")
-        traceback.print_exc()
-
-    def _handle_connection_error(self, ex):
-        print(f"Error conectando a BD: {ex}")
-        traceback.print_exc()
-
-    def _handle_sql_execution_error(self, ex):
-        print(f"Error ejecutando script SQL: {ex}")
-        traceback.print_exc()
-
-    def _handle_table_verification_error(self, ex):
-        print(f"Error verificando/creando tablas: {ex}")
-        traceback.print_exc()
-
-    def _handle_stored_proc_error(self, ex):
-        print(f"Error en CALL init_gestion_laboral: {ex}")
-        traceback.print_exc()
-
-    def _handle_query_error(self, ex):
-        print(f"Error en consulta: {ex}")
-        traceback.print_exc()
