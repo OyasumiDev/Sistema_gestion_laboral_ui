@@ -196,12 +196,3 @@ class DatabaseMysql:
         except Exception as e:
             print(f"Error ejecutando SQL desde {ruta}: {e}")
             traceback.print_exc()
-
-    def import_db(self, sql_file: str) -> None:
-        if not sql_file.lower().endswith(".sql"):
-            raise ValueError("El archivo debe tener extensión .sql")
-        sql_path = Path(sql_file)
-        if self.database not in sql_path.name:
-            raise ValueError(f"El archivo no corresponde a '{self.database}'")
-        sql_path.replace(self.default_sql)
-        self.ejecutar_sql_desde_archivo(self.default_sql)
