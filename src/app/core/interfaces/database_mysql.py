@@ -188,20 +188,61 @@ class DatabaseMysql:
     def ejecutar_sql_desde_archivo(self, ruta: Path) -> None:
         try:
             script = ruta.read_text(encoding="utf-8")
-            for stmt in script.split(';'):
+
+            # Buscar bloque del stored procedure si existe
+            match = re.search(
+                r"DROP PROCEDURE IF EXISTS init_gestion_laboral;.*?END\s*//",
+                script, re.S | re.I
+            )
+            if match:
+                proc_block = match.group()
+                print("Ejecutando bloque del Stored Procedure...")
+                # Quitar el DELIMITER
+                proc_block = proc_block.replace('DELIMITER //', '').replace('DELIMITER ;', '')
+                # Ejecutar el bloque completo
+                for stmt in proc_block.split('//'):
+                    sql = stmt.strip()
+                    if sql:
+                        self.run_query(sql)
+
+            # Ejecutar el resto de las instrucciones
+            restante = re.sub(
+                r"DROP PROCEDURE IF EXISTS init_gestion_laboral;.*?END\s*//",
+                "", script, flags=re.S | re.I
+            )
+            print("Ejecutando sentencias normales...")
+            for stmt in restante.split(';'):
                 sql = stmt.strip()
                 if sql:
                     self.run_query(sql)
-            print(f"Script ejecutado: {ruta}")
+
+            print(f"Script ejecutado correctamente: {ruta}")
+
         except Exception as e:
             print(f"Error ejecutando SQL desde {ruta}: {e}")
             traceback.print_exc()
 
+
     def import_db(self, sql_file: str) -> None:
-        if not sql_file.lower().endswith(".sql"):
-            raise ValueError("El archivo debe tener extensión .sql")
-        sql_path = Path(sql_file)
-        if self.database not in sql_path.name:
-            raise ValueError(f"El archivo no corresponde a '{self.database}'")
-        sql_path.replace(self.default_sql)
-        self.ejecutar_sql_desde_archivo(self.default_sql)
+        """
+        Importa un archivo SQL, reemplazando el esquema actual.
+        """
+        try:
+            sql_path = Path(sql_file)
+            if not sql_path.is_file():
+                raise FileNotFoundError(f"No se encontró el archivo {sql_file}")
+
+            if not sql_path.suffix.lower() == ".sql":
+                raise ValueError("El archivo debe tener extensión .sql")
+
+            # Reemplazar el archivo gestion_laboral.sql
+            self.default_sql.write_text(sql_path.read_text(encoding="utf-8"), encoding="utf-8")
+            print(f"Archivo {self.default_sql.name} reemplazado exitosamente.")
+
+            # Ejecutar el nuevo SQL
+            self.ejecutar_sql_desde_archivo(self.default_sql)
+            print(f"Base de datos importada exitosamente desde {sql_path.name}.")
+
+        except Exception as e:
+            print(f"Error al importar base de datos: {e}")
+            traceback.print_exc()

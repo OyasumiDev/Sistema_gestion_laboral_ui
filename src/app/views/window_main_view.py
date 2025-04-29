@@ -36,7 +36,9 @@ class WindowMain:
         self._page.on_route_change = self.route_change
 
         # Iniciar en login
-        self._page.go('/login')
+        # self._page.go('/login')
+        self._page.go('/home')
+        # self._page.go('/settings')
 
     def route_change(self, route: ft.RouteChangeEvent):
         """

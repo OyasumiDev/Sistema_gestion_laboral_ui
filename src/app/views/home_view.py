@@ -4,6 +4,7 @@ import flet as ft
 from app.core.app_state import AppState
 from app.views.nvar_view import NavBarView  # Import correcto
 from app.views.containers.theme_controller import ThemeController  # Theme singleton
+from app.views.containers.asistencias_container import AsistenciasContainer
 
 class HomeView(ft.View):
     def __init__(self):
@@ -63,21 +64,36 @@ class HomeView(ft.View):
             "usuarios": "Gestor de usuarios (Root)"
         }
 
-        # Determinar texto
+        # Determinar texto de área
         content_text = section_map.get(section, "Vista no encontrada o sin acceso")
         if section == "usuarios" and not self.is_root:
             content_text = "Vista no encontrada o sin acceso"
 
-        # Obtener color desde el theme controller
         fg_color = self.theme_ctrl.get_fg_color()
 
         # Asignar el contenido
-        self.content_area.content = ft.Container(
-            expand=True,
-            padding=20,
-            bgcolor=None,
-            content=ft.Text(content_text, color=fg_color, size=16)
-        )
+        if section == "asistencias":
+            self.content_area.content = ft.Column(
+                expand=True,
+                controls=[
+                    ft.Text("Área actual: Asistencias", size=20, weight="bold", color=fg_color),
+                    AsistenciasContainer()
+                ]
+            )
+
+        else:
+            self.content_area.content = ft.Column(
+                expand=True,
+                controls=[
+                    ft.Text(f"Área actual: {content_text}", size=20, weight="bold", color=fg_color),
+                    ft.Container(
+                        expand=True,
+                        padding=20,
+                        bgcolor=None,
+                        content=ft.Text(content_text, color=fg_color, size=16)
+                    )
+                ]
+            )
 
         # Refrescar UI
         self.page.update()

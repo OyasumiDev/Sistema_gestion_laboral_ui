@@ -1,8 +1,7 @@
-# app/views/containers/database_settings_area.py
-
 import flet as ft
 from app.core.app_state import AppState
-from app.core.invokers.file_save_invoker import FileSaveInvoker  # <--- asegúrate de importar tu invoker correctamente
+from app.core.invokers.file_save_invoker import FileSaveInvoker
+from app.core.interfaces.database_mysql import DatabaseMysql  # <- Importamos el manejador de base de datos
 
 class DatabaseSettingsArea(ft.Container):
     def __init__(self):
@@ -11,7 +10,8 @@ class DatabaseSettingsArea(ft.Container):
             padding=20
         )
 
-        self.page = AppState().page  # Obtener la página actual de la app
+        self.page = AppState().page  # Página actual
+        self.db = DatabaseMysql()    # Instancia de conexión a la BD
         self._setup_invoker()
 
         self.content = ft.Column(
@@ -31,34 +31,53 @@ class DatabaseSettingsArea(ft.Container):
                     ],
                     alignment=ft.MainAxisAlignment.END
                 ),
-                ft.Divider(height=30),  # separación extra
-                self.import_db_button   # <-- Aquí metemos el nuevo botón de importar
+                ft.Divider(height=30),
+                self.import_db_button  # Botón de importar base de datos
             ],
             spacing=16
         )
 
     def _setup_invoker(self):
-        """Configura el manejador de guardar/importar archivos."""
+        """Configura el manejador de importar archivos."""
         self.invoker = FileSaveInvoker(
             page=self.page,
-            on_save=self._dummy_save,   # este lo puedes usar o ignorar
-            on_import=self._on_import_db  # Aquí manejamos la importación real
+            on_save=self._dummy_save,
+            on_import=self._on_import_db,
+            save_dialog_title="Guardar archivo",
+            import_dialog_title="Importar Base de Datos",
+            allowed_extensions=["txt", "csv"],   # extensiones permitidas para guardar (por si después quieres)
+            import_extensions=["sql"]            # extensiones permitidas para importar
         )
-        self.import_db_button = self.invoker.get_import_button()
+        self.import_db_button = self.invoker.get_import_button(
+            text="Importar Base de Datos",
+            icon_path="assets/buttons/import_database-button.png"
+        )
 
     def _dummy_save(self, path: str):
-        # Este método está de placeholder si quieres usar guardar en algún momento
+        """Placeholder para guardar archivos."""
         print(f"Guardar en: {path}")
 
     def _on_import_db(self, path: str):
-        # Aquí manejas la lógica real de importar la base de datos
-        print(f"Importar base de datos desde: {path}")
-        # Aquí pondrías tu lógica de cargar el archivo a MySQL o lo que necesites
+        """Importa una base de datos desde un archivo seleccionado."""
+        print(f"Importando base de datos desde: {path}")
+        try:
+            self.db.import_db(path)
+            self.page.snack_bar = ft.SnackBar(
+                ft.Text("✅ Base de datos importada exitosamente."),
+                bgcolor=ft.colors.GREEN
+            )
+        except Exception as e:
+            self.page.snack_bar = ft.SnackBar(
+                ft.Text(f"❌ Error al importar base de datos: {e}"),
+                bgcolor=ft.colors.RED
+            )
+        self.page.snack_bar.open = True
+        self.page.update()
 
     def _on_save(self, e):
-        # Lógica para guardar configuración
+        """Guardar cambios en la configuración de la base de datos."""
         print("Guardar cambios en configuración de base de datos")
 
     def _on_test_connection(self, e):
-        # Lógica para probar conexión
+        """Probar la conexión a la base de datos."""
         print("Probar conexión a la base de datos")

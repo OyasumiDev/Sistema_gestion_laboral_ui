@@ -1,4 +1,7 @@
+# app/views/asistencias_view.py
+
 import flet as ft
+from app.views.containers.asistencias_container import AsistenciasContainer
 
 class AsistenciasView(ft.View):
     """Vista de Asistencias"""
@@ -6,7 +9,6 @@ class AsistenciasView(ft.View):
         super().__init__(
             route="/home/asistencias",
             controls=[
-                ft.Text("Vista de Asistencias", size=20)
+                AsistenciasContainer()
             ]
         )
-        
