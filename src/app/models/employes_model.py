@@ -8,21 +8,39 @@ class EmployesModel:
 
     def __init__(self):
         self.db = DatabaseMysql()
-        self._exits_table = self.check_table()
+        self._exists_table = self.check_table()
 
     def check_table(self) -> bool:
         """
-        Verifica si la tabla de empleados existe.
+        Verifica si la tabla de empleados existe y la crea con la estructura correcta si no.
         """
-        query = "SHOW TABLES"
-        result_tables = self.db.get_data_list(query)
+        try:
+            query = """
+                SELECT COUNT(*) AS c
+                FROM information_schema.tables
+                WHERE table_schema = %s AND table_name = %s
+            """
+            result = self.db.get_data(query, (self.db.database, E_EMPLOYE.TABLE.value))
+            if result.get("c", 0) == 0:
+                print(f"⚠️ La tabla {E_EMPLOYE.TABLE.value} no existe. Creando...")
 
-        if result_tables:
-            key = list(result_tables[0].keys())[0]
-            for tabla in result_tables:
-                if tabla[key] == E_EMPLOYE.TABLE.value:
-                    return True
-        return False
+                create_query = f"""
+                CREATE TABLE IF NOT EXISTS {E_EMPLOYE.TABLE.value} (
+                    {E_EMPLOYE.NUMERO_NOMINA.value} SMALLINT UNSIGNED PRIMARY KEY,
+                    {E_EMPLOYE.NOMBRE_COMPLETO.value} VARCHAR(255) NOT NULL,
+                    {E_EMPLOYE.ESTADO.value} ENUM('activo','inactivo') NOT NULL,
+                    {E_EMPLOYE.TIPO_TRABAJADOR.value} ENUM('taller','externo','no definido') NOT NULL,
+                    {E_EMPLOYE.SUELDO_DIARIO.value} DECIMAL(8,2) NOT NULL
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+                """
+                self.db.run_query(create_query)
+                print(f"✅ Tabla {E_EMPLOYE.TABLE.value} creada correctamente.")
+            else:
+                print(f"✔️ La tabla {E_EMPLOYE.TABLE.value} ya existe.")
+            return True
+        except Exception as ex:
+            print(f"❌ Error al verificar/crear la tabla {E_EMPLOYE.TABLE.value}: {ex}")
+            return False
 
     def add(self, numero_nomina, nombre_completo, estado, tipo_trabajador, sueldo_diario):
         """

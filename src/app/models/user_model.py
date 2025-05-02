@@ -9,27 +9,42 @@ class UserModel:
     def __init__(self):
         # Se obtiene la instancia centralizada de la base de datos.
         self.db = DatabaseMysql()
-        
+        self.check_table()
         # Se verifica y crea el usuario root si no existe.
         self.check_root_user()
         
 
     def check_table(self) -> bool:
         """
-        Verifica si la tabla existe.
-        :return: True si la tabla existe, False en caso contrario.
+        Verifica si la tabla de usuarios existe. Si no, la crea con estructura compatible al archivo .sql.
         """
-        query = "SHOW TABLES"
-        result_tables = self.db.get_data_list(query) 
+        try:
+            query = """
+            SELECT COUNT(*) AS c FROM information_schema.tables 
+            WHERE table_schema = %s AND table_name = %s
+            """
+            result = self.db.get_data(query, (self.db.database, E_USER.TABLE.value))
+            if result.get("c", 0) == 0:
+                print(f"⚠️ La tabla {E_USER.TABLE.value} no existe. Creando...")
+                create_query = f"""
+                CREATE TABLE IF NOT EXISTS {E_USER.TABLE.value} (
+                    {E_USER.ID.value} INT AUTO_INCREMENT PRIMARY KEY,
+                    {E_USER.USERNAME.value} VARCHAR(100) NOT NULL UNIQUE,
+                    {E_USER.PASSWORD.value} VARCHAR(255) NOT NULL,
+                    {E_USER.ROLE.value} ENUM('root','user') NOT NULL DEFAULT 'user',
+                    {E_USER.FECHA_CREACION.value} TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    {E_USER.FECHA_MODIFICACION.value} TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+                """
+                self.db.run_query(create_query)
+                print(f"✅ Tabla {E_USER.TABLE.value} creada correctamente.")
+            return True
+        except Exception as ex:
+            print(f"❌ Error al verificar/crear tabla {E_USER.TABLE.value}: {ex}")
+            return False
 
-        # Detectamos el nombre de la columna (usualmente: 'Tables_in_<nombre_base>')
-        if result_tables:
-            key = list(result_tables[0].keys())[0]
-            for tabla in result_tables:
-                if tabla[key] == E_USER.TABLE.value:
-                    self._exits_table = True
-                    return True
-        return False
+
+
 
     def check_root_user(self):
         """

@@ -8,21 +8,51 @@ class WeeklyReportModel:
 
     def __init__(self):
         self.db = DatabaseMysql()
-        self._exits_table = self.check_table()
+        self._exists_table = self.check_table()
 
     def check_table(self) -> bool:
         """
-        Verifica si la tabla de reportes_semanales existe.
+        Verifica si la tabla de reportes_semanales existe. Si no, la crea con la estructura correcta del .sql.
         """
-        query = "SHOW TABLES"
-        result_tables = self.db.get_data_list(query)
+        try:
+            query = """
+                SELECT COUNT(*) AS c
+                FROM information_schema.tables
+                WHERE table_schema = %s AND table_name = %s
+            """
+            result = self.db.get_data(query, (self.db.database, E_WEEKLY_REPORT.TABLE.value))
+            if result.get("c", 0) == 0:
+                print(f"⚠️ La tabla {E_WEEKLY_REPORT.TABLE.value} no existe. Creando...")
 
-        if result_tables:
-            key = list(result_tables[0].keys())[0]
-            for tabla in result_tables:
-                if tabla[key] == E_WEEKLY_REPORT.TABLE.value:
-                    return True
-        return False
+                create_query = f"""
+                CREATE TABLE IF NOT EXISTS {E_WEEKLY_REPORT.TABLE.value} (
+                    {E_WEEKLY_REPORT.ID.value} INT AUTO_INCREMENT PRIMARY KEY,
+                    {E_WEEKLY_REPORT.NUMERO_NOMINA.value} SMALLINT UNSIGNED NOT NULL,
+                    {E_WEEKLY_REPORT.FECHA_INICIO.value} DATE NOT NULL,
+                    {E_WEEKLY_REPORT.FECHA_FIN.value} DATE NOT NULL,
+                    {E_WEEKLY_REPORT.TOTAL_HORAS_TRABAJADAS.value} DECIMAL(10,2) NOT NULL,
+                    {E_WEEKLY_REPORT.TOTAL_DEUDAS.value} DECIMAL(10,2) NOT NULL,
+                    {E_WEEKLY_REPORT.TOTAL_ABONADO.value} DECIMAL(10,2) NOT NULL,
+                    {E_WEEKLY_REPORT.SALDO_FINAL.value} DECIMAL(10,2) NOT NULL,
+                    {E_WEEKLY_REPORT.TOTAL_EFECTIVO.value} DECIMAL(10,2) NOT NULL,
+                    {E_WEEKLY_REPORT.TOTAL_TARJETA.value} DECIMAL(10,2) NOT NULL,
+                    fecha_creacion TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    fecha_modificacion TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                    FOREIGN KEY ({E_WEEKLY_REPORT.NUMERO_NOMINA.value})
+                        REFERENCES empleados(numero_nomina)
+                        ON DELETE CASCADE
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+                """
+                self.db.run_query(create_query)
+                print(f"✅ Tabla {E_WEEKLY_REPORT.TABLE.value} creada correctamente.")
+            else:
+                print(f"✔️ La tabla {E_WEEKLY_REPORT.TABLE.value} ya existe.")
+            return True
+        except Exception as ex:
+            print(f"❌ Error al verificar/crear la tabla {E_WEEKLY_REPORT.TABLE.value}: {ex}")
+            return False
+
+
 
     def add(self, numero_nomina, fecha_inicio, fecha_fin, total_horas_trabajadas,
             total_deudas, total_abonado, saldo_final, total_efectivo, total_tarjeta):

@@ -8,21 +8,48 @@ class LoanModel:
 
     def __init__(self):
         self.db = DatabaseMysql()
-        self._exits_table = self.check_table()
+        self._exists_table = self.check_table()
 
     def check_table(self) -> bool:
         """
-        Verifica si la tabla de préstamos existe.
+        Verifica si la tabla de préstamos existe y la crea con la estructura correcta si no.
         """
-        query = "SHOW TABLES"
-        result_tables = self.db.get_data_list(query)
+        try:
+            query = """
+                SELECT COUNT(*) AS c
+                FROM information_schema.tables
+                WHERE table_schema = %s AND table_name = %s
+            """
+            result = self.db.get_data(query, (self.db.database, E_LOAN.TABLE.value))
+            if result.get("c", 0) == 0:
+                print(f"⚠️ La tabla {E_LOAN.TABLE.value} no existe. Creando...")
 
-        if result_tables:
-            key = list(result_tables[0].keys())[0]
-            for tabla in result_tables:
-                if tabla[key] == E_LOAN.TABLE.value:
-                    return True
-        return False
+                create_query = f"""
+                CREATE TABLE IF NOT EXISTS {E_LOAN.TABLE.value} (
+                    {E_LOAN.ID.value} INT AUTO_INCREMENT PRIMARY KEY,
+                    {E_LOAN.NUMERO_NOMINA.value} SMALLINT UNSIGNED NOT NULL,
+                    {E_LOAN.MONTO.value} DECIMAL(10,2) NOT NULL,
+                    {E_LOAN.SALDO_PRESTAMO.value} DECIMAL(10,2) NOT NULL,
+                    {E_LOAN.ESTADO.value} ENUM('aprobado','pendiente','rechazado') NOT NULL,
+                    {E_LOAN.FECHA_SOLICITUD.value} DATE NOT NULL,
+                    {E_LOAN.HISTORIAL_PAGOS.value} JSON,
+                    {E_LOAN.DESCUENTO_SEMANAL.value} DECIMAL(10,2) DEFAULT 50,
+                    {E_LOAN.TIPO_DESCUENTO.value} ENUM('monto fijo','porcentaje') NOT NULL DEFAULT 'monto fijo',
+                    fecha_creacion TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    fecha_modificacion TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                    FOREIGN KEY ({E_LOAN.NUMERO_NOMINA.value})
+                        REFERENCES empleados(numero_nomina)
+                        ON DELETE CASCADE
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+                """
+                self.db.run_query(create_query)
+                print(f"✅ Tabla {E_LOAN.TABLE.value} creada correctamente.")
+            else:
+                print(f"✔️ La tabla {E_LOAN.TABLE.value} ya existe.")
+            return True
+        except Exception as ex:
+            print(f"❌ Error al verificar/crear la tabla {E_LOAN.TABLE.value}: {ex}")
+            return False
 
     def add(self, numero_nomina, monto, saldo_prestamo, estado, fecha_solicitud, historial_pagos, descuento_semanal, tipo_descuento):
         """

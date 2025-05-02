@@ -8,21 +8,46 @@ class PerformanceModel:
 
     def __init__(self):
         self.db = DatabaseMysql()
-        self._exits_table = self.check_table()
+        self._exists_table = self.check_table()
 
     def check_table(self) -> bool:
         """
-        Verifica si la tabla de desempeño existe.
+        Verifica si la tabla de desempeño existe y la crea con la misma estructura que el .sql si no existe.
         """
-        query = "SHOW TABLES"
-        result_tables = self.db.get_data_list(query)
+        try:
+            query = """
+                SELECT COUNT(*) AS c
+                FROM information_schema.tables
+                WHERE table_schema = %s AND table_name = %s
+            """
+            result = self.db.get_data(query, (self.db.database, E_PERFORMANCE.TABLE.value))
+            if result.get("c", 0) == 0:
+                print(f"⚠️ La tabla {E_PERFORMANCE.TABLE.value} no existe. Creando...")
 
-        if result_tables:
-            key = list(result_tables[0].keys())[0]
-            for tabla in result_tables:
-                if tabla[key] == E_PERFORMANCE.TABLE.value:
-                    return True
-        return False
+                create_query = f"""
+                CREATE TABLE IF NOT EXISTS {E_PERFORMANCE.TABLE.value} (
+                    {E_PERFORMANCE.ID.value} INT AUTO_INCREMENT PRIMARY KEY,
+                    {E_PERFORMANCE.NUMERO_NOMINA.value} SMALLINT UNSIGNED NOT NULL,
+                    {E_PERFORMANCE.PUNTUALIDAD.value} TINYINT UNSIGNED CHECK ({E_PERFORMANCE.PUNTUALIDAD.value} BETWEEN 0 AND 100),
+                    {E_PERFORMANCE.EFICIENCIA.value} DECIMAL(5,2),
+                    {E_PERFORMANCE.BONIFICACION.value} DECIMAL(10,2),
+                    {E_PERFORMANCE.HISTORIAL_FALTAS.value} JSON,
+                    fecha_creacion TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    fecha_modificacion TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                    FOREIGN KEY ({E_PERFORMANCE.NUMERO_NOMINA.value})
+                        REFERENCES empleados(numero_nomina)
+                        ON DELETE CASCADE
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+                """
+                self.db.run_query(create_query)
+                print(f"✅ Tabla {E_PERFORMANCE.TABLE.value} creada correctamente.")
+            else:
+                print(f"✔️ La tabla {E_PERFORMANCE.TABLE.value} ya existe.")
+            return True
+        except Exception as ex:
+            print(f"❌ Error al verificar/crear la tabla {E_PERFORMANCE.TABLE.value}: {ex}")
+            return False
+
 
     def add(self, numero_nomina, puntualidad, eficiencia, bonificacion, historial_faltas):
         """

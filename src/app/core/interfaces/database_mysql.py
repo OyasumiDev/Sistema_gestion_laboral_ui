@@ -1,73 +1,23 @@
+import flet as ft
 from app.helpers.class_singleton import class_singleton
 from app.config.config import DB_HOST, DB_USER, DB_PASSWORD, DB_DATABASE, DB_PORT
 import mysql.connector as mysql
 from mysql.connector import Error
+import subprocess
 from pathlib import Path
-import re
-import traceback
+from app.views.containers.messages import mostrar_mensaje
 
 @class_singleton
 class DatabaseMysql:
     def __init__(self):
-        # Parámetros de conexión
         self.host     = DB_HOST
         self.port     = DB_PORT
         self.user     = DB_USER
         self.password = DB_PASSWORD
         self.database = DB_DATABASE
 
-        # Ruta al script SQL interno en database
-        base_dir = Path(__file__).parent
-        self.default_sql = base_dir / "database" / "gestion_laboral.sql"
-        if not self.default_sql.is_file():
-            print(f"⚠️ No se encontró gestion_laboral.sql en {self.default_sql}")
-
-        # 1) Crear BD si no existe
-        just_created = self.verificar_y_crear_base_datos()
-
-        # 2) Conectar a BD
+        self.verificar_y_crear_base_datos()
         self.connect()
-        # 2.b) Crear o actualizar SP init_gestion_laboral antes de usarlo
-        self._crear_sp_init()
-
-        # 3) Si la BD recién se creó, cargar esquema completo
-        if just_created:
-            print("Inicializando esquema desde archivo SQL...")
-            self.ejecutar_sql_desde_archivo(self.default_sql)
-
-        # 4) Verificar tablas y crear si faltan
-        self.verificar_y_crear_tablas()
-
-    def _crear_sp_init(self) -> None:
-        """Carga la definición del stored procedure init_gestion_laboral desde el .sql"""
-        try:
-            text = self.default_sql.read_text(encoding='utf-8')
-            # Extraer bloque del SP desde DROP hasta END;
-            match = re.search(
-                r"DROP PROCEDURE IF EXISTS init_gestion_laboral;.*?END;",
-                text, re.S | re.I
-            )
-            if not match:
-                print("⚠️ No se encontró la definición del SP init_gestion_laboral en el script SQL.")
-                return
-            proc_block = match.group()
-            # Ejecutar cada sentencia via run_query
-            for stmt in proc_block.split(';'):
-                sql = stmt.strip()
-                if sql:
-                    self.run_query(sql)
-
-            # Verificar si el SP se creó correctamente
-            with self.conn.cursor() as cur:
-                cur.execute("SHOW PROCEDURE STATUS WHERE Name = 'init_gestion_laboral';")
-                if cur.fetchone():
-                    print("Stored procedure init_gestion_laboral creado/actualizado correctamente.")
-                else:
-                    print("⚠️ No se pudo crear/actualizar el SP init_gestion_laboral.")
-        except Exception as e:
-            print(f"Error al crear/actualizar SP init_gestion_laboral: {e}")
-            traceback.print_exc()
-
 
     def verificar_y_crear_base_datos(self) -> bool:
         created = False
@@ -93,7 +43,7 @@ class DatabaseMysql:
             cur.close()
             tmp.close()
         except Error as e:
-            print(f"Error al verificar/crear BD: {e}")
+            print(f"❌ Error al verificar/crear BD: {e}")
         return created
 
     def connect(self) -> None:
@@ -105,14 +55,14 @@ class DatabaseMysql:
                 password=self.password,
                 database=self.database
             )
-            print("Conexión exitosa a la base de datos")
+            print("✅ Conexión exitosa a la base de datos")
         except Error as e:
-            print(f"Error al conectar: {e}")
+            print(f"❌ Error al conectar: {e}")
 
     def disconnect(self) -> None:
         if hasattr(self, "conn") and self.conn:
             self.conn.close()
-            print("Conexión cerrada a la base de datos")
+            print("ℹ️ Conexión cerrada a la base de datos")
 
     def run_query(self, query, params=None) -> bool:
         try:
@@ -121,7 +71,7 @@ class DatabaseMysql:
             self.conn.commit()
             return True
         except Exception as ex:
-            print(f"Error de conexión: {ex}")
+            print(f"❌ Error ejecutando query: {ex}")
             return False
 
     def get_data(self, query, params=None) -> dict:
@@ -130,7 +80,7 @@ class DatabaseMysql:
                 cur.execute(query, params or ())
                 return cur.fetchone() or {}
         except Exception as ex:
-            print(f"Error al obtener datos: {ex}")
+            print(f"❌ Error al obtener datos: {ex}")
             return {}
 
     def get_data_list(self, query, params=None) -> list:
@@ -139,7 +89,7 @@ class DatabaseMysql:
                 cur.execute(query, params or ())
                 return cur.fetchall()
         except Exception as ex:
-            print(f"Error al obtener lista: {ex}")
+            print(f"❌ Error al obtener lista: {ex}")
             return []
 
     def is_empty(self) -> bool:
@@ -157,92 +107,84 @@ class DatabaseMysql:
                 continue
         return True
 
-    def verificar_y_crear_tablas(self) -> None:
-        tablas_req = [
-            "empleados", "asistencias", "pagos",
-            "prestamos", "desempeno", "reportes_semanales", "usuarios_app"
-        ]
-        cur = self.conn.cursor()
-        cur.execute(
-            "SELECT table_name FROM information_schema.tables WHERE table_schema = %s",
-            (self.database,)
-        )
-        existentes = {row[0] for row in cur.fetchall()}
-        cur.close()
-
-        missing = [t for t in tablas_req if t not in existentes]
-        if missing:
-            print(f"Tablas faltantes: {missing}. Intentando SP init_gestion_laboral...")
-            try:
-                cp = self.conn.cursor()
-                cp.callproc('init_gestion_laboral')
-                while cp.nextset():
-                    pass
-                cp.close()
-                self.conn.commit()
-                print("Esquema inicializado vía stored procedure.")
-            except mysql.ProgrammingError as pe:
-                print(f"⚠️ Stored procedure falló: {pe}\nEjecutando SQL manual... (fallback)")
-                self.ejecutar_sql_desde_archivo(self.default_sql)
-
-    def ejecutar_sql_desde_archivo(self, ruta: Path) -> None:
+    def exportar_base_datos(self, ruta_destino: str) -> bool:
         try:
-            script = ruta.read_text(encoding="utf-8")
+            mysqldump_path = Path(__file__).parent / "tools" / "mysqldump.exe"
+            if not mysqldump_path.is_file():
+                raise FileNotFoundError(f"No se encontró mysqldump en: {mysqldump_path}")
 
-            # Buscar bloque del stored procedure si existe
-            match = re.search(
-                r"DROP PROCEDURE IF EXISTS init_gestion_laboral;.*?END\s*//",
-                script, re.S | re.I
-            )
-            if match:
-                proc_block = match.group()
-                print("Ejecutando bloque del Stored Procedure...")
-                # Quitar el DELIMITER
-                proc_block = proc_block.replace('DELIMITER //', '').replace('DELIMITER ;', '')
-                # Ejecutar el bloque completo
-                for stmt in proc_block.split('//'):
-                    sql = stmt.strip()
-                    if sql:
-                        self.run_query(sql)
+            comando = [
+                str(mysqldump_path.resolve()),
+                f"--user={self.user}",
+                f"--password={self.password}",
+                f"--host={self.host}",
+                f"--port={self.port}",
+                self.database
+            ]
 
-            # Ejecutar el resto de las instrucciones
-            restante = re.sub(
-                r"DROP PROCEDURE IF EXISTS init_gestion_laboral;.*?END\s*//",
-                "", script, flags=re.S | re.I
-            )
-            print("Ejecutando sentencias normales...")
-            for stmt in restante.split(';'):
-                sql = stmt.strip()
-                if sql:
-                    self.run_query(sql)
+            with open(ruta_destino, "w", encoding="utf-8") as salida:
+                subprocess.run(comando, stdout=salida, check=True)
 
-            print(f"Script ejecutado correctamente: {ruta}")
-
+            print(f"✅ Base de datos exportada a: {ruta_destino}")
+            return True
         except Exception as e:
-            print(f"Error ejecutando SQL desde {ruta}: {e}")
-            traceback.print_exc()
+            print(f"❌ Error al exportar la base de datos: {e}")
+            return False
 
-
-    def import_db(self, sql_file: str) -> None:
-        """
-        Importa un archivo SQL, reemplazando el esquema actual.
-        """
+    def importar_base_datos(self, ruta_sql: str, page: ft.Page = None) -> bool:
         try:
-            sql_path = Path(sql_file)
-            if not sql_path.is_file():
-                raise FileNotFoundError(f"No se encontró el archivo {sql_file}")
+            ruta = Path(ruta_sql)
+            if not ruta.exists():
+                raise FileNotFoundError("Archivo SQL no encontrado")
 
-            if not sql_path.suffix.lower() == ".sql":
-                raise ValueError("El archivo debe tener extensión .sql")
+            tmp = mysql.connect(
+                host=self.host,
+                port=self.port,
+                user=self.user,
+                password=self.password
+            )
+            tmp.autocommit = True
+            cur = tmp.cursor()
+            cur.execute(f"DROP DATABASE IF EXISTS `{self.database}`")
+            cur.execute(f"CREATE DATABASE `{self.database}` DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci")
+            cur.close()
+            tmp.close()
 
-            # Reemplazar el archivo gestion_laboral.sql
-            self.default_sql.write_text(sql_path.read_text(encoding="utf-8"), encoding="utf-8")
-            print(f"Archivo {self.default_sql.name} reemplazado exitosamente.")
+            mysql_client_path = Path(__file__).parent / "tools" / "mysql.exe"
+            if not mysql_client_path.is_file():
+                raise FileNotFoundError(f"No se encontró mysql.exe en: {mysql_client_path}")
 
-            # Ejecutar el nuevo SQL
-            self.ejecutar_sql_desde_archivo(self.default_sql)
-            print(f"Base de datos importada exitosamente desde {sql_path.name}.")
+            comando = [
+                str(mysql_client_path.resolve()),
+                f"-h{self.host}",
+                f"-P{self.port}",
+                f"-u{self.user}",
+                f"-p{self.password}",
+                self.database
+            ]
 
+            with open(ruta, "r", encoding="utf-8") as f:
+                resultado = subprocess.run(
+                    comando,
+                    stdin=f,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True
+                )
+
+            if resultado.returncode != 0:
+                print("❌ Error durante la importación:")
+                print(resultado.stderr)
+                if page:
+                    mostrar_mensaje(page, "Error de Importación", "Hubo un problema al importar la base de datos.")
+                return False
+            else:
+                print("✅ Base de datos importada correctamente.")
+                if page:
+                    mostrar_mensaje(page, "Importación Exitosa", "La base de datos fue importada correctamente.")
+                return True
         except Exception as e:
-            print(f"Error al importar base de datos: {e}")
-            traceback.print_exc()
+            print(f"❌ Error al importar la base de datos: {e}")
+            if page:
+                mostrar_mensaje(page, "Error de Importación", str(e))
+            return False

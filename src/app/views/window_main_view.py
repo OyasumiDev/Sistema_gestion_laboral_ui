@@ -4,6 +4,8 @@ from app.core.app_state import AppState
 from app.views.login_view import LoginView
 from app.views.home_view import HomeView
 from app.views.settings_view import SettingsView
+from app.views.settings_view import DatabaseSettingsArea
+
 from app.helpers.class_singleton import class_singleton
 
 @class_singleton
@@ -30,14 +32,15 @@ class WindowMain:
 
         # Instancias únicas de vistas principales
         self.home_view = HomeView()
-        self.settings_view = SettingsView()
+        self.settings_view = SettingsView(self._page)
+
 
         # Asignar handler de rutas
         self._page.on_route_change = self.route_change
 
         # Iniciar en login
-        # self._page.go('/login')
-        self._page.go('/home')
+        self._page.go('/login')
+        # self._page.go('/home')
         # self._page.go('/settings')
 
     def route_change(self, route: ft.RouteChangeEvent):

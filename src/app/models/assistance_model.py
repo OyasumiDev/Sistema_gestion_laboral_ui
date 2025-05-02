@@ -7,23 +7,46 @@ class AssistanceModel:
     """
 
     def __init__(self):
-        # Se obtiene la instancia centralizada de la base de datos.
         self.db = DatabaseMysql()
-        self._exits_table = self.check_table()
+        self._exists_table = self.check_table()
 
     def check_table(self) -> bool:
         """
-        Verifica si la tabla de asistencias existe.
+        Verifica si la tabla de asistencias existe y la crea con la estructura del archivo SQL si no existe.
         """
-        query = "SHOW TABLES"
-        result_tables = self.db.get_data_list(query)
+        try:
+            query = """
+                SELECT COUNT(*) AS c
+                FROM information_schema.tables
+                WHERE table_schema = %s AND table_name = %s
+            """
+            result = self.db.get_data(query, (self.db.database, E_ASSISTANCE.TABLE.value))
+            if result.get("c", 0) == 0:
+                print(f"⚠️ La tabla {E_ASSISTANCE.TABLE.value} no existe. Creando...")
 
-        if result_tables:
-            key = list(result_tables[0].keys())[0]
-            for tabla in result_tables:
-                if tabla[key] == E_ASSISTANCE.TABLE.value:
-                    return True
-        return False
+                create_query = f"""
+                CREATE TABLE IF NOT EXISTS {E_ASSISTANCE.TABLE.value} (
+                    {E_ASSISTANCE.ID.value} INT AUTO_INCREMENT PRIMARY KEY,
+                    {E_ASSISTANCE.NUMERO_NOMINA.value} SMALLINT UNSIGNED NOT NULL,
+                    {E_ASSISTANCE.FECHA.value} DATE NOT NULL,
+                    {E_ASSISTANCE.HORA_ENTRADA.value} TIME,
+                    {E_ASSISTANCE.HORA_SALIDA.value} TIME,
+                    {E_ASSISTANCE.DURACION_COMIDA.value} TIME,
+                    {E_ASSISTANCE.TIPO_REGISTRO.value} ENUM('automático','manual') NOT NULL,
+                    {E_ASSISTANCE.HORAS_TRABAJADAS.value} TIME,
+                    FOREIGN KEY ({E_ASSISTANCE.NUMERO_NOMINA.value})
+                        REFERENCES empleados(numero_nomina)
+                        ON DELETE CASCADE
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+                """
+                self.db.run_query(create_query)
+                print(f"✅ Tabla {E_ASSISTANCE.TABLE.value} creada correctamente.")
+            else:
+                print(f"✔️ La tabla {E_ASSISTANCE.TABLE.value} ya existe.")
+            return True
+        except Exception as ex:
+            print(f"❌ Error al verificar/crear la tabla {E_ASSISTANCE.TABLE.value}: {ex}")
+            return False
 
     def add(self, numero_nomina, fecha, hora_entrada, hora_salida, duracion_comida, tipo_registro, horas_trabajadas):
         """

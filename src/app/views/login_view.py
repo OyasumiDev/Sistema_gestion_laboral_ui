@@ -1,24 +1,13 @@
 import flet as ft
 from app.views.containers.login_container import LoginContainer
-from app.views.containers.db_alerts import DBAlerts
 
-# Vista Login
 class LoginView(ft.View):
-
     def __init__(self):
-        DBAlerts().show()
-        """
-        Vista de login
-        """
         super().__init__(
-            route = '/login',
-            controls = [
-                LoginContainer()
-            ],
+            route='/login',
+            controls=[LoginContainer()],
             appbar=ft.AppBar(
-                title=ft.Text(
-                    "Inicio de sesión"
-                ),
+                title=ft.Text("Inicio de sesión"),
                 bgcolor=ft.Colors.ON_SURFACE_VARIANT
             ),
             vertical_alignment=ft.MainAxisAlignment.CENTER,

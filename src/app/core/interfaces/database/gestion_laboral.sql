@@ -58,7 +58,7 @@ BEGIN
         FOREIGN KEY (numero_nomina) REFERENCES empleados(numero_nomina) ON DELETE CASCADE
     );
 
-    CREATE TABLE IF NOT EXISTS desempeno (
+    CREATE TABLE IF NOT EXISTS performance (
         id_desempeno INT AUTO_INCREMENT PRIMARY KEY,
         numero_nomina SMALLINT UNSIGNED NOT NULL,
         puntualidad TINYINT UNSIGNED CHECK (puntualidad BETWEEN 0 AND 100),
