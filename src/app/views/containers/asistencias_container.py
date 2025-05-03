@@ -5,31 +5,23 @@ import pandas as pd
 from datetime import datetime
 from app.models.assistance_model import AssistanceModel
 from app.core.enums.e_assistance_model import E_ASSISTANCE
-from app.core.invokers.file_save_invoker import FileSaveInvoker
+from app.controllers.asistencias_import_controller import AsistenciasImportController
 from app.core.app_state import AppState
+from tabulate import tabulate
+
 
 class AsistenciasContainer(ft.Container):
     def __init__(self):
         super().__init__(expand=True, padding=20)
 
-        self.page = AppState().page  # ✅ Correctamente inicializado
+        self.page = AppState().page
         self.asistencia_model = AssistanceModel()
 
-# Al crear el importer en AsistenciasContainer
-        self.importer = FileSaveInvoker(
+        self.import_controller = AsistenciasImportController(
             page=self.page,
-            on_save=self._dummy_save,
-            on_import=self._on_file_selected,
-            import_dialog_title="Importar asistencias desde Excel",
-            import_extensions=["xlsx", "xls", "xlsb"]
+            on_success=self._on_file_selected
         )
-
-
-
-        self.import_button = self.importer.get_import_button(
-            text="Importar Asistencias",
-            icon_path="assets/buttons/import_asistencias-button.png"
-        )
+        self.import_button = self.import_controller.get_import_button()
 
         self.data_table = self.crear_tabla_asistencias()
 
@@ -42,27 +34,22 @@ class AsistenciasContainer(ft.Container):
             spacing=20
         )
 
-    def _dummy_save(self, path: str):
-        pass
+        self.depurar_asistencias()
 
     def _on_file_selected(self, path: str):
-        """Carga asistencias desde un archivo Excel."""
         if not path:
-            print("No se seleccionó archivo.")
+            print("⚠️ No se seleccionó ningún archivo.")
             return
 
         df = self._load_excel_file(path)
         if df is not None:
             asistencias = self._procesar_asistencias(df)
             if asistencias:
-                self._subir_asistencias(asistencias)
-                # Refrescar la tabla después de importar
-                self.data_table.rows.clear()
-                nueva_tabla = self.crear_tabla_asistencias()
-                self.data_table.columns = nueva_tabla.columns
-                self.data_table.rows.extend(nueva_tabla.rows)
+                nuevas, duplicadas = self._subir_asistencias(asistencias)
+                self._actualizar_tabla()
+
                 self.page.snack_bar = ft.SnackBar(
-                    ft.Text("✅ Asistencias importadas exitosamente."),
+                    ft.Text(f"✅ {nuevas} nuevas asistencias importadas. {duplicadas} ya existían."),
                     bgcolor=ft.colors.GREEN
                 )
                 self.page.snack_bar.open = True
@@ -73,23 +60,21 @@ class AsistenciasContainer(ft.Container):
         for motor in motores:
             try:
                 df = pd.read_excel(path, engine=motor, header=0)
-                print(f"Archivo '{path}' cargado correctamente con '{motor}'.")
+                print(f"📥 Archivo '{path}' cargado con motor '{motor}'.")
                 return df
             except Exception as e:
-                print(f"Error con motor '{motor}': {e}")
-        print("Error: No se pudo cargar el archivo con ningún motor disponible.")
+                print(f"❌ Error con motor '{motor}': {e}")
+        print("⚠️ No se pudo cargar el archivo con ningún motor disponible.")
         return None
 
     def _procesar_asistencias(self, df: pd.DataFrame):
-        """Procesa el Excel de asistencias."""
-        if df is None or df.empty:
-            print("DataFrame vacío o inválido.")
+        if df.empty or df is None:
+            print("⚠️ DataFrame vacío o inválido.")
             return None
 
         if len(df.columns) != 7:
-            print("Error: El archivo Excel debe tener exactamente 7 columnas.")
             self.page.snack_bar = ft.SnackBar(
-                ft.Text("⚠️ Error: El archivo debe tener 7 columnas."),
+                ft.Text("⚠️ El archivo debe tener exactamente 7 columnas."),
                 bgcolor=ft.colors.RED
             )
             self.page.snack_bar.open = True
@@ -105,52 +90,76 @@ class AsistenciasContainer(ft.Container):
             'tipo_registro',
             'horas_trabajadas'
         ]
-        asistencias = df.to_dict(orient="records")
-        return asistencias
+        return df.to_dict(orient="records")
 
-    def _subir_asistencias(self, asistencias: list):
-        """Inserta asistencias usando AssistanceModel."""
+    def _subir_asistencias(self, asistencias: list) -> tuple[int, int]:
+        nuevas, duplicadas = 0, 0
+
         for asistencia in asistencias:
-            self.asistencia_model.add(
-                numero_nomina=asistencia['numero_nomina'],
-                fecha=asistencia['fecha'],
+            numero_nomina = asistencia['numero_nomina']
+            fecha = asistencia['fecha']
+
+            if self.asistencia_model.get_by_empleado_fecha(numero_nomina, fecha):
+                duplicadas += 1
+                continue
+
+            tipo_registro = asistencia.get('tipo_registro', 'manual')
+            if tipo_registro not in ['automático', 'manual']:
+                print(f"⚠️ tipo_registro inválido para {numero_nomina} el {fecha}: '{tipo_registro}' -> Se usará 'manual'")
+                tipo_registro = 'manual'
+
+            resultado = self.asistencia_model.add(
+                numero_nomina=numero_nomina,
+                fecha=fecha,
                 hora_entrada=asistencia['hora_entrada'],
                 hora_salida=asistencia['hora_salida'],
                 duracion_comida=asistencia['duracion_comida'],
-                tipo_registro=asistencia['tipo_registro'],
+                tipo_registro=tipo_registro,
                 horas_trabajadas=asistencia['horas_trabajadas']
             )
+            if resultado["status"] == "success":
+                nuevas += 1
+            else:
+                print(f"❌ Falló al insertar asistencia de {numero_nomina} el {fecha}: {resultado['message']}")
+
+        return nuevas, duplicadas
+
+    def _actualizar_tabla(self):
+        self.data_table.rows.clear()
+        nueva_tabla = self.crear_tabla_asistencias()
+        self.data_table.columns = nueva_tabla.columns
+        self.data_table.rows.extend(nueva_tabla.rows)
+        self.page.update()
 
     def crear_tabla_asistencias(self):
         resultado = self.asistencia_model.get_all()
-
-        datos = []
-        if resultado["status"] == "success":
-            datos = resultado["data"]
+        datos = resultado["data"] if resultado["status"] == "success" else []
 
         agrupadas = {}
-        if datos:
-            for reg in datos:
-                numero = reg[E_ASSISTANCE.NUMERO_NOMINA.value]
-                nombre = reg.get("nombre", "Empleado")
-                fecha = reg[E_ASSISTANCE.FECHA.value]
+        for reg in datos:
+            numero = reg[E_ASSISTANCE.NUMERO_NOMINA.value]
+            nombre = reg.get("nombre", "Empleado")
+            fecha = reg[E_ASSISTANCE.FECHA.value]
+            try:
                 dia = datetime.strptime(fecha, "%Y-%m-%d").strftime("%A")
+            except ValueError:
+                try:
+                    dia = datetime.strptime(fecha, "%d/%m/%Y").strftime("%A")
+                except ValueError:
+                    print(f"❌ Formato de fecha no válido: {fecha}")
+                    continue
 
-                if numero not in agrupadas:
-                    agrupadas[numero] = {
-                        "nombre": nombre,
-                        "dias": {
-                            "Monday": None,
-                            "Tuesday": None,
-                            "Wednesday": None,
-                            "Thursday": None,
-                            "Friday": None,
-                            "Saturday": None,
-                            "Sunday": None,
-                        }
+
+            if numero not in agrupadas:
+                agrupadas[numero] = {
+                    "nombre": nombre,
+                    "dias": {
+                        "Monday": None, "Tuesday": None, "Wednesday": None,
+                        "Thursday": None, "Friday": None, "Saturday": None, "Sunday": None
                     }
+                }
 
-                agrupadas[numero]["dias"][dia] = True
+            agrupadas[numero]["dias"][dia] = True
 
         columnas = [
             ft.DataColumn(ft.Text("Empleado")),
@@ -158,48 +167,29 @@ class AsistenciasContainer(ft.Container):
         ]
 
         filas = []
-        if agrupadas:
-            for num, info in agrupadas.items():
-                dias = info["dias"]
-                fila = ft.DataRow(
-                    cells=[
-                        ft.DataCell(
-                            ft.Row(
-                                controls=[
-                                    ft.CircleAvatar(content=ft.Text(info["nombre"][0]), radius=20),
-                                    ft.Text(info["nombre"], size=16)
-                                ],
-                                spacing=10,
-                                vertical_alignment=ft.CrossAxisAlignment.CENTER
-                            )
-                        ),
-                        ft.DataCell(self.icono_asistencia(dias["Monday"])),
-                        ft.DataCell(self.icono_asistencia(dias["Tuesday"])),
-                        ft.DataCell(self.icono_asistencia(dias["Wednesday"])),
-                        ft.DataCell(self.icono_asistencia(dias["Thursday"])),
-                        ft.DataCell(self.icono_asistencia(dias["Friday"])),
-                        ft.DataCell(self.icono_asistencia(dias["Saturday"])),
-                        ft.DataCell(self.icono_asistencia(dias["Sunday"])),
-                    ]
-                )
-                filas.append(fila)
-        else:
-            fila_vacio = ft.DataRow(
+        for num, info in agrupadas.items():
+            dias = info["dias"]
+            fila = ft.DataRow(
                 cells=[
                     ft.DataCell(
                         ft.Row(
                             controls=[
-                                ft.CircleAvatar(content=ft.Text("-"), radius=20),
-                                ft.Text("Sin registros", size=16)
+                                ft.CircleAvatar(content=ft.Text(info["nombre"][0]), radius=20),
+                                ft.Text(info["nombre"], size=16)
                             ],
                             spacing=10,
                             vertical_alignment=ft.CrossAxisAlignment.CENTER
                         )
                     ),
-                    *[ft.DataCell(self.icono_asistencia(None)) for _ in range(7)]
+                    *[ft.DataCell(self.icono_asistencia(dias[dia])) for dia in ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]]
                 ]
             )
-            filas.append(fila_vacio)
+            filas.append(fila)
+
+        if not filas:
+            filas.append(ft.DataRow(
+                cells=[ft.DataCell(ft.Text("Sin registros"))] + [ft.DataCell(self.icono_asistencia(None)) for _ in range(7)]
+            ))
 
         return ft.DataTable(columns=columnas, rows=filas)
 
@@ -210,3 +200,29 @@ class AsistenciasContainer(ft.Container):
             return ft.Icon(name=ft.icons.CANCEL, color=ft.colors.RED)
         else:
             return ft.Icon(name=ft.icons.HELP, color=ft.colors.AMBER)
+
+    def depurar_asistencias(self):
+        resultado = self.asistencia_model.get_all()
+        if resultado["status"] != "success":
+            print("❌ Error al obtener asistencias:", resultado["message"])
+            return
+
+        datos = resultado["data"]
+        if not datos:
+            print("⚠️ No hay asistencias registradas en la base de datos.")
+            return
+
+        columnas = [
+            E_ASSISTANCE.ID.value,
+            E_ASSISTANCE.NUMERO_NOMINA.value,
+            E_ASSISTANCE.FECHA.value,
+            E_ASSISTANCE.HORA_ENTRADA.value,
+            E_ASSISTANCE.HORA_SALIDA.value,
+            E_ASSISTANCE.DURACION_COMIDA.value,
+            E_ASSISTANCE.TIPO_REGISTRO.value,
+            E_ASSISTANCE.HORAS_TRABAJADAS.value
+        ]
+
+        tabla = [[registro.get(col) for col in columnas] for registro in datos]
+        print("\n📋 Asistencias registradas en la base de datos:")
+        print(tabulate(tabla, headers=columnas, tablefmt="grid"))

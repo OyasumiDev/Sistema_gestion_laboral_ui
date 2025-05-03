@@ -7,12 +7,9 @@ class UserModel:
     """
 
     def __init__(self):
-        # Se obtiene la instancia centralizada de la base de datos.
         self.db = DatabaseMysql()
         self.check_table()
-        # Se verifica y crea el usuario root si no existe.
         self.check_root_user()
-        
 
     def check_table(self) -> bool:
         """
@@ -23,7 +20,7 @@ class UserModel:
             SELECT COUNT(*) AS c FROM information_schema.tables 
             WHERE table_schema = %s AND table_name = %s
             """
-            result = self.db.get_data(query, (self.db.database, E_USER.TABLE.value))
+            result = self.db.get_data(query, (self.db.database, E_USER.TABLE.value), dictionary=True)
             if result.get("c", 0) == 0:
                 print(f"⚠️ La tabla {E_USER.TABLE.value} no existe. Creando...")
                 create_query = f"""
@@ -43,14 +40,10 @@ class UserModel:
             print(f"❌ Error al verificar/crear tabla {E_USER.TABLE.value}: {ex}")
             return False
 
-
-
-
     def check_root_user(self):
         """
         Verifica si existe el usuario root y en caso de que no exista, lo crea.
         """
-        # Consulta parametrizada para evitar inyección y problemas de comillas.
         query = f"SELECT * FROM {E_USER.TABLE.value} WHERE {E_USER.USERNAME.value} = %s"
         result = self.db.get_data_list(query, ('root',))
         if not result:
@@ -79,7 +72,7 @@ class UserModel:
             return {"status": "success", "data": result}
         except Exception as ex:
             return {"status": "error", "message": f"Error al obtener usuarios: {ex}"}
-    
+
     def get_by_id(self, user_id: int) -> dict:
         """
         Retorna un usuario por su ID.
@@ -89,7 +82,7 @@ class UserModel:
                 SELECT * FROM {E_USER.TABLE.value}
                 WHERE {E_USER.ID.value} = %s
             """
-            result = self.db.get_data(query, (user_id,))
+            result = self.db.get_data(query, (user_id,), dictionary=True)
             return {"status": "success", "data": result}
         except Exception as ex:
             return {"status": "error", "message": f"Error al obtener usuario por ID: {ex}"}
@@ -100,13 +93,11 @@ class UserModel:
         """
         try:
             query = f"SELECT * FROM {E_USER.TABLE.value} WHERE {E_USER.USERNAME.value} = %s"
-            result = self.db.get_data(query, (username,))
+            result = self.db.get_data(query, (username,), dictionary=True)
             return result
-            # print(result)
         except Exception as ex:
             print(f"Error al obtener usuario por nombre de usuario: {ex}")
             return None
-
 
     def get_users(self) -> dict:
         """

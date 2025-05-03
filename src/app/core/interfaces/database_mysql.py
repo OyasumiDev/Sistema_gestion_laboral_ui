@@ -48,7 +48,7 @@ class DatabaseMysql:
 
     def connect(self) -> None:
         try:
-            self.conn = mysql.connect(
+            self.connection = mysql.connect(
                 host=self.host,
                 port=self.port,
                 user=self.user,
@@ -60,37 +60,43 @@ class DatabaseMysql:
             print(f"❌ Error al conectar: {e}")
 
     def disconnect(self) -> None:
-        if hasattr(self, "conn") and self.conn:
-            self.conn.close()
+        if hasattr(self, "connection") and self.connection:
+            self.connection.close()
             print("ℹ️ Conexión cerrada a la base de datos")
 
-    def run_query(self, query, params=None) -> bool:
+    def run_query(self, query: str, params: tuple = ()) -> None:
         try:
-            with self.conn.cursor() as cur:
-                cur.execute(query, params or ())
-            self.conn.commit()
-            return True
-        except Exception as ex:
-            print(f"❌ Error ejecutando query: {ex}")
-            return False
+            with self.connection.cursor() as cursor:
+                cursor.execute(query, params)
+            self.connection.commit()
+        except mysql.Error as e:
+            print(f"❌ Error ejecutando query: {e}")
+            raise
 
-    def get_data(self, query, params=None) -> dict:
+    def get_data(self, query: str, params: tuple = (), dictionary: bool = False):
         try:
-            with self.conn.cursor(dictionary=True) as cur:
-                cur.execute(query, params or ())
-                return cur.fetchone() or {}
-        except Exception as ex:
-            print(f"❌ Error al obtener datos: {ex}")
+            conn = self.connection
+            cursor = conn.cursor(dictionary=dictionary)
+            cursor.execute(query, params)
+            result = cursor.fetchone()
+            cursor.close()
+            return result
+        except Exception as e:
+            print(f"❌ Error ejecutando query: {e}")
             return {}
 
-    def get_data_list(self, query, params=None) -> list:
+    def get_data_list(self, query: str, params: tuple = (), dictionary: bool = False):
         try:
-            with self.conn.cursor(dictionary=True) as cur:
-                cur.execute(query, params or ())
-                return cur.fetchall()
-        except Exception as ex:
-            print(f"❌ Error al obtener lista: {ex}")
+            conn = self.connection
+            cursor = conn.cursor(dictionary=dictionary)
+            cursor.execute(query, params)
+            result = cursor.fetchall()
+            cursor.close()
+            return result
+        except Exception as e:
+            print(f"❌ Error ejecutando query: {e}")
             return []
+
 
     def is_empty(self) -> bool:
         tablas = [
@@ -99,7 +105,7 @@ class DatabaseMysql:
         ]
         for tbl in tablas:
             try:
-                with self.conn.cursor(dictionary=True) as cur:
+                with self.connection.cursor(dictionary=True) as cur:
                     cur.execute(f"SELECT COUNT(*) AS c FROM `{tbl}`")
                     if cur.fetchone().get("c", 0) > 0:
                         return False

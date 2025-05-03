@@ -21,7 +21,9 @@ class PaymentModel:
                 WHERE table_schema = %s AND table_name = %s
             """
             result = self.db.get_data(query, (self.db.database, E_PAYMENT.TABLE.value))
-            if result.get("c", 0) == 0:
+            count = result[0] if isinstance(result, tuple) else result.get("c", 0)
+
+            if count == 0:
                 print(f"⚠️ La tabla {E_PAYMENT.TABLE.value} no existe. Creando...")
 
                 create_query = f"""
@@ -117,4 +119,3 @@ class PaymentModel:
             return {"status": "success", "data": result}
         except Exception as ex:
             return {"status": "error", "message": f"Error al obtener pagos del empleado: {ex}"}
-

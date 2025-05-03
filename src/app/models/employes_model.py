@@ -20,7 +20,7 @@ class EmployesModel:
                 FROM information_schema.tables
                 WHERE table_schema = %s AND table_name = %s
             """
-            result = self.db.get_data(query, (self.db.database, E_EMPLOYE.TABLE.value))
+            result = self.db.get_data(query, (self.db.database, E_EMPLOYE.TABLE.value), dictionary=True)
             if result.get("c", 0) == 0:
                 print(f"⚠️ La tabla {E_EMPLOYE.TABLE.value} no existe. Creando...")
 
@@ -73,10 +73,12 @@ class EmployesModel:
         """
         try:
             query = f"SELECT * FROM {E_EMPLOYE.TABLE.value}"
-            result = self.db.get_data_list(query)
+            result = self.db.get_data_list(query, dictionary=True)
             return {"status": "success", "data": result}
         except Exception as ex:
             return {"status": "error", "message": f"Error al obtener empleados: {ex}"}
+
+
 
     def get_by_numero_nomina(self, numero_nomina: int):
         """
@@ -87,7 +89,7 @@ class EmployesModel:
                 SELECT * FROM {E_EMPLOYE.TABLE.value}
                 WHERE {E_EMPLOYE.NUMERO_NOMINA.value} = %s
             """
-            result = self.db.get_data(query, (numero_nomina,))
-            return {"status": "success", "data": result}
+            return self.db.get_data(query, (numero_nomina,), dictionary=True)
         except Exception as ex:
-            return {"status": "error", "message": f"Error al obtener el empleado: {ex}"}
+            print(f"❌ Error al obtener el empleado: {ex}")
+            return {}

@@ -1,4 +1,7 @@
+# app/views/empleados_view.py
+
 import flet as ft
+from app.views.containers.empleados_container import EmpleadosContainer
 
 class EmpleadosView(ft.View):
     """Vista de Empleados"""
@@ -6,6 +9,6 @@ class EmpleadosView(ft.View):
         super().__init__(
             route="/home/empleados",
             controls=[
-                ft.Text("Vista de Empleados", size=20)
+                EmpleadosContainer()
             ]
         )

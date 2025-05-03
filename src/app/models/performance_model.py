@@ -20,7 +20,7 @@ class PerformanceModel:
                 FROM information_schema.tables
                 WHERE table_schema = %s AND table_name = %s
             """
-            result = self.db.get_data(query, (self.db.database, E_PERFORMANCE.TABLE.value))
+            result = self.db.get_data(query, (self.db.database, E_PERFORMANCE.TABLE.value), dictionary=True)
             if result.get("c", 0) == 0:
                 print(f"⚠️ La tabla {E_PERFORMANCE.TABLE.value} no existe. Creando...")
 
@@ -47,7 +47,6 @@ class PerformanceModel:
         except Exception as ex:
             print(f"❌ Error al verificar/crear la tabla {E_PERFORMANCE.TABLE.value}: {ex}")
             return False
-
 
     def add(self, numero_nomina, puntualidad, eficiencia, bonificacion, historial_faltas):
         """
@@ -94,7 +93,7 @@ class PerformanceModel:
                 SELECT * FROM {E_PERFORMANCE.TABLE.value}
                 WHERE {E_PERFORMANCE.ID.value} = %s
             """
-            result = self.db.get_data(query, (id_desempeno,))
+            result = self.db.get_data(query, (id_desempeno,), dictionary=True)
             return {"status": "success", "data": result}
         except Exception as ex:
             return {"status": "error", "message": f"Error al obtener el desempeño: {ex}"}

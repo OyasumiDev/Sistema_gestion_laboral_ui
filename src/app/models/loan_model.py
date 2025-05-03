@@ -21,7 +21,9 @@ class LoanModel:
                 WHERE table_schema = %s AND table_name = %s
             """
             result = self.db.get_data(query, (self.db.database, E_LOAN.TABLE.value))
-            if result.get("c", 0) == 0:
+            # Ajuste aquí: `result` puede ser una tupla, no un dict
+            count = result[0] if isinstance(result, tuple) else result.get("c", 0)
+            if count == 0:
                 print(f"⚠️ La tabla {E_LOAN.TABLE.value} no existe. Creando...")
 
                 create_query = f"""

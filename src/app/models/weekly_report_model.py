@@ -20,7 +20,7 @@ class WeeklyReportModel:
                 FROM information_schema.tables
                 WHERE table_schema = %s AND table_name = %s
             """
-            result = self.db.get_data(query, (self.db.database, E_WEEKLY_REPORT.TABLE.value))
+            result = self.db.get_data(query, (self.db.database, E_WEEKLY_REPORT.TABLE.value), dictionary=True)
             if result.get("c", 0) == 0:
                 print(f"⚠️ La tabla {E_WEEKLY_REPORT.TABLE.value} no existe. Creando...")
 
@@ -51,8 +51,6 @@ class WeeklyReportModel:
         except Exception as ex:
             print(f"❌ Error al verificar/crear la tabla {E_WEEKLY_REPORT.TABLE.value}: {ex}")
             return False
-
-
 
     def add(self, numero_nomina, fecha_inicio, fecha_fin, total_horas_trabajadas,
             total_deudas, total_abonado, saldo_final, total_efectivo, total_tarjeta):
@@ -108,7 +106,7 @@ class WeeklyReportModel:
                 SELECT * FROM {E_WEEKLY_REPORT.TABLE.value}
                 WHERE {E_WEEKLY_REPORT.ID.value} = %s
             """
-            result = self.db.get_data(query, (id_reporte,))
+            result = self.db.get_data(query, (id_reporte,), dictionary=True)
             return {"status": "success", "data": result}
         except Exception as ex:
             return {"status": "error", "message": f"Error al obtener el reporte: {ex}"}
