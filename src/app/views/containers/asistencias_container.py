@@ -1,5 +1,3 @@
-# app/views/containers/asistencias_container.py
-
 import flet as ft
 import pandas as pd
 from datetime import datetime
@@ -29,9 +27,17 @@ class AsistenciasContainer(ft.Container):
             controls=[
                 ft.Text("Registro de Asistencias", size=24, weight="bold"),
                 self.import_button,
-                self.data_table
+                ft.Container(
+                    expand=True,
+                    content=ft.Column(
+                        scroll=ft.ScrollMode.ALWAYS,
+                        controls=[self.data_table],
+                        expand=True
+                    )
+                )
             ],
-            spacing=20
+            spacing=20,
+            expand=True
         )
 
         self.depurar_asistencias()
@@ -108,11 +114,13 @@ class AsistenciasContainer(ft.Container):
                 print(f"⚠️ tipo_registro inválido para {numero_nomina} el {fecha}: '{tipo_registro}' -> Se usará 'manual'")
                 tipo_registro = 'manual'
 
+            hora_salida = asistencia['hora_salida'] or None
+
             resultado = self.asistencia_model.add(
                 numero_nomina=numero_nomina,
                 fecha=fecha,
                 hora_entrada=asistencia['hora_entrada'],
-                hora_salida=asistencia['hora_salida'],
+                hora_salida=hora_salida,
                 duracion_comida=asistencia['duracion_comida'],
                 tipo_registro=tipo_registro,
                 horas_trabajadas=asistencia['horas_trabajadas']
@@ -125,73 +133,80 @@ class AsistenciasContainer(ft.Container):
         return nuevas, duplicadas
 
     def _actualizar_tabla(self):
-        self.data_table.rows.clear()
+        self.data_table.content.rows.clear()
         nueva_tabla = self.crear_tabla_asistencias()
-        self.data_table.columns = nueva_tabla.columns
-        self.data_table.rows.extend(nueva_tabla.rows)
+        self.data_table.content.columns = nueva_tabla.content.columns
+        self.data_table.content.rows.extend(nueva_tabla.content.rows)
         self.page.update()
 
     def crear_tabla_asistencias(self):
         resultado = self.asistencia_model.get_all()
         datos = resultado["data"] if resultado["status"] == "success" else []
 
-        agrupadas = {}
-        for reg in datos:
-            numero = reg[E_ASSISTANCE.NUMERO_NOMINA.value]
-            nombre = reg.get("nombre", "Empleado")
-            fecha = reg[E_ASSISTANCE.FECHA.value]
-            try:
-                dia = datetime.strptime(fecha, "%Y-%m-%d").strftime("%A")
-            except ValueError:
-                try:
-                    dia = datetime.strptime(fecha, "%d/%m/%Y").strftime("%A")
-                except ValueError:
-                    print(f"❌ Formato de fecha no válido: {fecha}")
-                    continue
-
-
-            if numero not in agrupadas:
-                agrupadas[numero] = {
-                    "nombre": nombre,
-                    "dias": {
-                        "Monday": None, "Tuesday": None, "Wednesday": None,
-                        "Thursday": None, "Friday": None, "Saturday": None, "Sunday": None
-                    }
-                }
-
-            agrupadas[numero]["dias"][dia] = True
+        # Ordenar por ID de empleado (numero_nomina)
+        datos.sort(key=lambda x: x.get("numero_nomina", 0))
 
         columnas = [
+            ft.DataColumn(ft.Text("ID Empleado")),
             ft.DataColumn(ft.Text("Empleado")),
-            *[ft.DataColumn(ft.Text(dia)) for dia in ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"]]
+            ft.DataColumn(ft.Text("Sucursal")),
+            ft.DataColumn(ft.Text("Fecha")),
+            ft.DataColumn(ft.Text("Turno")),
+            ft.DataColumn(ft.Text("Entrada Turno")),
+            ft.DataColumn(ft.Text("Salida Turno")),
+            ft.DataColumn(ft.Text("Entrada")),
+            ft.DataColumn(ft.Text("Salida")),
+            ft.DataColumn(ft.Text("Descanso")),
+            ft.DataColumn(ft.Text("Retardo")),
+            ft.DataColumn(ft.Text("Estado")),
+            ft.DataColumn(ft.Text("Horas Trabajadas")),
+            ft.DataColumn(ft.Text("Total Horas")),
         ]
 
         filas = []
-        for num, info in agrupadas.items():
-            dias = info["dias"]
+
+        for reg in datos:
+            def limpiar(campo):
+                return str(reg.get(campo)) if reg.get(campo) not in [None, ""] else "-"
+
             fila = ft.DataRow(
                 cells=[
-                    ft.DataCell(
-                        ft.Row(
-                            controls=[
-                                ft.CircleAvatar(content=ft.Text(info["nombre"][0]), radius=20),
-                                ft.Text(info["nombre"], size=16)
-                            ],
-                            spacing=10,
-                            vertical_alignment=ft.CrossAxisAlignment.CENTER
-                        )
-                    ),
-                    *[ft.DataCell(self.icono_asistencia(dias[dia])) for dia in ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]]
+                    ft.DataCell(ft.Text(str(reg.get("numero_nomina")))),
+                    ft.DataCell(ft.Text(limpiar("nombre"))),
+                    ft.DataCell(ft.Text(limpiar("sucursal"))),
+                    ft.DataCell(ft.Text(limpiar("fecha"))),
+                    ft.DataCell(ft.Text(limpiar("turno"))),
+                    ft.DataCell(ft.Text(limpiar("entrada_turno"))),
+                    ft.DataCell(ft.Text(limpiar("salida_turno"))),
+                    ft.DataCell(ft.Text(limpiar("entrada"))),
+                    ft.DataCell(ft.Text(limpiar("salida"))),
+                    ft.DataCell(ft.Text(limpiar("tiempo_descanso"))),
+                    ft.DataCell(ft.Text(limpiar("retardo"))),
+                    ft.DataCell(ft.Text(limpiar("estado"))),
+                    ft.DataCell(ft.Text(limpiar("tiempo_trabajo"))),
+                    ft.DataCell(ft.Text(limpiar("total_horas_trabajadas"))),
                 ]
             )
             filas.append(fila)
 
         if not filas:
             filas.append(ft.DataRow(
-                cells=[ft.DataCell(ft.Text("Sin registros"))] + [ft.DataCell(self.icono_asistencia(None)) for _ in range(7)]
+                cells=[ft.DataCell(ft.Text("Sin registros"))] + [ft.DataCell(ft.Text("-")) for _ in range(len(columnas) - 1)]
             ))
 
-        return ft.DataTable(columns=columnas, rows=filas)
+        return ft.Container(
+            content=ft.DataTable(
+                columns=columnas,
+                rows=filas,
+                column_spacing=20,
+                horizontal_lines=ft.BorderSide(1),
+                expand=True
+            ),
+            expand=True,
+            border=ft.border.all(1),
+            padding=10,
+            bgcolor=ft.colors.BACKGROUND
+        )
 
     def icono_asistencia(self, asistencia):
         if asistencia is True:
@@ -220,7 +235,8 @@ class AsistenciasContainer(ft.Container):
             E_ASSISTANCE.HORA_SALIDA.value,
             E_ASSISTANCE.DURACION_COMIDA.value,
             E_ASSISTANCE.TIPO_REGISTRO.value,
-            E_ASSISTANCE.HORAS_TRABAJADAS.value
+            E_ASSISTANCE.HORAS_TRABAJADAS.value,
+            E_ASSISTANCE.TOTAL_HORAS_TRABAJADAS.value
         ]
 
         tabla = [[registro.get(col) for col in columnas] for registro in datos]

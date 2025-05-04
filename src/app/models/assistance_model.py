@@ -35,6 +35,7 @@ class AssistanceModel:
                     tiempo_descanso TIME,
                     retardo TIME,
                     estado VARCHAR(20),
+                    total_horas_trabajadas TIME,
                     FOREIGN KEY (numero_nomina)
                         REFERENCES empleados(numero_nomina)
                         ON DELETE CASCADE
@@ -65,15 +66,19 @@ class AssistanceModel:
                 cursor.execute(f"DROP TRIGGER IF EXISTS {trigger_name}")
 
                 trigger_sql = f"""
-                CREATE TRIGGER {trigger_name}
-                BEFORE INSERT ON {E_ASSISTANCE.TABLE.value}
+                DELIMITER $$
+                DROP TRIGGER IF EXISTS trg_calcular_horas_trabajadas;
+
+                CREATE TRIGGER trg_calcular_horas_trabajadas
+                BEFORE INSERT ON asistencias
                 FOR EACH ROW
                 BEGIN
                     DECLARE entrada_redondeada TIME;
                     DECLARE salida TIME;
                     DECLARE descanso TIME;
+                    DECLARE tiempo_final TIME;
 
-                    -- Redondear la hora de entrada
+                    -- Redondear la entrada
                     SET entrada_redondeada = IF(
                         HOUR(NEW.entrada) < 6,
                         MAKETIME(6, 0, 0),
@@ -86,9 +91,17 @@ class AssistanceModel:
                     SET salida = NEW.salida;
                     SET descanso = IFNULL(NEW.tiempo_descanso, '00:00:00');
 
+                    -- Asegurar que la salida no sea menor que la entrada
+                    IF salida <= entrada_redondeada THEN
+                        SET salida = ADDTIME(salida, '24:00:00');
+                    END IF;
+
+                    -- Calcular tiempo trabajado
+                    SET tiempo_final = SUBTIME(TIMEDIFF(salida, entrada_redondeada), descanso);
                     SET NEW.entrada = entrada_redondeada;
-                    SET NEW.tiempo_trabajo = SUBTIME(TIMEDIFF(salida, entrada_redondeada), descanso);
-                END
+                    SET NEW.tiempo_trabajo = tiempo_final;
+                    SET NEW.total_horas_trabajadas = tiempo_final;
+                END;
                 """
 
                 cursor.execute(trigger_sql)
@@ -142,14 +155,20 @@ class AssistanceModel:
 
     def get_all(self) -> dict:
         try:
-            query = f"SELECT * FROM {E_ASSISTANCE.TABLE.value}"
-            result = self.db.get_data_list(query, dictionary=True)  # <--- AÑADIR ESTO
+            query = f"""
+            SELECT a.*, e.nombre_completo AS nombre
+            FROM {E_ASSISTANCE.TABLE.value} a
+            JOIN empleados e ON a.numero_nomina = e.numero_nomina
+            ORDER BY a.fecha ASC
+            """
+            result = self.db.get_data_list(query, dictionary=True)
             for row in result:
                 if "fecha" in row:
                     row["fecha"] = self._formatear_fecha(str(row["fecha"]))
             return {"status": "success", "data": result}
         except Exception as ex:
             return {"status": "error", "message": f"Error al obtener asistencias: {ex}"}
+
 
 
     def get_by_id(self, id_asistencia: int) -> dict:

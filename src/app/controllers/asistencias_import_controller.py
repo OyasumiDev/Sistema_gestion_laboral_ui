@@ -4,8 +4,23 @@ from datetime import datetime
 from app.core.invokers.file_open_invoker import FileOpenInvoker
 from app.core.interfaces.database_mysql import DatabaseMysql
 
-
 class AsistenciasImportController:
+    COLUMN_MAP = {
+        "ID Checador": "numero_nomina",
+        "Nombre": "nombre",
+        "Sucursal": "sucursal",
+        "Fecha": "fecha",
+        "Turno": "turno",
+        "Entrada Turno": "entrada_turno",
+        "Salida Turno": "salida_turno",
+        "Entrada": "entrada",
+        "Salida": "salida",
+        "Tiempo de trabajo": "tiempo_trabajo",
+        "Tiempo de descanso": "tiempo_descanso",
+        "Retardo": "retardo",
+        "Estado": "estado"
+    }
+
     def __init__(self, page: ft.Page, on_success: callable = None):
         self.page = page
         self.db = DatabaseMysql()
@@ -29,6 +44,18 @@ class AsistenciasImportController:
         df = self._cargar_excel(path)
         if df is not None:
             print(f"🧪 Columnas detectadas: {list(df.columns)}")
+
+            faltantes = [col for col in self.COLUMN_MAP if col not in df.columns]
+            if faltantes:
+                print(f"❌ Columnas faltantes: {faltantes}")
+                self.page.snack_bar = ft.SnackBar(
+                    ft.Text(f"⚠️ Columnas faltantes en el archivo: {', '.join(faltantes)}"),
+                    bgcolor=ft.colors.RED
+                )
+                self.page.snack_bar.open = True
+                self.page.update()
+                return
+
             asistencias = self._procesar_asistencias(df)
             if asistencias:
                 print(f"\n🔎 Total de asistencias a procesar: {len(asistencias)}")
@@ -60,62 +87,43 @@ class AsistenciasImportController:
 
         for index, row in df.iterrows():
             try:
-                numero_nomina = int(str(row["ID Checador"]).strip())
-                nombre = str(row["Nombre"]).strip()
-                sucursal = str(row["Sucursal"]).strip()
-                fecha_str = str(row["Fecha"]).strip()
-                turno = str(row["Turno"]).strip()
-                entrada_turno = str(row["Entrada Turno"]).strip()
-                salida_turno = str(row["Salida Turno"]).strip()
-                entrada = str(row["Entrada"]).strip()
-                salida = str(row["Salida"]).strip()
-                tiempo_trabajo = str(row["Tiempo de trabajo"]).strip()
-                tiempo_descanso = str(row["Tiempo de descanso"]).strip()
-                retardo = str(row["Retardo"]).strip()
-                estado = str(row["Estado"]).strip()
+                data = {}
+                for col_excel, campo in self.COLUMN_MAP.items():
+                    valor = str(row.get(col_excel, "")).strip()
 
-                # Normalizar valores TIME
-                def normalizar_tiempo(valor):
-                    if pd.isna(valor) or valor in ["", "nan", "NaT"]:
-                        return "00:00:00"
-                    return str(valor).strip()
+                    if campo == "fecha":
+                        fecha_parseada = pd.to_datetime(valor, dayfirst=True, errors='coerce')
+                        if pd.isna(fecha_parseada):
+                            raise ValueError("Fecha inválida")
+                        data[campo] = fecha_parseada.strftime("%Y-%m-%d")
 
-                entrada_turno = normalizar_tiempo(entrada_turno)
-                salida_turno = normalizar_tiempo(salida_turno)
-                entrada = normalizar_tiempo(entrada)
-                salida = normalizar_tiempo(salida)
-                tiempo_trabajo = normalizar_tiempo(tiempo_trabajo)
-                tiempo_descanso = normalizar_tiempo(tiempo_descanso)
-                retardo = normalizar_tiempo(retardo)
+                    elif "tiempo" in campo or campo in ["entrada", "salida", "retardo"]:
+                        if valor in ["", "nan", "NaT"]:
+                            valor = "00:00:00"
+                        data[campo] = valor
 
-                fecha_parseada = pd.to_datetime(fecha_str, dayfirst=True, errors='coerce')
-                if pd.isna(fecha_parseada):
-                    raise ValueError("Fecha inválida")
+                    elif campo == "numero_nomina":
+                        if valor == "" or valor.lower() in ["nan", "none"]:
+                            raise ValueError("ID Checador vacío")
+                        data[campo] = int(valor)
 
-                asistencia = {
-                    "numero_nomina": numero_nomina,
-                    "nombre": nombre,
-                    "sucursal": sucursal,
-                    "fecha": fecha_parseada.strftime("%Y-%m-%d"),
-                    "turno": turno,
-                    "entrada_turno": entrada_turno,
-                    "salida_turno": salida_turno,
-                    "entrada": entrada,
-                    "salida": salida,
-                    "tiempo_trabajo": tiempo_trabajo,
-                    "tiempo_descanso": tiempo_descanso,
-                    "retardo": retardo,
-                    "estado": estado
-                }
-                asistencias.append(asistencia)
+                    else:
+                        data[campo] = valor
+
+                asistencias.append(data)
+
             except Exception as e:
                 print(f"⚠️ Error procesando fila {index + 1}: {e}")
 
         return asistencias
-
+        return asistencias
     def _insertar_asistencias(self, asistencias: list):
         for asistencia in asistencias:
             try:
+                if not self._existe_empleado(asistencia["numero_nomina"]):
+                    print(f"⚠️ Empleado {asistencia['numero_nomina']} no existe. Saltando...")
+                    continue
+
                 query = """
                     INSERT INTO asistencias (
                         numero_nomina, nombre, sucursal, fecha, turno,
@@ -142,3 +150,18 @@ class AsistenciasImportController:
                 print(f"✅ Asistencia registrada: {valores}")
             except Exception as e:
                 print(f"❌ Error insertando asistencia para {asistencia.get('numero_nomina')} el {asistencia.get('fecha')}: {e}")
+
+
+    def _existe_empleado(self, numero_nomina: int) -> bool:
+        try:
+            result = self.db.get_data(
+                "SELECT COUNT(*) AS c FROM empleados WHERE numero_nomina = %s",
+                (numero_nomina,),
+                dictionary=True
+            )
+            return result.get("c", 0) > 0
+        except Exception as e:
+            print(f"❌ Error al verificar existencia de empleado {numero_nomina}: {e}")
+            return False
+
+
