@@ -29,6 +29,9 @@ class WindowMain:
         # Estado global
         state = AppState()
         state.page = self._page
+        
+        self._page.window_full_screen = True
+        self._page.window_resizable = True
 
         # Instancias únicas de vistas principales
         self.home_view = HomeView()
