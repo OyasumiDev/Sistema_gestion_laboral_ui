@@ -1,14 +1,21 @@
-# Constante de tabla de asistencia
 from enum import Enum
 
 class E_ASSISTANCE(Enum):
-    TABLE = 'asistencias'
-    ID = 'id'
-    NUMERO_NOMINA = 'numero_nomina'
-    FECHA = 'fecha'
-    HORA_ENTRADA = 'entrada'
-    HORA_SALIDA = 'salida'
-    DURACION_COMIDA = 'tiempo_descanso'
-    TIPO_REGISTRO = 'tipo_registro'
-    HORAS_TRABAJADAS = 'tiempo_trabajo'
-    TOTAL_HORAS_TRABAJADAS = 'total_horas_trabajadas'
+    TABLE = "asistencias"
+    ID = "id"
+    NUMERO_NOMINA = "numero_nomina"
+    NOMBRE = "nombre"
+    FECHA = "fecha"
+    HORA_ENTRADA = "hora_entrada"
+    HORA_SALIDA = "hora_salida"
+    DURACION_COMIDA = "duracion_comida"
+    TIPO_REGISTRO = "tipo_registro"
+    HORAS_TRABAJADAS = "horas_trabajadas"
+    TOTAL_HORAS_TRABAJADAS = "total_horas_trabajadas"
+    ENTRADA_TURNO = "entrada_turno"
+    SALIDA_TURNO = "salida_turno"
+    TIEMPO_TRABAJO = "tiempo_trabajo"
+    TIEMPO_DESCANSO = "tiempo_descanso"
+    RETARDO = "retardo"
+    ESTADO = "estado"
+    TURNO = "turno"

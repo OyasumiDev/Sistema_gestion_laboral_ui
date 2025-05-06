@@ -6,7 +6,7 @@ class AssistanceModel:
     def __init__(self):
         self.db = DatabaseMysql()
         self._exists_table = self.check_table()
-        self.verificar_o_crear_trigger()
+        self.verificar_o_crear_triggers()
 
     def check_table(self) -> bool:
         try:
@@ -18,28 +18,28 @@ class AssistanceModel:
             result = self.db.get_data(query, (self.db.database, E_ASSISTANCE.TABLE.value), dictionary=True)
             if result.get("c", 0) == 0:
                 print(f"⚠️ La tabla {E_ASSISTANCE.TABLE.value} no existe. Creando...")
-
                 create_query = f"""
                 CREATE TABLE IF NOT EXISTS asistencias (
                     id INT AUTO_INCREMENT PRIMARY KEY,
                     numero_nomina SMALLINT UNSIGNED NOT NULL,
-                    nombre VARCHAR(100) NOT NULL,
-                    sucursal VARCHAR(100),
                     fecha DATE NOT NULL,
                     turno VARCHAR(50),
                     entrada_turno TIME,
                     salida_turno TIME,
-                    entrada TIME,
-                    salida TIME,
+                    hora_entrada TIME,
+                    hora_salida TIME,
                     tiempo_trabajo TIME,
                     tiempo_descanso TIME,
                     retardo TIME,
                     estado VARCHAR(20),
+                    tipo_registro VARCHAR(20),
                     total_horas_trabajadas TIME,
+                    estado_registro VARCHAR(20) DEFAULT 'listo',
                     FOREIGN KEY (numero_nomina)
                         REFERENCES empleados(numero_nomina)
                         ON DELETE CASCADE
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
                 """
                 self.db.run_query(create_query)
                 print(f"✅ Tabla {E_ASSISTANCE.TABLE.value} creada correctamente.")
@@ -50,102 +50,165 @@ class AssistanceModel:
             print(f"❌ Error al verificar/crear la tabla {E_ASSISTANCE.TABLE.value}: {ex}")
             return False
 
-    def verificar_o_crear_trigger(self):
+    def verificar_o_crear_triggers(self):
         try:
-            trigger_name = "trg_calcular_horas_trabajadas"
-            check_query = """
-                SELECT COUNT(*) AS c
-                FROM information_schema.triggers
-                WHERE trigger_schema = %s AND trigger_name = %s
-            """
-            result = self.db.get_data(check_query, (self.db.database, trigger_name), dictionary=True)
-            if result.get("c", 0) == 0:
-                print(f"⚠️ Trigger '{trigger_name}' no existe. Creando...")
+            self._crear_trigger_calculo_horas()
+            self._crear_trigger_estado()
+        except Exception as ex:
+            print(f"❌ Error al verificar/crear triggers: {ex}")
 
-                cursor = self.db.connection.cursor()
-                cursor.execute(f"DROP TRIGGER IF EXISTS {trigger_name}")
+    def _crear_trigger_calculo_horas(self):
+        trigger_name = "trg_calcular_horas_trabajadas"
+        check_query = """
+            SELECT COUNT(*) AS c
+            FROM information_schema.triggers
+            WHERE trigger_schema = %s AND trigger_name = %s
+        """
+        result = self.db.get_data(check_query, (self.db.database, trigger_name), dictionary=True)
+        if result.get("c", 0) == 0:
+            print(f"⚠️ Trigger '{trigger_name}' no existe. Creando...")
 
-                trigger_sql = f"""
-                DELIMITER $$
-                DROP TRIGGER IF EXISTS trg_calcular_horas_trabajadas;
+            cursor = self.db.connection.cursor()
+            cursor.execute(f"DROP TRIGGER IF EXISTS {trigger_name}")
 
-                CREATE TRIGGER trg_calcular_horas_trabajadas
-                BEFORE INSERT ON asistencias
-                FOR EACH ROW
-                BEGIN
-                    DECLARE entrada_redondeada TIME;
-                    DECLARE salida TIME;
-                    DECLARE descanso TIME;
-                    DECLARE tiempo_final TIME;
+            trigger_sql = """
+            CREATE TRIGGER trg_calcular_horas_trabajadas
+            BEFORE INSERT ON asistencias
+            FOR EACH ROW
+            BEGIN
+                DECLARE hora_real TIME;
+                DECLARE retardo TIME;
+                DECLARE salida_ajustada TIME;
+                DECLARE descanso TIME;
+                DECLARE tiempo_final TIME;
 
-                    -- Redondear la entrada
-                    SET entrada_redondeada = IF(
-                        HOUR(NEW.entrada) < 6,
-                        MAKETIME(6, 0, 0),
-                        IF(MINUTE(NEW.entrada) > 0,
-                            ADDTIME(MAKETIME(HOUR(NEW.entrada), 0, 0), '00:30:00'),
-                            MAKETIME(HOUR(NEW.entrada), 0, 0)
-                        )
-                    );
+                SET hora_real = NEW.hora_entrada;
 
-                    SET salida = NEW.salida;
-                    SET descanso = IFNULL(NEW.tiempo_descanso, '00:00:00');
-
-                    -- Asegurar que la salida no sea menor que la entrada
-                    IF salida <= entrada_redondeada THEN
-                        SET salida = ADDTIME(salida, '24:00:00');
+                IF hora_real IS NOT NULL AND NEW.hora_salida IS NOT NULL THEN
+                    -- Calcular hora de retardo
+                    IF hora_real < '06:00:00' THEN
+                        SET retardo = '06:00:00';
+                    ELSE
+                        SET retardo = ADDTIME(
+                            MAKETIME(HOUR(hora_real), FLOOR(MINUTE(hora_real) / 30) * 30, 0),
+                            IF(MINUTE(hora_real) % 30 = 0, '00:00:00', '00:30:00')
+                        );
                     END IF;
 
-                    -- Calcular tiempo trabajado
-                    SET tiempo_final = SUBTIME(TIMEDIFF(salida, entrada_redondeada), descanso);
-                    SET NEW.entrada = entrada_redondeada;
+                    SET NEW.retardo = retardo;
+
+                    -- Ajustar salida si es menor o igual que la hora de retardo
+                    SET salida_ajustada = NEW.hora_salida;
+                    IF salida_ajustada <= retardo THEN
+                        SET salida_ajustada = ADDTIME(salida_ajustada, '24:00:00');
+                    END IF;
+
+                    -- Calcular horas trabajadas
+                    SET descanso = IFNULL(NEW.tiempo_descanso, '00:00:00');
+                    SET tiempo_final = SUBTIME(TIMEDIFF(salida_ajustada, retardo), descanso);
+
                     SET NEW.tiempo_trabajo = tiempo_final;
                     SET NEW.total_horas_trabajadas = tiempo_final;
-                END;
-                """
+                END IF;
+            END
 
-                cursor.execute(trigger_sql)
-                self.db.connection.commit()
-                cursor.close()
+            """
+            cursor.execute(trigger_sql)
+            self.db.connection.commit()
+            cursor.close()
 
-                print(f"✅ Trigger '{trigger_name}' creado correctamente.")
-            else:
-                print(f"✔️ Trigger '{trigger_name}' ya existe.")
-        except Exception as ex:
-            print(f"❌ Error al verificar/crear trigger: {ex}")
+            print(f"✅ Trigger '{trigger_name}' creado correctamente.")
+        else:
+            print(f"✔️ Trigger '{trigger_name}' ya existe.")
 
-    def add(self, numero_nomina, fecha, hora_entrada, hora_salida, duracion_comida, tipo_registro, horas_trabajadas):
+
+
+    def _crear_trigger_estado(self):
+        trigger_name = "trg_verificar_estado_asistencia"
+        check_query = """
+            SELECT COUNT(*) AS c
+            FROM information_schema.triggers
+            WHERE trigger_schema = %s AND trigger_name = %s
+        """
+        result = self.db.get_data(check_query, (self.db.database, trigger_name), dictionary=True)
+        if result.get("c", 0) == 0:
+            print(f"⚠️ Trigger '{trigger_name}' no existe. Creando...")
+
+            cursor = self.db.connection.cursor()
+            cursor.execute(f"DROP TRIGGER IF EXISTS {trigger_name}")
+
+            trigger_sql = """
+            CREATE TRIGGER trg_verificar_estado_asistencia
+            BEFORE INSERT ON asistencias
+            FOR EACH ROW
+            BEGIN
+                IF NEW.hora_entrada IS NULL OR NEW.hora_salida IS NULL
+                OR NEW.hora_entrada = '00:00:00' OR NEW.hora_salida = '00:00:00' THEN
+                    SET NEW.estado = 'incompleto';
+                ELSE
+                    SET NEW.estado = 'completo';
+                END IF;
+            END;
+            """  # <-- Aquí estaba el error: faltaba el `;` después del END
+
+            cursor.execute(trigger_sql)
+            self.db.connection.commit()
+            cursor.close()
+
+            print(f"✅ Trigger '{trigger_name}' creado correctamente.")
+        else:
+            print(f"✔️ Trigger '{trigger_name}' ya existe.")
+
+
+    def add(self,
+            numero_nomina: int,
+            fecha: str,
+            turno: str = None,
+            entrada_turno: str = None,
+            salida_turno: str = None,
+            hora_entrada: str = None,
+            hora_salida: str = None,
+            tiempo_descanso: str = None,
+            retardo: str = None,
+            tipo_registro: str = "manual"
+        ):
         try:
             if tipo_registro not in ['automático', 'manual']:
-                print(f"⚠️ tipo_registro inválido: '{tipo_registro}'. Se forzará a 'manual'.")
                 tipo_registro = 'manual'
-
-            print("📥 Insertando asistencia:", numero_nomina, fecha, hora_entrada, hora_salida, duracion_comida, tipo_registro, horas_trabajadas)
 
             query = f"""
             INSERT INTO {E_ASSISTANCE.TABLE.value} (
                 {E_ASSISTANCE.NUMERO_NOMINA.value},
                 {E_ASSISTANCE.FECHA.value},
+                {E_ASSISTANCE.TURNO.value},
+                {E_ASSISTANCE.ENTRADA_TURNO.value},
+                {E_ASSISTANCE.SALIDA_TURNO.value},
                 {E_ASSISTANCE.HORA_ENTRADA.value},
                 {E_ASSISTANCE.HORA_SALIDA.value},
-                {E_ASSISTANCE.DURACION_COMIDA.value},
-                {E_ASSISTANCE.TIPO_REGISTRO.value},
-                {E_ASSISTANCE.HORAS_TRABAJADAS.value}
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s)
+                {E_ASSISTANCE.TIEMPO_DESCANSO.value},
+                {E_ASSISTANCE.RETARDO.value},
+                {E_ASSISTANCE.TIPO_REGISTRO.value}
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """
-            self.db.run_query(query, (
+
+            valores = (
                 numero_nomina,
                 fecha,
+                turno,
+                entrada_turno,
+                salida_turno,
                 hora_entrada,
                 hora_salida,
-                duracion_comida,
-                tipo_registro,
-                horas_trabajadas
-            ))
+                tiempo_descanso,
+                retardo,
+                tipo_registro
+            )
+
+            self.db.run_query(query, valores)
             return {"status": "success", "message": "Asistencia agregada correctamente"}
         except Exception as ex:
-            print(f"❌ Error al agregar asistencia: {ex}")
             return {"status": "error", "message": f"Error al agregar asistencia: {ex}"}
+
 
     def _formatear_fecha(self, fecha_sql: str) -> str:
         try:
@@ -168,8 +231,6 @@ class AssistanceModel:
             return {"status": "success", "data": result}
         except Exception as ex:
             return {"status": "error", "message": f"Error al obtener asistencias: {ex}"}
-
-
 
     def get_by_id(self, id_asistencia: int) -> dict:
         try:

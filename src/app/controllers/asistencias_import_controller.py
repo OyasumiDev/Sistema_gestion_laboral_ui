@@ -7,14 +7,12 @@ from app.core.interfaces.database_mysql import DatabaseMysql
 class AsistenciasImportController:
     COLUMN_MAP = {
         "ID Checador": "numero_nomina",
-        "Nombre": "nombre",
-        "Sucursal": "sucursal",
         "Fecha": "fecha",
         "Turno": "turno",
         "Entrada Turno": "entrada_turno",
         "Salida Turno": "salida_turno",
-        "Entrada": "entrada",
-        "Salida": "salida",
+        "Entrada": "hora_entrada",
+        "Salida": "hora_salida",
         "Tiempo de trabajo": "tiempo_trabajo",
         "Tiempo de descanso": "tiempo_descanso",
         "Retardo": "retardo",
@@ -62,7 +60,7 @@ class AsistenciasImportController:
                 self._insertar_asistencias(asistencias)
 
                 if self.on_success:
-                    self.on_success(path)
+                    self.on_success()  # ✅ Sin argumento para evitar error
 
                 self.page.snack_bar = ft.SnackBar(
                     ft.Text("✅ Asistencias importadas correctamente."),
@@ -97,7 +95,7 @@ class AsistenciasImportController:
                             raise ValueError("Fecha inválida")
                         data[campo] = fecha_parseada.strftime("%Y-%m-%d")
 
-                    elif "tiempo" in campo or campo in ["entrada", "salida", "retardo"]:
+                    elif "tiempo" in campo or campo in ["hora_entrada", "hora_salida", "retardo"]:
                         if valor in ["", "nan", "NaT"]:
                             valor = "00:00:00"
                         data[campo] = valor
@@ -116,7 +114,7 @@ class AsistenciasImportController:
                 print(f"⚠️ Error procesando fila {index + 1}: {e}")
 
         return asistencias
-        return asistencias
+
     def _insertar_asistencias(self, asistencias: list):
         for asistencia in asistencias:
             try:
@@ -126,31 +124,31 @@ class AsistenciasImportController:
 
                 query = """
                     INSERT INTO asistencias (
-                        numero_nomina, nombre, sucursal, fecha, turno,
-                        entrada_turno, salida_turno, entrada, salida,
-                        tiempo_trabajo, tiempo_descanso, retardo, estado
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        numero_nomina, fecha, turno,
+                        entrada_turno, salida_turno,
+                        hora_entrada, hora_salida,
+                        tiempo_trabajo, tiempo_descanso,
+                        retardo, estado
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """
                 valores = (
                     asistencia["numero_nomina"],
-                    asistencia["nombre"],
-                    asistencia["sucursal"],
                     asistencia["fecha"],
                     asistencia["turno"],
                     asistencia["entrada_turno"],
                     asistencia["salida_turno"],
-                    asistencia["entrada"],
-                    asistencia["salida"],
+                    asistencia["hora_entrada"],
+                    asistencia["hora_salida"],
                     asistencia["tiempo_trabajo"],
                     asistencia["tiempo_descanso"],
                     asistencia["retardo"],
                     asistencia["estado"]
                 )
+
                 self.db.run_query(query, valores)
                 print(f"✅ Asistencia registrada: {valores}")
             except Exception as e:
                 print(f"❌ Error insertando asistencia para {asistencia.get('numero_nomina')} el {asistencia.get('fecha')}: {e}")
-
 
     def _existe_empleado(self, numero_nomina: int) -> bool:
         try:
@@ -163,5 +161,3 @@ class AsistenciasImportController:
         except Exception as e:
             print(f"❌ Error al verificar existencia de empleado {numero_nomina}: {e}")
             return False
-
-
