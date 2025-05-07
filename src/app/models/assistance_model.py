@@ -275,3 +275,51 @@ class AssistanceModel:
             return {"status": "success"}
         except Exception as e:
             return {"status": "error", "message": str(e)}
+        
+    def get_ultimo_id(self):
+        try:
+            query = "SELECT MAX(numero_nomina) AS ultimo FROM asistencias"
+            result = self.db.get_data(query, dictionary=True)
+            return int(result.get("ultimo", 0)) if result else 0
+        except Exception as e:
+            print(f"❌ Error al obtener último ID: {e}")
+            return 0
+            
+    def add_manual_assistance(self, numero_nomina: int, fecha: str, hora_entrada: str, hora_salida: str):
+        try:
+            # Convertir la fecha de "24/04/2025" → "2025-04-24"
+            fecha_formateada = datetime.strptime(fecha, "%d/%m/%Y").strftime("%Y-%m-%d")
+
+            # Verificar si ya existe asistencia para ese empleado y fecha
+            query_check = """
+                SELECT COUNT(*) AS existe
+                FROM asistencias
+                WHERE numero_nomina = %s AND fecha = %s
+            """
+            resultado = self.db.get_data(query_check, (numero_nomina, fecha_formateada), dictionary=True)
+            if resultado.get("existe", 0) > 0:
+                return {"status": "error", "message": "Ya existe una asistencia registrada para ese empleado en esa fecha"}
+
+            # Insertar la asistencia manual
+            query_insert = """
+                INSERT INTO asistencias (
+                    numero_nomina, fecha, turno, hora_entrada, hora_salida
+                ) VALUES (%s, %s, %s, %s, %s)
+            """
+            self.db.run_query(query_insert, (numero_nomina, fecha_formateada, "Turno General", hora_entrada, hora_salida))
+
+            return {"status": "success", "message": "Asistencia agregada correctamente"}
+        except Exception as e:
+            return {"status": "error", "message": f"Error al agregar asistencia: {e}"}
+
+    def actualizar_horas_manualmente(self, numero_nomina, fecha, hora_entrada, hora_salida):
+        try:
+            query = """
+            UPDATE asistencias
+            SET hora_entrada = %s, hora_salida = %s
+            WHERE numero_nomina = %s AND fecha = %s AND estado = 'incompleto'
+            """
+            self.db.execute_query(query, (hora_entrada, hora_salida, numero_nomina, fecha))
+            return {"status": "success"}
+        except Exception as e:
+            return {"status": "error", "message": str(e)}

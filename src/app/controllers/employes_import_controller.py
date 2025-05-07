@@ -56,41 +56,62 @@ class EmpleadosImportController:
 
     def _procesar_empleados(self, df: pd.DataFrame) -> list:
         try:
-            df = df.iloc[1:].reset_index(drop=True)
-            columnas = ['No', 'NSS', 'Nombre(s)', 'Apellido Paterno', 'Apellido Materno',
-                        'CURP', 'SD 2024', 'SDI 2024', 'SD 2025', 'SDI 2025', 'Puesto', 'RFC', 'Estado']
-            df.columns = columnas
-            df['No'] = pd.to_numeric(df['No'], errors='coerce').fillna(0).astype(int)
-            df['Estado'] = df['Estado'].str.strip().replace({'Activo ': 'Activo', 'Inactivo ': 'Inactivo'})
-            df['nombre_completo'] = df['Nombre(s)'] + ' ' + df['Apellido Paterno'] + ' ' + df['Apellido Materno']
-            df['sueldo_diario'] = df.apply(lambda row: 0 if row['Estado'] == 'Inactivo' else row['SD 2024'], axis=1)
-            df['tipo_trabajador'] = 'no definido'
+            columnas = list(df.columns)
 
-            empleados = []
-            for _, row in df.iterrows():
-                empleados.append({
-                    "numero_nomina": row['No'],
-                    "nombre_completo": row['nombre_completo'],
-                    "estado": row['Estado'],
-                    "sueldo_diario": row['sueldo_diario'],
-                    "tipo_trabajador": row['tipo_trabajador']
-                })
+            if columnas == ["numero_nomina", "nombre_completo", "estado", "tipo_trabajador", "sueldo_diario"]:
+                print("📊 Detectado formato de archivo exportado por el sistema.")
+                empleados = df.to_dict(orient="records")
+            else:
+                print("📊 Detectado formato extendido con información completa.")
+                df = df.iloc[1:].reset_index(drop=True)
+                columnas_esperadas = ['No', 'NSS', 'Nombre(s)', 'Apellido Paterno', 'Apellido Materno',
+                                    'CURP', 'SD 2024', 'SDI 2024', 'SD 2025', 'SDI 2025', 'Puesto', 'RFC', 'Estado']
+                if len(df.columns) != len(columnas_esperadas):
+                    raise ValueError("Las columnas del archivo no coinciden con el formato esperado.")
+
+                df.columns = columnas_esperadas
+                df['No'] = pd.to_numeric(df['No'], errors='coerce').fillna(0).astype(int)
+                df['Estado'] = df['Estado'].str.strip().replace({'Activo ': 'Activo', 'Inactivo ': 'Inactivo'})
+                df['nombre_completo'] = df['Nombre(s)'] + ' ' + df['Apellido Paterno'] + ' ' + df['Apellido Materno']
+                df['sueldo_diario'] = df.apply(lambda row: 0 if row['Estado'] == 'Inactivo' else row['SD 2024'], axis=1)
+                df['tipo_trabajador'] = 'no definido'
+
+                empleados = []
+                for _, row in df.iterrows():
+                    empleados.append({
+                        "numero_nomina": row['No'],
+                        "nombre_completo": row['nombre_completo'],
+                        "estado": row['Estado'],
+                        "sueldo_diario": row['sueldo_diario'],
+                        "tipo_trabajador": row['tipo_trabajador']
+                    })
+
             return empleados
+
         except Exception as e:
             print(f"❌ Error procesando empleados: {e}")
             return []
 
+        
+    def _existe_empleado(self, numero_nomina: int) -> bool:
+        query = "SELECT 1 FROM empleados WHERE numero_nomina = %s LIMIT 1"
+        try:
+            resultado = self.db.get_data(query, (numero_nomina,), dictionary=True)
+            return bool(resultado)
+        except Exception as e:
+            print(f"⚠️ Error verificando existencia del empleado {numero_nomina}: {e}")
+            return False
+
     def _insertar_empleados(self, empleados: list):
         for emp in empleados:
             try:
+                if self._existe_empleado(emp["numero_nomina"]):
+                    print(f"⚠️ Empleado ya existente (omitido): {emp['numero_nomina']}")
+                    continue
+
                 query = """
                     INSERT INTO empleados (numero_nomina, nombre_completo, estado, tipo_trabajador, sueldo_diario)
                     VALUES (%s, %s, %s, %s, %s)
-                    ON DUPLICATE KEY UPDATE
-                        nombre_completo=VALUES(nombre_completo),
-                        estado=VALUES(estado),
-                        tipo_trabajador=VALUES(tipo_trabajador),
-                        sueldo_diario=VALUES(sueldo_diario);
                 """
                 valores = (
                     emp["numero_nomina"],

@@ -38,6 +38,15 @@ class AsistenciasContainer(ft.Container):
         )
 
         self.table = self._build_table()
+        
+        self.snack_bar = ft.SnackBar(
+            content=ft.Text(""),
+            bgcolor=ft.colors.RED_200,
+            behavior=ft.SnackBarBehavior.FLOATING,
+            duration=3000
+        )
+        self.page.snack_bar = self.snack_bar
+
 
         # Botón importar (sin animación)
         self.import_button = ft.GestureDetector(
@@ -67,6 +76,20 @@ class AsistenciasContainer(ft.Container):
             )
         )
 
+        # Botón agregar
+        self.add_button = ft.GestureDetector(
+            on_tap=self._insertar_fila_editable,
+            content=ft.Container(
+                padding=8,
+                border_radius=12,
+                bgcolor=ft.colors.SURFACE_VARIANT,
+                content=ft.Row([
+                    ft.Icon(name=ft.icons.ADD, size=20),
+                    ft.Text("Agregar", size=11, weight="bold")
+                ], alignment=ft.MainAxisAlignment.CENTER, spacing=5)
+            )
+        )
+
         self.content = ft.Column(
             controls=[
                 ft.Text("Registro de Asistencias", size=24, weight="bold"),
@@ -77,7 +100,8 @@ class AsistenciasContainer(ft.Container):
                         spacing=10,
                         controls=[
                             self.import_button,
-                            self.export_button
+                            self.export_button,
+                            self.add_button
                         ]
                     )
                 ),
@@ -90,6 +114,7 @@ class AsistenciasContainer(ft.Container):
                         content=ft.Column(
                             expand=True,
                             alignment=ft.MainAxisAlignment.START,
+                            scroll=ft.ScrollMode.ALWAYS,  # ✅ Scroll vertical aquí
                             controls=[
                                 ft.Container(
                                     expand=True,
@@ -99,8 +124,7 @@ class AsistenciasContainer(ft.Container):
                                                 expand=True,
                                                 content=self.table
                                             )
-                                        ],
-                                        scroll=ft.ScrollMode.ALWAYS
+                                        ]
                                     )
                                 )
                             ]
@@ -111,6 +135,7 @@ class AsistenciasContainer(ft.Container):
             spacing=20,
             expand=True
         )
+
 
         self.depurar_asistencias()
 
@@ -185,7 +210,7 @@ class AsistenciasContainer(ft.Container):
             ),
             ft.DataColumn(ft.Text("Horas Trabajadas")),
             ft.DataColumn(ft.Text("Total Horas")),
-            ft.DataColumn(ft.Text("Eliminar"))
+            ft.DataColumn(ft.Text("Acciones"))
         ]
 
         filas = []
@@ -202,8 +227,16 @@ class AsistenciasContainer(ft.Container):
                 icon_size=20,
                 icon_color=ft.colors.RED,
                 tooltip="Eliminar registro",
-                on_click=lambda e, n=numero, f=fecha: self._confirmar_eliminacion(n, f)
+                on_click=functools.partial(self._confirmar_eliminacion, numero, fecha)
             )
+
+            editar_btn = ft.IconButton(
+                icon=ft.icons.EDIT_NOTE,
+                icon_size=20,
+                icon_color=ft.colors.BLUE,
+                tooltip="Editar asistencia",
+                on_click=functools.partial(self._editar_asistencia_incompleta, numero, fecha)
+            ) if reg.get("estado") == "incompleto" else ft.Container()
 
             fila = ft.DataRow(cells=[
                 ft.DataCell(ft.Text(limpiar("numero_nomina"), style=estilo)),
@@ -219,7 +252,7 @@ class AsistenciasContainer(ft.Container):
                 ft.DataCell(ft.Text(limpiar("estado"), style=estilo)),
                 ft.DataCell(ft.Text(limpiar("tiempo_trabajo"), style=estilo)),
                 ft.DataCell(ft.Text(limpiar("total_horas_trabajadas"), style=estilo)),
-                ft.DataCell(eliminar_btn)
+                ft.DataCell(ft.Row([editar_btn, eliminar_btn], spacing=5))
             ])
             filas.append(fila)
 
@@ -232,10 +265,9 @@ class AsistenciasContainer(ft.Container):
             expand=True,
             columns=columnas,
             rows=filas,
-            column_spacing=20,
+            column_spacing=25,
             horizontal_lines=ft.BorderSide(1),
         )
-
 
     def _confirmar_eliminacion(self, numero_nomina, fecha):
         modal = ModalAlert(
@@ -339,3 +371,109 @@ class AsistenciasContainer(ft.Container):
         tabla = [[registro.get(col) for col in columnas] for registro in datos]
         print("\n📋 Asistencias registradas en la base de datos:")
         print(tabulate(tabla, headers=columnas, tablefmt="grid"))
+        
+    def _insertar_fila_editable(self, e=None):
+        numero_input = ft.TextField(hint_text="ID Empleado", width=100, keyboard_type=ft.KeyboardType.NUMBER)
+        fecha_input = ft.TextField(hint_text="Fecha (YYYY-MM-DD)", width=150)
+        entrada_input = ft.TextField(hint_text="Entrada (HH:MM:SS)", width=120)
+        salida_input = ft.TextField(hint_text="Salida (HH:MM:SS)", width=120)
+
+        def on_guardar(_):
+            try:
+                if not numero_input.value or not fecha_input.value or not entrada_input.value or not salida_input.value:
+                    raise ValueError("Todos los campos son obligatorios")
+
+                resultado = self.asistencia_model.add_manual_assistance(
+                    numero_nomina=int(numero_input.value),
+                    fecha=fecha_input.value.strip(),
+                    hora_entrada=entrada_input.value.strip(),
+                    hora_salida=salida_input.value.strip()
+                )
+
+                if resultado["status"] == "success":
+                    print("✅ Asistencia agregada correctamente.")
+                    self._actualizar_tabla()
+                else:
+                    self.page.snack_bar = ft.SnackBar(content=ft.Text(f"❌ {resultado['message']}"))
+                    self.page.snack_bar.open = True
+                    self.page.update()
+
+            except Exception as ex:
+                print(f"⚠️ Error al agregar asistencia: {ex}")
+                self.page.snack_bar = ft.SnackBar(content=ft.Text(f"⚠️ {ex}"))
+                self.page.snack_bar.open = True
+                self.page.update()
+
+        def on_cancelar(_):
+            self.table.rows.pop()
+            self.page.update()
+
+        nueva_fila = ft.DataRow(cells=[
+            ft.DataCell(numero_input),
+            ft.DataCell(ft.Text("")),
+            ft.DataCell(fecha_input),
+            ft.DataCell(ft.Text("Turno General")),
+            ft.DataCell(ft.Text("-")),
+            ft.DataCell(ft.Text("-")),
+            ft.DataCell(entrada_input),
+            ft.DataCell(salida_input),
+            ft.DataCell(ft.Text("-")),
+            ft.DataCell(ft.Text("-")),
+            ft.DataCell(ft.Text("-")),
+            ft.DataCell(ft.Text("-")),
+            ft.DataCell(ft.Text("-")),
+            ft.DataCell(ft.Row([
+                ft.IconButton(icon=ft.icons.CHECK, icon_color=ft.colors.GREEN_600, on_click=on_guardar),
+                ft.IconButton(icon=ft.icons.CLOSE, icon_color=ft.colors.RED_600, on_click=on_cancelar)
+            ]))
+        ])
+
+        self.table.rows.append(nueva_fila)
+        self.page.update()
+        
+    def _editar_asistencia_incompleta(self, numero_nomina, fecha):
+        entrada_input = ft.TextField(label="Nueva hora de entrada (HH:MM:SS)")
+        salida_input = ft.TextField(label="Nueva hora de salida (HH:MM:SS)")
+
+        def on_guardar(_):
+            try:
+                if not entrada_input.value or not salida_input.value:
+                    raise ValueError("Ambas horas son requeridas")
+
+                resultado = self.asistencia_model.actualizar_horas_manualmente(
+                    numero_nomina=numero_nomina,
+                    fecha=fecha,
+                    hora_entrada=entrada_input.value.strip(),
+                    hora_salida=salida_input.value.strip()
+                )
+
+                if resultado["status"] == "success":
+                    print("✅ Asistencia actualizada correctamente.")
+                    self._actualizar_tabla()
+                else:
+                    print("❌", resultado["message"])
+
+            except Exception as ex:
+                print(f"⚠️ Error al editar asistencia: {ex}")
+            finally:
+                dialog.open = False
+                self.page.update()
+
+        dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Text(f"Editar asistencia {numero_nomina} - {fecha}"),
+            content=ft.Column([
+                entrada_input,
+                salida_input
+            ], tight=True),
+            actions=[
+                ft.TextButton("Cancelar", on_click=lambda _: setattr(dialog, "open", False)),
+                ft.ElevatedButton("Guardar", on_click=on_guardar)
+            ]
+        )
+
+        self.page.dialog = dialog
+        dialog.open = True
+        self.page.update()
+
+

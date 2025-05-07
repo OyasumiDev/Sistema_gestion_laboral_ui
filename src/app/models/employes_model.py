@@ -93,3 +93,22 @@ class EmployesModel:
         except Exception as ex:
             print(f"❌ Error al obtener el empleado: {ex}")
             return {}
+        
+    def delete_by_numero_nomina(self, numero_nomina: int):
+        """
+        Elimina un empleado por su número de nómina.
+        """
+        try:
+            query = f"DELETE FROM {E_EMPLOYE.TABLE.value} WHERE {E_EMPLOYE.NUMERO_NOMINA.value} = %s"
+            self.db.run_query(query, (numero_nomina,))
+            return {"status": "success", "message": "Empleado eliminado correctamente"}
+        except Exception as ex:
+            return {"status": "error", "message": f"Error al eliminar el empleado: {ex}"}
+
+    def get_ultimo_numero_nomina(self) -> int:
+        try:
+            query = f"SELECT MAX({E_EMPLOYE.NUMERO_NOMINA.value}) AS ultimo FROM {E_EMPLOYE.TABLE.value}"
+            result = self.db.get_data(query, dictionary=True)
+            return int(result.get("ultimo", 0)) if result else 0
+        except Exception:
+            return 0

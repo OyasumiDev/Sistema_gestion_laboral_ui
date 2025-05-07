@@ -6,13 +6,13 @@ from app.models.employes_model import EmployesModel
 from app.views.containers.modal_alert import ModalAlert
 from app.core.invokers.file_save_invoker import FileSaveInvoker
 
+
 class EmpleadosContainer(ft.Container):
     def __init__(self):
         super().__init__()
 
         self.page = AppState().page
         self.empleado_model = EmployesModel()
-        self.table = self._build_table()
 
         self.orden_actual = {
             "numero_nomina": None,
@@ -25,6 +25,15 @@ class EmpleadosContainer(ft.Container):
             on_success=self._actualizar_tabla
         )
 
+        self.save_invoker = FileSaveInvoker(
+            page=self.page,
+            file_name="empleados.xlsx",
+            allowed_extensions=["xlsx"],
+            on_save=self._guardar_empleados_en_excel
+        )
+
+        self.table = self._build_table()
+
         self.expand = True
 
         self.content = ft.Column(
@@ -35,13 +44,11 @@ class EmpleadosContainer(ft.Container):
                 ft.Text("Empleados registrados", size=24, weight="bold"),
                 ft.Divider(height=10),
                 ft.Row(
+                    spacing=10,
                     controls=[
-                        self.controller.get_import_button(),
-                        ft.IconButton(
-                            icon=ft.icons.FILE_DOWNLOAD,
-                            tooltip="Exportar empleados a Excel",
-                            on_click=self._exportar_empleados
-                        )
+                        self._build_import_button(),
+                        self._build_export_button(),
+                        self._build_add_button()
                     ]
                 ),
                 ft.Divider(height=10),
@@ -57,7 +64,7 @@ class EmpleadosContainer(ft.Container):
             ]
         )
 
-    def _build_table(self) -> ft.DataTable:
+    def _build_table(self):
         empleados_result = self.empleado_model.get_all()
         empleados = empleados_result.get("data", [])
 
@@ -112,7 +119,100 @@ class EmpleadosContainer(ft.Container):
                 for e in empleados
             ]
         )
+        
+    def _build_import_button(self):
+        return ft.GestureDetector(
+            on_tap=lambda _: self.controller.file_invoker.open(),
+            content=ft.Container(
+                padding=8,
+                border_radius=12,
+                bgcolor=ft.colors.SURFACE_VARIANT,
+                content=ft.Row([
+                    ft.Image(src="assets/buttons/import-button.png", width=20, height=20),
+                    ft.Text("Importar", size=11, weight="bold")
+                ], alignment=ft.MainAxisAlignment.CENTER, spacing=5)
+            )
+        )
 
+    def _build_export_button(self):
+        return ft.GestureDetector(
+            on_tap=lambda _: self.save_invoker.open_save(),
+            content=ft.Container(
+                padding=8,
+                border_radius=12,
+                bgcolor=ft.colors.SURFACE_VARIANT,
+                content=ft.Row([
+                    ft.Image(src="assets/buttons/export-button.png", width=20, height=20),
+                    ft.Text("Exportar", size=11, weight="bold")
+                ], alignment=ft.MainAxisAlignment.CENTER, spacing=5)
+            )
+        )
+
+    def _build_add_button(self):
+        return ft.GestureDetector(
+            on_tap=self._insertar_fila_editable,
+            content=ft.Container(
+                padding=8,
+                border_radius=12,
+                bgcolor=ft.colors.SURFACE_VARIANT,
+                content=ft.Row([
+                    ft.Icon(name=ft.icons.PERSON_ADD_ALT_1_OUTLINED, size=20),
+                    ft.Text("Agregar", size=11, weight="bold")
+                ], alignment=ft.MainAxisAlignment.CENTER, spacing=5)
+            )
+        )
+
+    def _insertar_fila_editable(self, e=None):
+        nombre_input = ft.TextField(hint_text="Nombre completo")
+        estado_dropdown = ft.Dropdown(options=[ft.dropdown.Option("activo"), ft.dropdown.Option("inactivo")])
+        tipo_dropdown = ft.Dropdown(options=[ft.dropdown.Option("taller"), ft.dropdown.Option("externo"), ft.dropdown.Option("no definido")])
+        sueldo_input = ft.TextField(hint_text="Sueldo diario", keyboard_type=ft.KeyboardType.NUMBER)
+
+        nuevo_id = self.empleado_model.get_ultimo_numero_nomina() + 1
+
+        def on_guardar(_):
+            try:
+                if not nombre_input.value or not estado_dropdown.value or not tipo_dropdown.value or not sueldo_input.value:
+                    raise ValueError("Todos los campos son obligatorios")
+
+                sueldo = float(sueldo_input.value)
+
+                resultado = self.empleado_model.add(
+                    numero_nomina=nuevo_id,
+                    nombre_completo=nombre_input.value.strip(),
+                    estado=estado_dropdown.value,
+                    tipo_trabajador=tipo_dropdown.value,
+                    sueldo_diario=sueldo
+                )
+
+                if resultado["status"] == "success":
+                    print(f"✅ Nuevo empleado agregado con ID {nuevo_id}")
+                    self._actualizar_tabla("")
+                else:
+                    print("❌", resultado["message"])
+            except Exception as ex:
+                print(f"⚠️ Error al agregar empleado: {ex}")
+
+        def on_cancelar(_):
+            self.table.rows.pop()
+            self.page.update()
+
+        nueva_fila = ft.DataRow(cells=[
+            ft.DataCell(ft.Text(str(nuevo_id))),
+            ft.DataCell(nombre_input),
+            ft.DataCell(estado_dropdown),
+            ft.DataCell(tipo_dropdown),
+            ft.DataCell(sueldo_input),
+            ft.DataCell(ft.Row([
+                ft.IconButton(icon=ft.icons.CHECK, icon_color=ft.colors.GREEN_600, on_click=on_guardar),
+                ft.IconButton(icon=ft.icons.CLOSE, icon_color=ft.colors.RED_600, on_click=on_cancelar)
+            ]))
+        ])
+
+        self.table.rows.append(nueva_fila)
+        self.page.update()
+
+        
     def _ordenar_por_columna(self, columna: str):
         ascendente = self.orden_actual.get(columna) != "asc"
         self.orden_actual = {k: None for k in self.orden_actual}
@@ -147,7 +247,6 @@ class EmpleadosContainer(ft.Container):
         self.page.update()
 
     def _actualizar_tabla(self, path: str):
-        print(f"📄 Actualizando tabla con datos de: {path}")
         empleados_result = self.empleado_model.get_all()
         empleados = empleados_result.get("data", [])
         self._refrescar_tabla(empleados)
@@ -168,29 +267,107 @@ class EmpleadosContainer(ft.Container):
         )
         alerta.mostrar()
 
-    def _exportar_empleados(self, e):
-        empleados_result = self.empleado_model.get_all()
-        empleados = empleados_result.get("data", [])
+    def _guardar_empleados_en_excel(self, path: str):
+        try:
+            empleados_result = self.empleado_model.get_all()
+            empleados = empleados_result.get("data", [])
 
-        if not empleados:
-            print("⚠️ No hay empleados para exportar.")
-            return
+            if not empleados:
+                print("⚠️ No hay empleados para exportar.")
+                return
 
-        df = pd.DataFrame(empleados)
-        columnas_ordenadas = [
-            "numero_nomina",
-            "nombre_completo",
-            "estado",
-            "tipo_trabajador",
-            "sueldo_diario"
-        ]
-        df = df[columnas_ordenadas]
+            df = pd.DataFrame(empleados)
+            columnas_ordenadas = [
+                "numero_nomina",
+                "nombre_completo",
+                "estado",
+                "tipo_trabajador",
+                "sueldo_diario"
+            ]
+            df = df[columnas_ordenadas]
+            df.to_excel(path, index=False)
 
-        invoker = FileSaveInvoker()
-        ruta_guardado = invoker.save_file("empleados.xlsx", file_type="excel")
+            print(f"📄 Empleados exportados correctamente a: {path}")
+        except Exception as ex:
+            print(f"❌ Error al exportar empleados: {ex}")
 
-        if ruta_guardado:
-            df.to_excel(ruta_guardado, index=False)
-            print(f"📤 Archivo exportado correctamente a: {ruta_guardado}")
-        else:
-            print("❌ Exportación cancelada por el usuario.")
+    def _mostrar_dialogo_agregar(self, e=None):
+        print("🟡 Se abrió el diálogo para agregar empleado")
+
+        nombre_input = ft.TextField(label="Nombre completo", width=400)
+        estado_dropdown = ft.Dropdown(
+            label="Estado",
+            options=[ft.dropdown.Option("activo"), ft.dropdown.Option("inactivo")],
+            width=200
+        )
+        tipo_dropdown = ft.Dropdown(
+            label="Tipo de trabajador",
+            options=[
+                ft.dropdown.Option("taller"),
+                ft.dropdown.Option("externo"),
+                ft.dropdown.Option("no definido")
+            ],
+            width=200
+        )
+        sueldo_input = ft.TextField(label="Sueldo diario", width=200, keyboard_type=ft.KeyboardType.NUMBER)
+
+        def on_agregar(e=None):
+            print("🟢 Botón 'Agregar' presionado")
+            self._agregar_empleado(
+                dialog,
+                nombre_input.value,
+                estado_dropdown.value,
+                tipo_dropdown.value,
+                sueldo_input.value
+            )
+
+        dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Text("Agregar nuevo empleado", weight="bold"),
+            content=ft.Column(controls=[
+                nombre_input,
+                ft.Row([estado_dropdown, tipo_dropdown]),
+                sueldo_input
+            ], tight=True),
+            actions=[
+                ft.TextButton("Cancelar", on_click=lambda _: self._cerrar_dialogo(dialog)),
+                ft.ElevatedButton("Agregar", on_click=on_agregar)
+            ]
+        )
+
+        dialog.open = True
+        self.page.dialog = dialog
+        self.page.update()
+
+    def _cerrar_dialogo(self, dialog):
+        dialog.open = False
+        self.page.update()
+
+    def _agregar_empleado(self, dialog, nombre, estado, tipo, sueldo):
+        try:
+            if not nombre or not estado or not tipo or not sueldo:
+                raise ValueError("Todos los campos son obligatorios")
+
+            sueldo = float(sueldo)
+            ultimo_id = self.empleado_model.get_ultimo_numero_nomina()
+            nuevo_id = ultimo_id + 1
+
+            resultado = self.empleado_model.add(
+                numero_nomina=nuevo_id,
+                nombre_completo=nombre.strip(),
+                estado=estado,
+                tipo_trabajador=tipo,
+                sueldo_diario=sueldo
+            )
+
+            if resultado["status"] == "success":
+                print(f"✅ Nuevo empleado agregado con ID {nuevo_id}")
+                self._actualizar_tabla("")
+            else:
+                print("❌", resultado["message"])
+
+        except Exception as ex:
+            print(f"⚠️ Error al agregar empleado: {ex}")
+        finally:
+            dialog.open = False
+            self.page.update()
