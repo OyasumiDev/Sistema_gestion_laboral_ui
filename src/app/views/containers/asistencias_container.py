@@ -11,6 +11,7 @@ from app.core.invokers.file_save_invoker import FileSaveInvoker
 from app.views.containers.theme_controller import ThemeController
 from tabulate import tabulate
 from app.views.containers.modal_alert import ModalAlert 
+import functools
 
 
 class AsistenciasContainer(ft.Container):
@@ -431,49 +432,51 @@ class AsistenciasContainer(ft.Container):
         self.table.rows.append(nueva_fila)
         self.page.update()
         
-    def _editar_asistencia_incompleta(self, numero_nomina, fecha):
-        entrada_input = ft.TextField(label="Nueva hora de entrada (HH:MM:SS)")
-        salida_input = ft.TextField(label="Nueva hora de salida (HH:MM:SS)")
+    def _editar_asistencia_incompleta(self, numero_nomina, fecha, e=None):
+            print(f"🛠️ Editando asistencia - ID: {numero_nomina}, Fecha: {fecha}")
+            entrada_input = ft.TextField(label="Nueva hora de entrada (HH:MM:SS)")
+            salida_input = ft.TextField(label="Nueva hora de salida (HH:MM:SS)")
 
-        def on_guardar(_):
-            try:
-                if not entrada_input.value or not salida_input.value:
-                    raise ValueError("Ambas horas son requeridas")
+            def on_guardar(_):
+                try:
+                    if not entrada_input.value or not salida_input.value:
+                        raise ValueError("Ambas horas son requeridas")
 
-                resultado = self.asistencia_model.actualizar_horas_manualmente(
-                    numero_nomina=numero_nomina,
-                    fecha=fecha,
-                    hora_entrada=entrada_input.value.strip(),
-                    hora_salida=salida_input.value.strip()
-                )
+                    print(f"➡️ Nuevos valores: Entrada={entrada_input.value}, Salida={salida_input.value}")
 
-                if resultado["status"] == "success":
-                    print("✅ Asistencia actualizada correctamente.")
-                    self._actualizar_tabla()
-                else:
-                    print("❌", resultado["message"])
+                    resultado = self.asistencia_model.actualizar_horas_manualmente(
+                        numero_nomina=numero_nomina,
+                        fecha=fecha,
+                        hora_entrada=entrada_input.value.strip(),
+                        hora_salida=salida_input.value.strip()
+                    )
 
-            except Exception as ex:
-                print(f"⚠️ Error al editar asistencia: {ex}")
-            finally:
-                dialog.open = False
-                self.page.update()
+                    if resultado["status"] == "success":
+                        print("✅ Asistencia actualizada correctamente.")
+                        self._actualizar_tabla()
+                    else:
+                        print("❌", resultado["message"])
 
-        dialog = ft.AlertDialog(
-            modal=True,
-            title=ft.Text(f"Editar asistencia {numero_nomina} - {fecha}"),
-            content=ft.Column([
-                entrada_input,
-                salida_input
-            ], tight=True),
-            actions=[
-                ft.TextButton("Cancelar", on_click=lambda _: setattr(dialog, "open", False)),
-                ft.ElevatedButton("Guardar", on_click=on_guardar)
-            ]
-        )
+                except Exception as ex:
+                    print(f"⚠️ Error al editar asistencia: {ex}")
+                finally:
+                    dialog.open = False
+                    self.page.update()
 
-        self.page.dialog = dialog
-        dialog.open = True
-        self.page.update()
+            dialog = ft.AlertDialog(
+                modal=True,
+                title=ft.Text(f"Editar asistencia {numero_nomina} - {fecha}"),
+                content=ft.Column([
+                    entrada_input,
+                    salida_input
+                ], tight=True),
+                actions=[
+                    ft.TextButton("Cancelar", on_click=lambda _: setattr(dialog, "open", False)),
+                    ft.ElevatedButton("Guardar", on_click=on_guardar)
+                ]
+            )
 
+            self.page.dialog = dialog
+            dialog.open = True
+            self.page.update()
 
