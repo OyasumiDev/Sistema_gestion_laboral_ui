@@ -422,31 +422,38 @@ class AsistenciasContainer(ft.Container):
         self.table.rows.append(nueva_fila)
         self.page.update()
             
-    def _actualizar_tabla(self, _=None):
-            nueva_tabla = self._build_table()
-            self.table.columns = nueva_tabla.columns
-            self.table.rows = nueva_tabla.rows
-            self.table.update()
-            self.page.update()
-
-    def _actualizar_tabla(self, _=None):
-        nueva_tabla = self._build_table()
-        self.table.columns = nueva_tabla.columns
-        self.table.rows = nueva_tabla.rows
-        self.table.update()
-        self.page.update()
-
     def _editar_asistencia_incompleta(self, numero_nomina, fecha, e=None):
         print(f"🛠️ Editando asistencia - ID: {numero_nomina}, Fecha: {fecha}")
-        entrada_input = ft.TextField(label="Nueva hora de entrada (HH:MM:SS)", value="06:00:00")
-        salida_input = ft.TextField(label="Nueva hora de salida (HH:MM:SS)", value="16:00:00")
+
+        # Obtener datos actuales del registro
+        registro = next((r for r in self.asistencia_model.get_all()["data"]
+                        if r["numero_nomina"] == numero_nomina and r["fecha"] == fecha), None)
+        
+        if not registro:
+            print("❌ Registro no encontrado.")
+            return
+
+        entrada_input = ft.TextField(
+            value=registro.get("hora_entrada", ""),
+            width=250,
+            height=40,
+            border=ft.InputBorder.OUTLINE,
+            content_padding=ft.padding.symmetric(horizontal=12, vertical=10)
+        )
+
+        salida_input = ft.TextField(
+            value=registro.get("hora_salida", ""),
+            width=250,
+            height=40,
+            border=ft.InputBorder.OUTLINE,
+            content_padding=ft.padding.symmetric(horizontal=12, vertical=10)
+        )
+
 
         def on_guardar(_):
             try:
                 if not entrada_input.value or not salida_input.value:
                     raise ValueError("Ambas horas son requeridas")
-
-                print(f"➡️ Nuevos valores: Entrada={entrada_input.value}, Salida={salida_input.value}")
 
                 resultado = self.asistencia_model.actualizar_horas_manualmente(
                     numero_nomina=numero_nomina,
@@ -464,22 +471,47 @@ class AsistenciasContainer(ft.Container):
             except Exception as ex:
                 print(f"⚠️ Error al editar asistencia: {ex}")
             finally:
-                dialog.open = False
                 self.page.update()
 
-        dialog = ft.AlertDialog(
-            modal=True,
-            title=ft.Text(f"Editar asistencia {numero_nomina} - {fecha}"),
-            content=ft.Column([
-                entrada_input,
-                salida_input
-            ], tight=True),
-            actions=[
-                ft.TextButton("Cancelar", on_click=lambda _: setattr(dialog, "open", False)),
-                ft.ElevatedButton("Guardar", on_click=on_guardar)
-            ]
-        )
+        def on_cancelar(_):
+            print("❌ Edición cancelada.")
+            self._actualizar_tabla()
 
-        self.page.dialog = dialog
-        dialog.open = True
+        # Construir fila editable
+        nueva_fila = ft.DataRow(cells=[
+            ft.DataCell(ft.Text(str(registro.get("numero_nomina")))),
+            ft.DataCell(ft.Text(registro.get("nombre", "-"))),
+            ft.DataCell(ft.Text(registro.get("fecha", "-"))),
+            ft.DataCell(ft.Text(registro.get("turno", "-"))),
+            ft.DataCell(ft.Text(registro.get("entrada_turno", "-"))),
+            ft.DataCell(ft.Text(registro.get("salida_turno", "-"))),
+            ft.DataCell(entrada_input),
+            ft.DataCell(salida_input),
+            ft.DataCell(ft.Text(registro.get("tiempo_descanso", "-"))),
+            ft.DataCell(ft.Text(registro.get("retardo", "-"))),
+            ft.DataCell(ft.Text(registro.get("estado", "-"))),
+            ft.DataCell(ft.Text(registro.get("tiempo_trabajo", "-"))),
+            ft.DataCell(ft.Text(registro.get("total_horas_trabajadas", "-"))),
+            ft.DataCell(ft.Row([
+                ft.IconButton(icon=ft.icons.CHECK, icon_color=ft.colors.GREEN_600, on_click=on_guardar),
+                ft.IconButton(icon=ft.icons.CLOSE, icon_color=ft.colors.RED_600, on_click=on_cancelar)
+            ]))
+        ])
+
+        # Reemplazar fila en la tabla
+        for i, row in enumerate(self.table.rows):
+            if isinstance(row.cells[0].content, ft.Text) and \
+            row.cells[0].content.value == str(numero_nomina) and \
+            row.cells[2].content.value == fecha:
+                self.table.rows[i] = nueva_fila
+                break
+
+        self.table.update()
         self.page.update()
+
+
+    def _actualizar_tabla(self, _=None):
+        nueva_tabla = self._build_table()
+        self.table.columns = nueva_tabla.columns
+        self.table.rows = nueva_tabla.rows
+        self.table.update()
