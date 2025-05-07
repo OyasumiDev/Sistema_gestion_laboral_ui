@@ -39,7 +39,7 @@ class AsistenciasContainer(ft.Container):
         )
 
         self.table = self._build_table()
-        
+
         self.snack_bar = ft.SnackBar(
             content=ft.Text(""),
             bgcolor=ft.colors.RED_200,
@@ -48,8 +48,6 @@ class AsistenciasContainer(ft.Container):
         )
         self.page.snack_bar = self.snack_bar
 
-
-        # Botón importar (sin animación)
         self.import_button = ft.GestureDetector(
             on_tap=lambda _: self.import_controller.file_invoker.open(),
             content=ft.Container(
@@ -63,7 +61,6 @@ class AsistenciasContainer(ft.Container):
             )
         )
 
-        # Botón exportar (sin animación)
         self.export_button = ft.GestureDetector(
             on_tap=lambda _: self.save_invoker.open_save(),
             content=ft.Container(
@@ -77,7 +74,6 @@ class AsistenciasContainer(ft.Container):
             )
         )
 
-        # Botón agregar
         self.add_button = ft.GestureDetector(
             on_tap=self._insertar_fila_editable,
             content=ft.Container(
@@ -115,7 +111,7 @@ class AsistenciasContainer(ft.Container):
                         content=ft.Column(
                             expand=True,
                             alignment=ft.MainAxisAlignment.START,
-                            scroll=ft.ScrollMode.ALWAYS,  # ✅ Scroll vertical aquí
+                            scroll=ft.ScrollMode.ALWAYS,
                             controls=[
                                 ft.Container(
                                     expand=True,
@@ -137,8 +133,8 @@ class AsistenciasContainer(ft.Container):
             expand=True
         )
 
-
         self.depurar_asistencias()
+        self.page.update()
 
 
 
@@ -291,12 +287,6 @@ class AsistenciasContainer(ft.Container):
             print("❌ Error al eliminar:", e)
         self._actualizar_tabla()
 
-    def _actualizar_tabla(self, _=None):
-        nuevas_filas = self._build_table().rows
-        self.table.rows.clear()
-        self.table.rows.extend(nuevas_filas)
-        self.table.update()
-        self.page.update()
 
     def _exportar_asistencias(self, path: str):
         try:
@@ -431,52 +421,65 @@ class AsistenciasContainer(ft.Container):
 
         self.table.rows.append(nueva_fila)
         self.page.update()
-        
-    def _editar_asistencia_incompleta(self, numero_nomina, fecha, e=None):
-            print(f"🛠️ Editando asistencia - ID: {numero_nomina}, Fecha: {fecha}")
-            entrada_input = ft.TextField(label="Nueva hora de entrada (HH:MM:SS)")
-            salida_input = ft.TextField(label="Nueva hora de salida (HH:MM:SS)")
-
-            def on_guardar(_):
-                try:
-                    if not entrada_input.value or not salida_input.value:
-                        raise ValueError("Ambas horas son requeridas")
-
-                    print(f"➡️ Nuevos valores: Entrada={entrada_input.value}, Salida={salida_input.value}")
-
-                    resultado = self.asistencia_model.actualizar_horas_manualmente(
-                        numero_nomina=numero_nomina,
-                        fecha=fecha,
-                        hora_entrada=entrada_input.value.strip(),
-                        hora_salida=salida_input.value.strip()
-                    )
-
-                    if resultado["status"] == "success":
-                        print("✅ Asistencia actualizada correctamente.")
-                        self._actualizar_tabla()
-                    else:
-                        print("❌", resultado["message"])
-
-                except Exception as ex:
-                    print(f"⚠️ Error al editar asistencia: {ex}")
-                finally:
-                    dialog.open = False
-                    self.page.update()
-
-            dialog = ft.AlertDialog(
-                modal=True,
-                title=ft.Text(f"Editar asistencia {numero_nomina} - {fecha}"),
-                content=ft.Column([
-                    entrada_input,
-                    salida_input
-                ], tight=True),
-                actions=[
-                    ft.TextButton("Cancelar", on_click=lambda _: setattr(dialog, "open", False)),
-                    ft.ElevatedButton("Guardar", on_click=on_guardar)
-                ]
-            )
-
-            self.page.dialog = dialog
-            dialog.open = True
+            
+    def _actualizar_tabla(self, _=None):
+            nueva_tabla = self._build_table()
+            self.table.columns = nueva_tabla.columns
+            self.table.rows = nueva_tabla.rows
+            self.table.update()
             self.page.update()
 
+    def _actualizar_tabla(self, _=None):
+        nueva_tabla = self._build_table()
+        self.table.columns = nueva_tabla.columns
+        self.table.rows = nueva_tabla.rows
+        self.table.update()
+        self.page.update()
+
+    def _editar_asistencia_incompleta(self, numero_nomina, fecha, e=None):
+        print(f"🛠️ Editando asistencia - ID: {numero_nomina}, Fecha: {fecha}")
+        entrada_input = ft.TextField(label="Nueva hora de entrada (HH:MM:SS)", value="06:00:00")
+        salida_input = ft.TextField(label="Nueva hora de salida (HH:MM:SS)", value="16:00:00")
+
+        def on_guardar(_):
+            try:
+                if not entrada_input.value or not salida_input.value:
+                    raise ValueError("Ambas horas son requeridas")
+
+                print(f"➡️ Nuevos valores: Entrada={entrada_input.value}, Salida={salida_input.value}")
+
+                resultado = self.asistencia_model.actualizar_horas_manualmente(
+                    numero_nomina=numero_nomina,
+                    fecha=fecha,
+                    hora_entrada=entrada_input.value.strip(),
+                    hora_salida=salida_input.value.strip()
+                )
+
+                if resultado["status"] == "success":
+                    print("✅ Asistencia actualizada correctamente.")
+                    self._actualizar_tabla()
+                else:
+                    print("❌", resultado["message"])
+
+            except Exception as ex:
+                print(f"⚠️ Error al editar asistencia: {ex}")
+            finally:
+                dialog.open = False
+                self.page.update()
+
+        dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Text(f"Editar asistencia {numero_nomina} - {fecha}"),
+            content=ft.Column([
+                entrada_input,
+                salida_input
+            ], tight=True),
+            actions=[
+                ft.TextButton("Cancelar", on_click=lambda _: setattr(dialog, "open", False)),
+                ft.ElevatedButton("Guardar", on_click=on_guardar)
+            ]
+        )
+
+        self.page.dialog = dialog
+        dialog.open = True
+        self.page.update()
