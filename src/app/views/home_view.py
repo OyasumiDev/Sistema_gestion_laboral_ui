@@ -42,7 +42,6 @@ class HomeView(ft.View):
 
         section_map = {
             "overview": "Bienvenido al Home",
-            "usuario": "Sección: Usuario",
             "empleados": "Sección: Empleados",
             "asistencias": "Sección: Asistencias",
             "pagos": "Sección: Pagos",
@@ -79,7 +78,7 @@ class HomeView(ft.View):
                 ]
             )
 
-        elif section == "usuarios":
+        elif section == "usuarios" and self.is_root:
             self.content_area.content = ft.Column(
                 expand=True,
                 controls=[
@@ -87,8 +86,6 @@ class HomeView(ft.View):
                     UsuariosContainer()
                 ]
             )
-
-
 
         # Vistas por defecto o no implementadas
         else:

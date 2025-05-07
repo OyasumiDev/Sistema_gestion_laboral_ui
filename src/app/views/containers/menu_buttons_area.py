@@ -12,7 +12,6 @@ class MenuButtonsArea(ft.Column):
     ):
         # Definición de ítems de menú
         menu_items = [
-            ("user-manager-area-button.png",    "Usuario",    "/home/usuario"),
             ("employees-button.png",            "Empleados",  "/home/empleados"),
             ("attendance-area-button.png",      "Asistencias","/home/asistencias"),
             ("payment-area-button.png",         "Pagos",      "/home/pagos"),

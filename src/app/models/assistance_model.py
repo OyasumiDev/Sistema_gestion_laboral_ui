@@ -259,3 +259,19 @@ class AssistanceModel:
         except Exception as ex:
             print(f"Error al obtener asistencia: {ex}")
             return None
+        
+
+
+    def delete_by_numero_nomina_and_fecha(self, numero_nomina: int, fecha: str) -> dict:
+        try:
+            # Convertir a formato compatible con MySQL (YYYY-MM-DD)
+            fecha_sql = datetime.strptime(fecha, "%d/%m/%Y").strftime("%Y-%m-%d")
+
+            query = """
+                DELETE FROM asistencias
+                WHERE numero_nomina = %s AND fecha = %s
+            """
+            self.db.run_query(query, (numero_nomina, fecha_sql))
+            return {"status": "success"}
+        except Exception as e:
+            return {"status": "error", "message": str(e)}

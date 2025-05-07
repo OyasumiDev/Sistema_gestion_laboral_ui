@@ -114,12 +114,29 @@ class AsistenciasImportController:
                 print(f"⚠️ Error procesando fila {index + 1}: {e}")
 
         return asistencias
+    
+    def _asistencia_existente(self, numero_nomina: int, fecha: str) -> bool:
+        try:
+            query = """
+                SELECT COUNT(*) AS c FROM asistencias
+                WHERE numero_nomina = %s AND fecha = %s
+            """
+            result = self.db.get_data(query, (numero_nomina, fecha), dictionary=True)
+            return result.get("c", 0) > 0
+        except Exception as e:
+            print(f"❌ Error al verificar existencia de asistencia: {e}")
+            return True  # Por seguridad, evitar insert si hay error
+
 
     def _insertar_asistencias(self, asistencias: list):
         for asistencia in asistencias:
             try:
                 if not self._existe_empleado(asistencia["numero_nomina"]):
                     print(f"⚠️ Empleado {asistencia['numero_nomina']} no existe. Saltando...")
+                    continue
+
+                if self._asistencia_existente(asistencia["numero_nomina"], asistencia["fecha"]):
+                    print(f"⛔ Ya existe asistencia para {asistencia['numero_nomina']} el {asistencia['fecha']}. Saltando...")
                     continue
 
                 query = """
@@ -149,6 +166,7 @@ class AsistenciasImportController:
                 print(f"✅ Asistencia registrada: {valores}")
             except Exception as e:
                 print(f"❌ Error insertando asistencia para {asistencia.get('numero_nomina')} el {asistencia.get('fecha')}: {e}")
+
 
     def _existe_empleado(self, numero_nomina: int) -> bool:
         try:
