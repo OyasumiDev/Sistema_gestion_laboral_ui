@@ -1,6 +1,7 @@
 import flet as ft
 from flet import FilePicker, FilePickerResultEvent
-from app.core.interfaces.database_mysql import DatabaseMysql  # ← Aquí llamamos tu módulo
+from app.core.interfaces.database_mysql import DatabaseMysql
+
 
 class FileSaveInvoker:
     def __init__(
@@ -25,20 +26,22 @@ class FileSaveInvoker:
         self.allowed_extensions = allowed_extensions or []
         self.import_extensions = import_extensions or []
 
-        self.db = DatabaseMysql()  # Instancia para exportar base
+        self.db = DatabaseMysql()
 
         self.save_picker = FilePicker(on_result=self._on_save_result)
         self.import_picker = FilePicker(on_result=self._on_import_result)
 
-        if self.save_picker not in self.page.overlay:
-            self.page.overlay.append(self.save_picker)
-        if self.import_picker not in self.page.overlay:
-            self.page.overlay.append(self.import_picker)
+        self._safe_append_overlay(self.save_picker)
+        self._safe_append_overlay(self.import_picker)
+
+    def _safe_append_overlay(self, picker: FilePicker):
+        if self.page and hasattr(self.page, "overlay"):
+            if picker not in self.page.overlay:
+                self.page.overlay.append(picker)
 
     def open_save(self) -> None:
-        if self.save_picker not in self.page.overlay:
-            self.page.overlay.append(self.save_picker)
-            self.page.update()
+        self._safe_append_overlay(self.save_picker)
+        self.page.update()
         self.save_picker.save_file(
             dialog_title=self.save_dialog_title,
             file_name=self.file_name,
@@ -47,9 +50,8 @@ class FileSaveInvoker:
         )
 
     def open_import(self) -> None:
-        if self.import_picker not in self.page.overlay:
-            self.page.overlay.append(self.import_picker)
-            self.page.update()
+        self._safe_append_overlay(self.import_picker)
+        self.page.update()
         self.import_picker.pick_files(
             dialog_title=self.import_dialog_title,
             allow_multiple=False,
@@ -58,7 +60,6 @@ class FileSaveInvoker:
 
     def _on_save_result(self, e: FilePickerResultEvent) -> None:
         if e.path:
-            # Usar método del módulo MySQL para exportar
             success = self.db.exportar_base_datos(e.path)
             msg = (
                 "✅ Base de datos exportada exitosamente."
@@ -69,7 +70,6 @@ class FileSaveInvoker:
             self.page.snack_bar.open = True
             self.page.update()
 
-            # Callback opcional
             if self.on_save:
                 self.on_save(e.path)
 
@@ -82,14 +82,13 @@ class FileSaveInvoker:
                 if success else
                 f"❌ No se pudo importar la base de datos desde: {path}"
             )
-            print(msg)  # Imprime en terminal
+            print(msg)
             self.page.snack_bar = ft.SnackBar(ft.Text(msg))
             self.page.snack_bar.open = True
             self.page.update()
 
             if self.on_import:
                 self.on_import(path)
-
 
     def get_import_button(self, text="Importar archivo", icon_path="assets/buttons/import_database-button.png") -> ft.ElevatedButton:
         return ft.ElevatedButton(

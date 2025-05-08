@@ -1,6 +1,7 @@
 from app.core.enums.e_assistance_model import E_ASSISTANCE
 from app.core.interfaces.database_mysql import DatabaseMysql
-from datetime import datetime
+from datetime import datetime, timedelta
+
 
 class AssistanceModel:
     def __init__(self):
@@ -287,10 +288,23 @@ class AssistanceModel:
             
     def add_manual_assistance(self, numero_nomina: int, fecha: str, hora_entrada: str, hora_salida: str):
         try:
-            # Convertir la fecha de "24/04/2025" → "2025-04-24"
+            # Validación
+            if not all(isinstance(h, str) for h in [hora_entrada, hora_salida]):
+                raise ValueError("Las horas deben ser cadenas en formato HH:MM:SS")
+
+            try:
+                h_entrada = datetime.strptime(hora_entrada, "%H:%M:%S")
+                h_salida = datetime.strptime(hora_salida, "%H:%M:%S")
+            except ValueError:
+                raise ValueError("Formato de hora inválido. Usa HH:MM:SS")
+
+            if h_salida <= h_entrada:
+                raise ValueError("La hora de salida debe ser mayor que la de entrada")
+
+            # Formatear fecha
             fecha_formateada = datetime.strptime(fecha, "%d/%m/%Y").strftime("%Y-%m-%d")
 
-            # Verificar si ya existe asistencia para ese empleado y fecha
+            # Verificar duplicado
             query_check = """
                 SELECT COUNT(*) AS existe
                 FROM asistencias
@@ -300,26 +314,54 @@ class AssistanceModel:
             if resultado.get("existe", 0) > 0:
                 return {"status": "error", "message": "Ya existe una asistencia registrada para ese empleado en esa fecha"}
 
-            # Insertar la asistencia manual
+            # Insertar
             query_insert = """
                 INSERT INTO asistencias (
                     numero_nomina, fecha, turno, hora_entrada, hora_salida
                 ) VALUES (%s, %s, %s, %s, %s)
             """
             self.db.run_query(query_insert, (numero_nomina, fecha_formateada, "Turno General", hora_entrada, hora_salida))
-
             return {"status": "success", "message": "Asistencia agregada correctamente"}
+
         except Exception as e:
-            return {"status": "error", "message": f"Error al agregar asistencia: {e}"}
+            return {"status": "error", "message": str(e)}
 
     def actualizar_horas_manualmente(self, numero_nomina, fecha, hora_entrada, hora_salida):
         try:
+            # Validar tipos
+            if not all(isinstance(h, str) for h in [hora_entrada, hora_salida]):
+                raise ValueError("Las horas deben ser texto en formato HH:MM:SS")
+
+            h_ent = datetime.strptime(hora_entrada, "%H:%M:%S")
+            h_sal = datetime.strptime(hora_salida, "%H:%M:%S")
+            if h_sal <= h_ent:
+                raise ValueError("La hora de salida debe ser mayor que la de entrada")
+
+            query = """
+                UPDATE asistencias
+                SET hora_entrada = %s, hora_salida = %s
+                WHERE numero_nomina = %s AND fecha = %s AND estado = 'incompleto'
+            """
+            self.db.run_query(query, (hora_entrada, hora_salida, numero_nomina, fecha))
+            return {"status": "success"}
+
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
+        
+    def actualizar_estado_asistencia(self, numero_nomina: int, fecha: str) -> dict:
+        try:
             query = """
             UPDATE asistencias
-            SET hora_entrada = %s, hora_salida = %s
-            WHERE numero_nomina = %s AND fecha = %s AND estado = 'incompleto'
+            SET estado = CASE
+                WHEN hora_entrada IS NOT NULL AND hora_entrada != '00:00:00'
+                AND hora_salida IS NOT NULL AND hora_salida != '00:00:00'
+                THEN 'completo'
+                ELSE 'incompleto'
+            END
+            WHERE numero_nomina = %s AND fecha = %s
             """
-            self.db.execute_query(query, (hora_entrada, hora_salida, numero_nomina, fecha))
+            self.db.run_query(query, (numero_nomina, fecha))
             return {"status": "success"}
         except Exception as e:
             return {"status": "error", "message": str(e)}
+

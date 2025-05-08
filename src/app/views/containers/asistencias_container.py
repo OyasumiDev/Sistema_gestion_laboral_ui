@@ -1,5 +1,3 @@
-# app/views/containers/asistencias_container.py
-
 import flet as ft
 import pandas as pd
 from datetime import datetime
@@ -12,6 +10,8 @@ from app.views.containers.theme_controller import ThemeController
 from tabulate import tabulate
 from app.views.containers.modal_alert import ModalAlert 
 import functools
+from app.views.containers.window_snackbar import WindowSnackbar
+from datetime import datetime, timedelta
 
 
 class AsistenciasContainer(ft.Container):
@@ -23,6 +23,7 @@ class AsistenciasContainer(ft.Container):
         self.theme_ctrl = ThemeController()
 
         self.sort_key = "numero_nomina"
+        self._tabla_vacia = True
         self.sort_asc = True
 
         self.import_controller = AsistenciasImportController(
@@ -40,13 +41,7 @@ class AsistenciasContainer(ft.Container):
 
         self.table = self._build_table()
 
-        self.snack_bar = ft.SnackBar(
-            content=ft.Text(""),
-            bgcolor=ft.colors.RED_200,
-            behavior=ft.SnackBarBehavior.FLOATING,
-            duration=3000
-        )
-        self.page.snack_bar = self.snack_bar
+        self.window_snackbar = WindowSnackbar(self.page)
 
         self.import_button = ft.GestureDetector(
             on_tap=lambda _: self.import_controller.file_invoker.open(),
@@ -86,7 +81,9 @@ class AsistenciasContainer(ft.Container):
                 ], alignment=ft.MainAxisAlignment.CENTER, spacing=5)
             )
         )
-
+        
+        self.table = self._build_table()
+        
         self.content = ft.Column(
             controls=[
                 ft.Text("Registro de Asistencias", size=24, weight="bold"),
@@ -104,10 +101,11 @@ class AsistenciasContainer(ft.Container):
                 ),
                 ft.Container(
                     expand=True,
-                    alignment=ft.alignment.center,
+                    padding=ft.padding.only(top=40 if self._tabla_vacia else 120),
+                    alignment=ft.alignment.top_center,
                     content=ft.Container(
                         expand=True,
-                        alignment=ft.alignment.center,
+                        alignment=ft.alignment.top_center,
                         content=ft.Column(
                             expand=True,
                             alignment=ft.MainAxisAlignment.START,
@@ -119,7 +117,7 @@ class AsistenciasContainer(ft.Container):
                                         controls=[
                                             ft.Container(
                                                 expand=True,
-                                                content=self.table
+                                                content=self.table  # Tabla ya insertada
                                             )
                                         ]
                                     )
@@ -135,7 +133,6 @@ class AsistenciasContainer(ft.Container):
 
         self.depurar_asistencias()
         self.page.update()
-
 
 
     def _get_sort_icon(self, key):
@@ -266,7 +263,8 @@ class AsistenciasContainer(ft.Container):
             horizontal_lines=ft.BorderSide(1),
         )
 
-    def _confirmar_eliminacion(self, numero_nomina, fecha):
+    def _confirmar_eliminacion(self, numero_nomina, fecha, e=None):
+
         modal = ModalAlert(
             title_text="Confirmar eliminación",
             message=f"¿Deseas eliminar la asistencia del empleado {numero_nomina} en {fecha}?",
@@ -362,40 +360,64 @@ class AsistenciasContainer(ft.Container):
         tabla = [[registro.get(col) for col in columnas] for registro in datos]
         print("\n📋 Asistencias registradas en la base de datos:")
         print(tabulate(tabla, headers=columnas, tablefmt="grid"))
-        
+            
     def _insertar_fila_editable(self, e=None):
         numero_input = ft.TextField(hint_text="ID Empleado", width=100, keyboard_type=ft.KeyboardType.NUMBER)
-        fecha_input = ft.TextField(hint_text="Fecha (YYYY-MM-DD)", width=150)
+        fecha_input = ft.TextField(hint_text="Fecha (DD/MM/YYYY)", width=150)
         entrada_input = ft.TextField(hint_text="Entrada (HH:MM:SS)", width=120)
         salida_input = ft.TextField(hint_text="Salida (HH:MM:SS)", width=120)
 
+        snackbar = self.window_snackbar
+
         def on_guardar(_):
+            print("➡️ Guardar asistencia manual presionado")
             try:
-                if not numero_input.value or not fecha_input.value or not entrada_input.value or not salida_input.value:
+                numero = numero_input.value.strip()
+                fecha = fecha_input.value.strip()
+                entrada = entrada_input.value.strip()
+                salida = salida_input.value.strip()
+
+                if not numero or not fecha or not entrada or not salida:
                     raise ValueError("Todos los campos son obligatorios")
 
+                try:
+                    datetime.strptime(fecha, "%d/%m/%Y")
+                except ValueError:
+                    raise ValueError("Formato de fecha inválido. Usa DD/MM/YYYY")
+
+                try:
+                    hora_entrada = datetime.strptime(entrada, "%H:%M:%S")
+                    hora_salida = datetime.strptime(salida, "%H:%M:%S")
+                except ValueError:
+                    raise ValueError("Formato de hora inválido. Usa HH:MM:SS")
+
+                if hora_salida <= hora_entrada:
+                    raise ValueError("La hora de salida debe ser mayor que la de entrada")
+
+                fecha_sql = datetime.strptime(fecha, "%d/%m/%Y").strftime("%Y-%m-%d")
+
                 resultado = self.asistencia_model.add_manual_assistance(
-                    numero_nomina=int(numero_input.value),
-                    fecha=fecha_input.value.strip(),
-                    hora_entrada=entrada_input.value.strip(),
-                    hora_salida=salida_input.value.strip()
+                    numero_nomina=int(numero),
+                    fecha=fecha_sql,
+                    hora_entrada=hora_entrada.strftime("%H:%M:%S"),
+                    hora_salida=hora_salida.strftime("%H:%M:%S")
                 )
 
+                print("🗃️ Resultado:", resultado)
                 if resultado["status"] == "success":
-                    print("✅ Asistencia agregada correctamente.")
+                    snackbar.show_success("✅ Asistencia agregada correctamente.")
                     self._actualizar_tabla()
                 else:
-                    self.page.snack_bar = ft.SnackBar(content=ft.Text(f"❌ {resultado['message']}"))
-                    self.page.snack_bar.open = True
-                    self.page.update()
+                    snackbar.show_error(f"❌ {resultado['message']}")
 
             except Exception as ex:
-                print(f"⚠️ Error al agregar asistencia: {ex}")
-                self.page.snack_bar = ft.SnackBar(content=ft.Text(f"⚠️ {ex}"))
-                self.page.snack_bar.open = True
-                self.page.update()
+                print(f"❌ Excepción: {ex}")
+                snackbar.show_error(f"⚠️ {ex}")
+
+            self.page.update()
 
         def on_cancelar(_):
+            print("❌ Cancelación de fila manual")
             self.table.rows.pop()
             self.page.update()
 
@@ -421,55 +443,84 @@ class AsistenciasContainer(ft.Container):
 
         self.table.rows.append(nueva_fila)
         self.page.update()
-            
+
     def _editar_asistencia_incompleta(self, numero_nomina, fecha, e=None):
         print(f"🛠️ Editando asistencia - ID: {numero_nomina}, Fecha: {fecha}")
 
-        # Obtener datos actuales del registro
         registro = next((r for r in self.asistencia_model.get_all()["data"]
                         if r["numero_nomina"] == numero_nomina and r["fecha"] == fecha), None)
-        
+
         if not registro:
             print("❌ Registro no encontrado.")
             return
 
+        def convertir_a_str(valor):
+            if isinstance(valor, timedelta):
+                total_seconds = int(valor.total_seconds())
+                horas = total_seconds // 3600
+                minutos = (total_seconds % 3600) // 60
+                segundos = total_seconds % 60
+                return f"{horas:02}:{minutos:02}:{segundos:02}"
+            return str(valor) if valor is not None else ""
+
         entrada_input = ft.TextField(
-            value=registro.get("hora_entrada", ""),
-            width=250,
-            height=40,
-            border=ft.InputBorder.OUTLINE,
-            content_padding=ft.padding.symmetric(horizontal=12, vertical=10)
+            value=convertir_a_str(registro.get("hora_entrada")),
+            width=250
         )
 
         salida_input = ft.TextField(
-            value=registro.get("hora_salida", ""),
-            width=250,
-            height=40,
-            border=ft.InputBorder.OUTLINE,
-            content_padding=ft.padding.symmetric(horizontal=12, vertical=10)
+            value=convertir_a_str(registro.get("hora_salida")),
+            width=250
         )
 
+        snackbar = self.window_snackbar
 
         def on_guardar(_):
+            print("➡️ Guardar edición presionado")
             try:
-                if not entrada_input.value or not salida_input.value:
+                entrada_val = entrada_input.value
+                salida_val = salida_input.value
+
+                if not isinstance(entrada_val, str) or not isinstance(salida_val, str):
+                    raise ValueError("Las horas deben ser texto en formato HH:MM:SS")
+
+                entrada = entrada_val.strip()
+                salida = salida_val.strip()
+
+                if not entrada or not salida:
                     raise ValueError("Ambas horas son requeridas")
+
+                hora_ent = datetime.strptime(entrada, "%H:%M:%S")
+                hora_sal = datetime.strptime(salida, "%H:%M:%S")
+
+                if hora_sal <= hora_ent:
+                    raise ValueError("La hora de salida debe ser mayor que la de entrada")
+
+                fecha_sql = datetime.strptime(fecha, "%d/%m/%Y").strftime("%Y-%m-%d")
 
                 resultado = self.asistencia_model.actualizar_horas_manualmente(
                     numero_nomina=numero_nomina,
-                    fecha=fecha,
-                    hora_entrada=entrada_input.value.strip(),
-                    hora_salida=salida_input.value.strip()
+                    fecha=fecha_sql,
+                    hora_entrada=hora_ent.strftime("%H:%M:%S"),
+                    hora_salida=hora_sal.strftime("%H:%M:%S")
                 )
 
+                print("🗃️ Resultado:", resultado)
                 if resultado["status"] == "success":
-                    print("✅ Asistencia actualizada correctamente.")
+                    self.asistencia_model.actualizar_estado_asistencia(
+                        numero_nomina=numero_nomina,
+                        fecha=fecha_sql
+                    )
+                    snackbar.show_success("✅ Asistencia actualizada correctamente.")
                     self._actualizar_tabla()
+
                 else:
-                    print("❌", resultado["message"])
+                    snackbar.show_error(f"❌ {resultado['message']}")
 
             except Exception as ex:
-                print(f"⚠️ Error al editar asistencia: {ex}")
+                print(f"❌ Excepción capturada: {ex}")
+                snackbar.show_error(f"⚠️ {ex}")
+
             finally:
                 self.page.update()
 
@@ -477,7 +528,6 @@ class AsistenciasContainer(ft.Container):
             print("❌ Edición cancelada.")
             self._actualizar_tabla()
 
-        # Construir fila editable
         nueva_fila = ft.DataRow(cells=[
             ft.DataCell(ft.Text(str(registro.get("numero_nomina")))),
             ft.DataCell(ft.Text(registro.get("nombre", "-"))),
@@ -498,7 +548,6 @@ class AsistenciasContainer(ft.Container):
             ]))
         ])
 
-        # Reemplazar fila en la tabla
         for i, row in enumerate(self.table.rows):
             if isinstance(row.cells[0].content, ft.Text) and \
             row.cells[0].content.value == str(numero_nomina) and \
@@ -509,6 +558,41 @@ class AsistenciasContainer(ft.Container):
         self.table.update()
         self.page.update()
 
+
+
+        def on_cancelar(_):
+            print("❌ Edición cancelada.")
+            self._actualizar_tabla()
+
+        nueva_fila = ft.DataRow(cells=[
+            ft.DataCell(ft.Text(str(registro.get("numero_nomina")))),
+            ft.DataCell(ft.Text(registro.get("nombre", "-"))),
+            ft.DataCell(ft.Text(registro.get("fecha", "-"))),
+            ft.DataCell(ft.Text(registro.get("turno", "-"))),
+            ft.DataCell(ft.Text(registro.get("entrada_turno", "-"))),
+            ft.DataCell(ft.Text(registro.get("salida_turno", "-"))),
+            ft.DataCell(entrada_input),
+            ft.DataCell(salida_input),
+            ft.DataCell(ft.Text(registro.get("tiempo_descanso", "-"))),
+            ft.DataCell(ft.Text(registro.get("retardo", "-"))),
+            ft.DataCell(ft.Text(registro.get("estado", "-"))),
+            ft.DataCell(ft.Text(registro.get("tiempo_trabajo", "-"))),
+            ft.DataCell(ft.Text(registro.get("total_horas_trabajadas", "-"))),
+            ft.DataCell(ft.Row([
+                ft.IconButton(icon=ft.icons.CHECK, icon_color=ft.colors.GREEN_600, on_click=on_guardar),
+                ft.IconButton(icon=ft.icons.CLOSE, icon_color=ft.colors.RED_600, on_click=on_cancelar)
+            ]))
+        ])
+
+        for i, row in enumerate(self.table.rows):
+            if isinstance(row.cells[0].content, ft.Text) and \
+            row.cells[0].content.value == str(numero_nomina) and \
+            row.cells[2].content.value == fecha:
+                self.table.rows[i] = nueva_fila
+                break
+
+        self.table.update()
+        self.page.update()
 
     def _actualizar_tabla(self, _=None):
         nueva_tabla = self._build_table()

@@ -37,11 +37,16 @@ class UserModel:
         try:
             query = f"SELECT 1 FROM {E_USER.TABLE.value} WHERE {E_USER.USERNAME.value} = %s"
             result = self.db.get_data_list(query, ('root',), dictionary=True)
+
             if not result:
-                print("🔐 Usuario root no encontrado. Creando por defecto...")
-                self.add('root', 'root', 'root')  # ⚠️ Hashear en producción
+                print("🔐 Usuario root no encontrado. Creando usuarios por defecto...")
+                self.add('root', 'root', 'root')        # ⚠️ Hashear en producción
+                self.add('usuario', 'usuario', 'usuario')  # ⚠️ Hashear en producción también
+            else:
+                print("✅ Usuario root ya existe. No se crean usuarios por defecto.")
         except Exception as ex:
             print(f"❌ Error verificando root: {ex}")
+
 
     def add(self, username: str, password_hash: str, role: str = 'user') -> dict:
         try:
