@@ -30,7 +30,7 @@ class EmployesModel:
                     {E_EMPLOYE.NOMBRE_COMPLETO.value} VARCHAR(255) NOT NULL,
                     {E_EMPLOYE.ESTADO.value} ENUM('activo','inactivo') NOT NULL,
                     {E_EMPLOYE.TIPO_TRABAJADOR.value} ENUM('taller','externo','no definido') NOT NULL,
-                    {E_EMPLOYE.SUELDO_DIARIO.value} DECIMAL(8,2) NOT NULL
+                    {E_EMPLOYE.SUELDO_POR_HORA.value} DECIMAL(8,2) NOT NULL
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
                 """
                 self.db.run_query(create_query)
@@ -42,7 +42,7 @@ class EmployesModel:
             print(f"❌ Error al verificar/crear la tabla {E_EMPLOYE.TABLE.value}: {ex}")
             return False
 
-    def add(self, numero_nomina, nombre_completo, estado, tipo_trabajador, sueldo_diario):
+    def add(self, numero_nomina, nombre_completo, estado, tipo_trabajador, sueldo_por_hora):
         """
         Agrega un nuevo empleado.
         """
@@ -53,7 +53,7 @@ class EmployesModel:
                 {E_EMPLOYE.NOMBRE_COMPLETO.value},
                 {E_EMPLOYE.ESTADO.value},
                 {E_EMPLOYE.TIPO_TRABAJADOR.value},
-                {E_EMPLOYE.SUELDO_DIARIO.value}
+                {E_EMPLOYE.SUELDO_POR_HORA.value}
             ) VALUES (%s, %s, %s, %s, %s)
             """
             self.db.run_query(query, (
@@ -61,7 +61,7 @@ class EmployesModel:
                 nombre_completo,
                 estado,
                 tipo_trabajador,
-                sueldo_diario
+                sueldo_por_hora
             ))
             return {"status": "success", "message": "Empleado registrado correctamente"}
         except Exception as ex:
@@ -77,8 +77,6 @@ class EmployesModel:
             return {"status": "success", "data": result}
         except Exception as ex:
             return {"status": "error", "message": f"Error al obtener empleados: {ex}"}
-
-
 
     def get_by_numero_nomina(self, numero_nomina: int):
         """
@@ -112,3 +110,26 @@ class EmployesModel:
             return int(result.get("ultimo", 0)) if result else 0
         except Exception:
             return 0
+
+    def update(self, numero_nomina, estado, tipo_trabajador, sueldo_por_hora):
+        """
+        Actualiza un empleado por su número de nómina.
+        """
+        try:
+            query = f"""
+                UPDATE {E_EMPLOYE.TABLE.value}
+                SET
+                    {E_EMPLOYE.ESTADO.value} = %s,
+                    {E_EMPLOYE.TIPO_TRABAJADOR.value} = %s,
+                    {E_EMPLOYE.SUELDO_POR_HORA.value} = %s
+                WHERE {E_EMPLOYE.NUMERO_NOMINA.value} = %s
+            """
+            self.db.run_query(query, (
+                estado,
+                tipo_trabajador,
+                sueldo_por_hora,
+                numero_nomina
+            ))
+            return { "status": "success", "message": "Empleado actualizado correctamente" }
+        except Exception as ex:
+            return { "status": "error", "message": f"Error al actualizar el empleado: {ex}" }

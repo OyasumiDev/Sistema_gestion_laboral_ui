@@ -35,17 +35,19 @@ class UserModel:
 
     def check_root_user(self):
         try:
-            query = f"SELECT 1 FROM {E_USER.TABLE.value} WHERE {E_USER.USERNAME.value} = %s"
-            result = self.db.get_data_list(query, ('root',), dictionary=True)
+            # Verifica si hay al menos un usuario registrado
+            query = f"SELECT COUNT(*) AS total FROM {E_USER.TABLE.value}"
+            result = self.db.get_data(query, (), dictionary=True)
 
-            if not result:
-                print("🔐 Usuario root no encontrado. Creando usuarios por defecto...")
-                self.add('root', 'root', 'root')        # ⚠️ Hashear en producción
-                self.add('usuario', 'usuario', 'usuario')  # ⚠️ Hashear en producción también
+            if result.get("total", 0) == 0:
+                print("🔐 No hay usuarios registrados. Creando usuario 'root' y 'usuario' por defecto...")
+
+                self.add(username='root', password_hash='root', role='root')       # ⚠️ Hashear en producción
+                self.add(username='usuario', password_hash='usuario', role='user') # ⚠️ Hashear en producción
             else:
-                print("✅ Usuario root ya existe. No se crean usuarios por defecto.")
+                print("✅ Ya existen usuarios. No se crean usuarios por defecto.")
         except Exception as ex:
-            print(f"❌ Error verificando root: {ex}")
+            print(f"❌ Error verificando usuarios por defecto: {ex}")
 
 
     def add(self, username: str, password_hash: str, role: str = 'user') -> dict:

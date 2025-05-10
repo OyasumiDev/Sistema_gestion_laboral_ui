@@ -7,4 +7,4 @@ class E_EMPLOYE(Enum):
     NOMBRE_COMPLETO = 'nombre_completo'
     ESTADO = 'estado'
     TIPO_TRABAJADOR = 'tipo_trabajador'
-    SUELDO_DIARIO = 'sueldo_diario'
+    SUELDO_POR_HORA = 'sueldo_por_hora'

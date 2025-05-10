@@ -58,9 +58,12 @@ class EmpleadosImportController:
         try:
             columnas = list(df.columns)
 
+            # Caso: archivo exportado por el sistema
             if columnas == ["numero_nomina", "nombre_completo", "estado", "tipo_trabajador", "sueldo_diario"]:
-                print("📊 Detectado formato de archivo exportado por el sistema.")
+                print("📊 Detectado archivo con columna 'sueldo_diario'. Se convertirá a 'sueldo_por_hora'.")
+                df = df.rename(columns={"sueldo_diario": "sueldo_por_hora"})
                 empleados = df.to_dict(orient="records")
+
             else:
                 print("📊 Detectado formato extendido con información completa.")
                 df = df.iloc[1:].reset_index(drop=True)
@@ -73,7 +76,7 @@ class EmpleadosImportController:
                 df['No'] = pd.to_numeric(df['No'], errors='coerce').fillna(0).astype(int)
                 df['Estado'] = df['Estado'].str.strip().replace({'Activo ': 'Activo', 'Inactivo ': 'Inactivo'})
                 df['nombre_completo'] = df['Nombre(s)'] + ' ' + df['Apellido Paterno'] + ' ' + df['Apellido Materno']
-                df['sueldo_diario'] = df.apply(lambda row: 0 if row['Estado'] == 'Inactivo' else row['SD 2024'], axis=1)
+                df['sueldo_por_hora'] = df.apply(lambda row: 0 if row['Estado'] == 'Inactivo' else row['SD 2024'], axis=1)
                 df['tipo_trabajador'] = 'no definido'
 
                 empleados = []
@@ -82,7 +85,7 @@ class EmpleadosImportController:
                         "numero_nomina": row['No'],
                         "nombre_completo": row['nombre_completo'],
                         "estado": row['Estado'],
-                        "sueldo_diario": row['sueldo_diario'],
+                        "sueldo_por_hora": row['sueldo_por_hora'],
                         "tipo_trabajador": row['tipo_trabajador']
                     })
 
@@ -91,6 +94,51 @@ class EmpleadosImportController:
         except Exception as e:
             print(f"❌ Error procesando empleados: {e}")
             return []
+
+
+        except Exception as e:
+            print(f"❌ Error procesando empleados: {e}")
+            return []
+
+    def _insertar_empleados(self, empleados: list):
+        for emp in empleados:
+            try:
+                numero = emp.get("numero_nomina")
+
+                # Validar número de nómina
+                if not numero or not isinstance(numero, int):
+                    print(f"⚠️ Número de nómina inválido (omitido): {numero}")
+                    continue
+
+                # Verificar si ya existe
+                if self._existe_empleado(numero):
+                    print(f"⚠️ Empleado con número de nómina {numero} ya existe. No se reemplaza ni duplica.")
+                    continue
+
+                # Validar campos o usar valores por defecto
+                nombre = emp.get("nombre_completo", f"Empleado {numero}").strip()
+                estado = emp.get("estado", "inactivo").strip().lower()
+                tipo = emp.get("tipo_trabajador", "no definido").strip().lower()
+                sueldo = emp.get("sueldo_por_hora", 0.00)
+
+                # Normalización de estado y tipo
+                if estado not in ("activo", "inactivo"):
+                    estado = "inactivo"
+                if tipo not in ("taller", "externo", "no definido"):
+                    tipo = "no definido"
+
+                # Inserción
+                query = """
+                    INSERT INTO empleados (numero_nomina, nombre_completo, estado, tipo_trabajador, sueldo_por_hora)
+                    VALUES (%s, %s, %s, %s, %s)
+                """
+                valores = (numero, nombre, estado, tipo, sueldo)
+                self.db.run_query(query, valores)
+                print(f"✅ Empleado registrado: {valores}")
+
+            except Exception as e:
+                print(f"❌ Error insertando empleado {emp.get('numero_nomina')}: {e}")
+
 
         
     def _existe_empleado(self, numero_nomina: int) -> bool:
@@ -101,26 +149,3 @@ class EmpleadosImportController:
         except Exception as e:
             print(f"⚠️ Error verificando existencia del empleado {numero_nomina}: {e}")
             return False
-
-    def _insertar_empleados(self, empleados: list):
-        for emp in empleados:
-            try:
-                if self._existe_empleado(emp["numero_nomina"]):
-                    print(f"⚠️ Empleado ya existente (omitido): {emp['numero_nomina']}")
-                    continue
-
-                query = """
-                    INSERT INTO empleados (numero_nomina, nombre_completo, estado, tipo_trabajador, sueldo_diario)
-                    VALUES (%s, %s, %s, %s, %s)
-                """
-                valores = (
-                    emp["numero_nomina"],
-                    emp["nombre_completo"],
-                    emp["estado"],
-                    emp["tipo_trabajador"],
-                    emp["sueldo_diario"]
-                )
-                self.db.run_query(query, valores)
-                print(f"✅ Empleado registrado: {valores}")
-            except Exception as e:
-                print(f"❌ Error insertando empleado {emp.get('numero_nomina')}: {e}")

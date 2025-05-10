@@ -1,4 +1,3 @@
-# Constante de la tabla pago
 from enum import Enum
 
 class E_PAYMENT(Enum):
@@ -10,4 +9,3 @@ class E_PAYMENT(Enum):
     SALDO = 'saldo'
     PAGO_DEPOSITO = 'pago_deposito'
     PAGO_EFECTIVO = 'pago_efectivo'
-    RETENCIONES_IMSS = 'retenciones_imss'

@@ -1,4 +1,5 @@
 import flet as ft
+from app.views.containers.pagos_container import PagosContainer
 
 class PagosView(ft.View):
     """Vista de Pagos"""
@@ -6,6 +7,6 @@ class PagosView(ft.View):
         super().__init__(
             route="/home/pagos",
             controls=[
-                ft.Text("Vista de Pagos", size=20)
+                PagosContainer()
             ]
         )

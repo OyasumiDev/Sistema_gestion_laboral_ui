@@ -13,11 +13,12 @@ class EmpleadosContainer(ft.Container):
 
         self.page = AppState().page
         self.empleado_model = EmployesModel()
+        self.fila_editando = None
 
         self.orden_actual = {
             "numero_nomina": None,
             "estado": None,
-            "sueldo_diario": None
+            "sueldo_por_hora": None
         }
 
         self.controller = EmpleadosImportController(
@@ -32,17 +33,24 @@ class EmpleadosContainer(ft.Container):
             on_save=self._guardar_empleados_en_excel
         )
 
-        self.table = self._build_table()
-
+        self.table = None
         self.expand = True
+
+        self.table_container = ft.Container(
+            expand=True,
+            alignment=ft.alignment.top_center,
+            content=ft.Row(
+                controls=[],
+                expand=True,
+                alignment=ft.MainAxisAlignment.CENTER
+            )
+        )
 
         self.content = ft.Column(
             expand=True,
             alignment=ft.MainAxisAlignment.START,
             scroll="auto",
             controls=[
-                ft.Text("Empleados registrados", size=24, weight="bold"),
-                ft.Divider(height=10),
                 ft.Row(
                     spacing=10,
                     controls=[
@@ -52,74 +60,164 @@ class EmpleadosContainer(ft.Container):
                     ]
                 ),
                 ft.Divider(height=10),
-                ft.Container(
-                    expand=True,
-                    alignment=ft.alignment.top_center,
-                    content=ft.Row(
-                        controls=[self.table],
-                        expand=True,
-                        alignment=ft.MainAxisAlignment.CENTER
-                    )
-                )
+                self.table_container
             ]
         )
 
-    def _build_table(self):
+        self._actualizar_tabla("")
+
+    def _icono_orden(self, columna):
+        if self.orden_actual.get(columna) == "asc":
+            return "▲"
+        elif self.orden_actual.get(columna) == "desc":
+            return "▼"
+        else:
+            return "⇅"
+
+    def _ordenar_por_columna(self, columna: str):
+        ascendente = self.orden_actual.get(columna) != "asc"
+        self.orden_actual = {k: None for k in self.orden_actual}
+        self.orden_actual[columna] = "asc" if ascendente else "desc"
+
         empleados_result = self.empleado_model.get_all()
         empleados = empleados_result.get("data", [])
 
-        icono_orden = lambda col: (
-            ft.icons.ARROW_DROP_UP if self.orden_actual.get(col) == "asc"
-            else ft.icons.ARROW_DROP_DOWN if self.orden_actual.get(col) == "desc"
-            else ft.icons.UNFOLD_MORE
-        )
+        if columna in ("numero_nomina", "sueldo_por_hora"):
+            empleados.sort(key=lambda x: float(x[columna]), reverse=not ascendente)
+        else:
+            empleados.sort(key=lambda x: x[columna], reverse=not ascendente)
+
+        self._refrescar_tabla(empleados)
+
+    def _refrescar_tabla(self, empleados: list):
+        self.table = self._build_table(empleados)
+        self.table_container.content.controls.clear()
+        self.table_container.content.controls.append(self.table)
+        self.page.update()
+
+    def _actualizar_tabla(self, path: str = "", fila_en_edicion=None):
+        empleados_result = self.empleado_model.get_all()
+        empleados = empleados_result.get("data", [])
+        self.fila_editando = fila_en_edicion
+        self._refrescar_tabla(empleados)
+
+
+    def _build_table(self, empleados):
+        rows = []
+        for e in empleados:
+            numero = e["numero_nomina"]
+            en_edicion = self.fila_editando == numero
+
+            estado_cell = (
+                ft.Dropdown(value=e["estado"], options=[
+                    ft.dropdown.Option("activo"),
+                    ft.dropdown.Option("inactivo")
+                ]) if en_edicion else ft.Text(e["estado"])
+            )
+
+            tipo_cell = (
+                ft.Dropdown(value=e["tipo_trabajador"], options=[
+                    ft.dropdown.Option("taller"),
+                    ft.dropdown.Option("externo"),
+                    ft.dropdown.Option("no definido")
+                ]) if en_edicion else ft.Text(e["tipo_trabajador"])
+            )
+
+            sueldo_cell = (
+                ft.TextField(value=str(e["sueldo_por_hora"]), keyboard_type=ft.KeyboardType.NUMBER)
+                if en_edicion else ft.Text(str(e["sueldo_por_hora"]))
+            )
+
+            def guardar_cambios(ev, id=numero, estado_cell=estado_cell, tipo_cell=tipo_cell, sueldo_cell=sueldo_cell):
+                def confirmar_guardado():
+                    try:
+                        sueldo = float(sueldo_cell.value)
+                        if sueldo < 0:
+                            sueldo_cell.border_color = ft.colors.RED_500
+                            self.page.update()
+                            return
+                        sueldo_cell.border_color = None
+                    except:
+                        sueldo_cell.border_color = ft.colors.RED_500
+                        self.page.update()
+                        return
+
+                    resultado = self.empleado_model.update(
+                        id,
+                        estado=estado_cell.value,
+                        tipo_trabajador=tipo_cell.value,
+                        sueldo_por_hora=sueldo
+                    )
+                    if resultado["status"] == "success":
+                        print("✅ Cambios guardados")
+                        self._actualizar_tabla()
+                    else:
+                        print("❌", resultado["message"])
+
+                self.fila_editando = None
+                ModalAlert(
+                    title_text="¿Guardar cambios?",
+                    message=f"¿Deseas aplicar los cambios al empleado {id}?",
+                    on_confirm=confirmar_guardado
+                ).mostrar()
+
+            def cancelar_cambios(ev):
+                print(f"❌ Cancelada la edición de {numero}")
+                self.fila_editando = None
+                self._actualizar_tabla()
+
+            def activar_edicion(ev, id=numero):
+                print(f"✏️ Editando fila {id}")
+                self._actualizar_tabla(fila_en_edicion=id)
+
+            def confirmar_eliminar(ev, id=numero):
+                def on_confirm():
+                    resultado = self.empleado_model.delete_by_numero_nomina(id)
+                    if resultado["status"] == "success":
+                        print("🗑️ Empleado eliminado correctamente")
+                        self._actualizar_tabla("")
+                    else:
+                        print("❌ Error al eliminar:", resultado["message"])
+
+                ModalAlert(
+                    title_text="¿Eliminar empleado?",
+                    message=f"Esta acción no se puede deshacer. ID: {id}",
+                    on_confirm=on_confirm
+                ).mostrar()
+
+            if en_edicion:
+                acciones = ft.Row([
+                    ft.IconButton(icon=ft.icons.CHECK, icon_color=ft.colors.GREEN_600, tooltip="Guardar", on_click=guardar_cambios),
+                    ft.IconButton(icon=ft.icons.CLOSE, icon_color=ft.colors.RED_600, tooltip="Cancelar", on_click=cancelar_cambios)
+                ])
+            else:
+                acciones = ft.Row([
+                    ft.IconButton(icon=ft.icons.EDIT, tooltip="Editar", on_click=activar_edicion),
+                    ft.IconButton(icon=ft.icons.DELETE_OUTLINE, tooltip="Eliminar", icon_color=ft.colors.RED_600, on_click=confirmar_eliminar)
+                ])
+
+            rows.append(ft.DataRow(cells=[
+                ft.DataCell(ft.Text(str(numero))),
+                ft.DataCell(ft.Text(e["nombre_completo"])),
+                ft.DataCell(estado_cell),
+                ft.DataCell(tipo_cell),
+                ft.DataCell(sueldo_cell),
+                ft.DataCell(acciones)
+            ]))
 
         return ft.DataTable(
             expand=True,
             columns=[
-                ft.DataColumn(
-                    ft.TextButton(
-                        text="Nómina",
-                        icon=icono_orden("numero_nomina"),
-                        on_click=lambda _: self._ordenar_por_columna("numero_nomina")
-                    )
-                ),
+                ft.DataColumn(ft.Text(f"Nómina {self._icono_orden('numero_nomina')}"), on_sort=lambda _: self._ordenar_por_columna("numero_nomina")),
                 ft.DataColumn(ft.Text("Nombre")),
-                ft.DataColumn(
-                    ft.TextButton(
-                        text="Estado",
-                        icon=icono_orden("estado"),
-                        on_click=lambda _: self._ordenar_por_columna("estado")
-                    )
-                ),
+                ft.DataColumn(ft.Text(f"Estado {self._icono_orden('estado')}"), on_sort=lambda _: self._ordenar_por_columna("estado")),
                 ft.DataColumn(ft.Text("Tipo Trabajador")),
-                ft.DataColumn(
-                    ft.TextButton(
-                        text="Sueldo Diario",
-                        icon=icono_orden("sueldo_diario"),
-                        on_click=lambda _: self._ordenar_por_columna("sueldo_diario")
-                    )
-                ),
-                ft.DataColumn(ft.Text("Eliminar"))
+                ft.DataColumn(ft.Text(f"Sueldo por Hora {self._icono_orden('sueldo_por_hora')}"), on_sort=lambda _: self._ordenar_por_columna("sueldo_por_hora")),
+                ft.DataColumn(ft.Text("Eliminar-Editar"))
             ],
-            rows=[
-                ft.DataRow(cells=[
-                    ft.DataCell(ft.Text(str(e["numero_nomina"]))),
-                    ft.DataCell(ft.Text(e["nombre_completo"])),
-                    ft.DataCell(ft.Text(e["estado"])),
-                    ft.DataCell(ft.Text(e["tipo_trabajador"])),
-                    ft.DataCell(ft.Text(str(e["sueldo_diario"]))),
-                    ft.DataCell(ft.IconButton(
-                        icon=ft.icons.DELETE_OUTLINE,
-                        tooltip="Eliminar empleado",
-                        icon_color=ft.colors.RED_600,
-                        on_click=lambda _, id=e["numero_nomina"]: self._confirmar_eliminacion_empleado(id)
-                    ))
-                ])
-                for e in empleados
-            ]
+            rows=rows
         )
-        
+
     def _build_import_button(self):
         return ft.GestureDetector(
             on_tap=lambda _: self.controller.file_invoker.open(),
@@ -182,7 +280,7 @@ class EmpleadosContainer(ft.Container):
                     nombre_completo=nombre_input.value.strip(),
                     estado=estado_dropdown.value,
                     tipo_trabajador=tipo_dropdown.value,
-                    sueldo_diario=sueldo
+                    sueldo_por_hora=sueldo
                 )
 
                 if resultado["status"] == "success":
@@ -212,61 +310,6 @@ class EmpleadosContainer(ft.Container):
         self.table.rows.append(nueva_fila)
         self.page.update()
 
-        
-    def _ordenar_por_columna(self, columna: str):
-        ascendente = self.orden_actual.get(columna) != "asc"
-        self.orden_actual = {k: None for k in self.orden_actual}
-        self.orden_actual[columna] = "asc" if ascendente else "desc"
-
-        empleados_result = self.empleado_model.get_all()
-        empleados = empleados_result.get("data", [])
-
-        if columna in ("numero_nomina", "sueldo_diario"):
-            empleados.sort(key=lambda x: float(x[columna]), reverse=not ascendente)
-        else:
-            empleados.sort(key=lambda x: x[columna], reverse=not ascendente)
-
-        self._refrescar_tabla(empleados)
-
-    def _refrescar_tabla(self, empleados: list):
-        self.table.rows.clear()
-        for e in empleados:
-            self.table.rows.append(ft.DataRow(cells=[
-                ft.DataCell(ft.Text(str(e["numero_nomina"]))),
-                ft.DataCell(ft.Text(e["nombre_completo"])),
-                ft.DataCell(ft.Text(e["estado"])),
-                ft.DataCell(ft.Text(e["tipo_trabajador"])),
-                ft.DataCell(ft.Text(str(e["sueldo_diario"]))),
-                ft.DataCell(ft.IconButton(
-                    icon=ft.icons.DELETE_OUTLINE,
-                    tooltip="Eliminar empleado",
-                    icon_color=ft.colors.RED_600,
-                    on_click=lambda _, id=e["numero_nomina"]: self._confirmar_eliminacion_empleado(id)
-                ))
-            ]))
-        self.page.update()
-
-    def _actualizar_tabla(self, path: str):
-        empleados_result = self.empleado_model.get_all()
-        empleados = empleados_result.get("data", [])
-        self._refrescar_tabla(empleados)
-
-    def _confirmar_eliminacion_empleado(self, numero_nomina: int):
-        def on_confirm():
-            resultado = self.empleado_model.delete_by_numero_nomina(numero_nomina)
-            if resultado["status"] == "success":
-                print("🗑️ Empleado eliminado correctamente")
-                self._actualizar_tabla("")
-            else:
-                print("❌ Error al eliminar:", resultado["message"])
-
-        alerta = ModalAlert(
-            title_text="Confirmar eliminación",
-            message=f"¿Estás seguro de que deseas eliminar al empleado {numero_nomina}?",
-            on_confirm=on_confirm
-        )
-        alerta.mostrar()
-
     def _guardar_empleados_en_excel(self, path: str):
         try:
             empleados_result = self.empleado_model.get_all()
@@ -282,7 +325,7 @@ class EmpleadosContainer(ft.Container):
                 "nombre_completo",
                 "estado",
                 "tipo_trabajador",
-                "sueldo_diario"
+                "sueldo_por_hora"
             ]
             df = df[columnas_ordenadas]
             df.to_excel(path, index=False)
@@ -290,84 +333,3 @@ class EmpleadosContainer(ft.Container):
             print(f"📄 Empleados exportados correctamente a: {path}")
         except Exception as ex:
             print(f"❌ Error al exportar empleados: {ex}")
-
-    def _mostrar_dialogo_agregar(self, e=None):
-        print("🟡 Se abrió el diálogo para agregar empleado")
-
-        nombre_input = ft.TextField(label="Nombre completo", width=400)
-        estado_dropdown = ft.Dropdown(
-            label="Estado",
-            options=[ft.dropdown.Option("activo"), ft.dropdown.Option("inactivo")],
-            width=200
-        )
-        tipo_dropdown = ft.Dropdown(
-            label="Tipo de trabajador",
-            options=[
-                ft.dropdown.Option("taller"),
-                ft.dropdown.Option("externo"),
-                ft.dropdown.Option("no definido")
-            ],
-            width=200
-        )
-        sueldo_input = ft.TextField(label="Sueldo diario", width=200, keyboard_type=ft.KeyboardType.NUMBER)
-
-        def on_agregar(e=None):
-            print("🟢 Botón 'Agregar' presionado")
-            self._agregar_empleado(
-                dialog,
-                nombre_input.value,
-                estado_dropdown.value,
-                tipo_dropdown.value,
-                sueldo_input.value
-            )
-
-        dialog = ft.AlertDialog(
-            modal=True,
-            title=ft.Text("Agregar nuevo empleado", weight="bold"),
-            content=ft.Column(controls=[
-                nombre_input,
-                ft.Row([estado_dropdown, tipo_dropdown]),
-                sueldo_input
-            ], tight=True),
-            actions=[
-                ft.TextButton("Cancelar", on_click=lambda _: self._cerrar_dialogo(dialog)),
-                ft.ElevatedButton("Agregar", on_click=on_agregar)
-            ]
-        )
-
-        dialog.open = True
-        self.page.dialog = dialog
-        self.page.update()
-
-    def _cerrar_dialogo(self, dialog):
-        dialog.open = False
-        self.page.update()
-
-    def _agregar_empleado(self, dialog, nombre, estado, tipo, sueldo):
-        try:
-            if not nombre or not estado or not tipo or not sueldo:
-                raise ValueError("Todos los campos son obligatorios")
-
-            sueldo = float(sueldo)
-            ultimo_id = self.empleado_model.get_ultimo_numero_nomina()
-            nuevo_id = ultimo_id + 1
-
-            resultado = self.empleado_model.add(
-                numero_nomina=nuevo_id,
-                nombre_completo=nombre.strip(),
-                estado=estado,
-                tipo_trabajador=tipo,
-                sueldo_diario=sueldo
-            )
-
-            if resultado["status"] == "success":
-                print(f"✅ Nuevo empleado agregado con ID {nuevo_id}")
-                self._actualizar_tabla("")
-            else:
-                print("❌", resultado["message"])
-
-        except Exception as ex:
-            print(f"⚠️ Error al agregar empleado: {ex}")
-        finally:
-            dialog.open = False
-            self.page.update()

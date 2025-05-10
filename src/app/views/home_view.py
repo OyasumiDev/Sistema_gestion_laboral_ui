@@ -7,6 +7,7 @@ from app.views.containers.theme_controller import ThemeController
 from app.views.containers.asistencias_container import AsistenciasContainer
 from app.views.empleados_view import EmpleadosView
 from app.views.containers.usuarios_container import UsuariosContainer
+from app.views.containers.pagos_container import PagosContainer
 
 
 class HomeView(ft.View):
@@ -75,6 +76,15 @@ class HomeView(ft.View):
                 controls=[
                     ft.Text("Área actual: Empleados", size=20, weight="bold", color=fg_color),
                     EmpleadosContainer()
+                ]
+            )
+            
+        elif section == "pagos":
+            self.content_area.content = ft.Column(
+                expand=True,
+                controls=[
+                    ft.Text("Área actual: Pagos", size=20, weight="bold", color=fg_color),
+                    PagosContainer()
                 ]
             )
 
