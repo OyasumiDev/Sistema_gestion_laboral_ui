@@ -364,4 +364,21 @@ class AssistanceModel:
             return {"status": "success"}
         except Exception as e:
             return {"status": "error", "message": str(e)}
+        
+
+    def actualizar_asistencia_completa(self, numero_nomina, fecha, hora_entrada, hora_salida, estado):
+        try:
+            query = """
+                UPDATE asistencias
+                SET hora_entrada = %s,
+                    hora_salida = %s,
+                    estado = %s
+                WHERE numero_nomina = %s AND fecha = %s
+            """
+            params = (hora_entrada, hora_salida, estado, numero_nomina, fecha)
+            self.db.run_query(query, params)
+            return {"status": "success", "message": "Asistencia actualizada"}
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
+
 

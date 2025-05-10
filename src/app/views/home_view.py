@@ -64,7 +64,7 @@ class HomeView(ft.View):
             self.content_area.content = ft.Column(
                 expand=True,
                 controls=[
-                    ft.Text("Área actual: Asistencias", size=20, weight="bold", color=fg_color),
+                    ft.Text("AREA DE ASISTENCIAS", size=20, weight="bold", color=fg_color),
                     AsistenciasContainer()
                 ]
             )
@@ -74,7 +74,7 @@ class HomeView(ft.View):
             self.content_area.content = ft.Column(
                 expand=True,
                 controls=[
-                    ft.Text("Área actual: Empleados", size=20, weight="bold", color=fg_color),
+                    ft.Text("AREA DE EMPLEADOS", size=20, weight="bold", color=fg_color),
                     EmpleadosContainer()
                 ]
             )
@@ -83,7 +83,7 @@ class HomeView(ft.View):
             self.content_area.content = ft.Column(
                 expand=True,
                 controls=[
-                    ft.Text("Área actual: Pagos", size=20, weight="bold", color=fg_color),
+                    ft.Text("AREA DE PAGOS", size=20, weight="bold", color=fg_color),
                     PagosContainer()
                 ]
             )
@@ -92,7 +92,6 @@ class HomeView(ft.View):
             self.content_area.content = ft.Column(
                 expand=True,
                 controls=[
-                    ft.Text("Área actual: Usuarios", size=20, weight="bold", color=fg_color),
                     UsuariosContainer()
                 ]
             )

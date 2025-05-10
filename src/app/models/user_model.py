@@ -134,4 +134,21 @@ class UserModel:
             return {"status": "error", "message": "Usuario no encontrado"}
         except Exception as ex:
             return {"status": "error", "message": f"Error al obtener contraseña: {ex}"}
+        
+    def update(self, user_id: int, campos: dict):
+        try:
+            set_clause = ", ".join(f"{k} = %s" for k in campos.keys())
+            values = list(campos.values())
+            values.append(user_id)
+
+            query = f"""
+                UPDATE {E_USER.TABLE.value}
+                SET {set_clause}, fecha_modificacion = NOW()
+                WHERE id = %s
+            """
+            self.db.execute_query(query, tuple(values))
+            return {"status": "success"}
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
+
 

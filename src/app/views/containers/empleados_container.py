@@ -149,10 +149,10 @@ class EmpleadosContainer(ft.Container):
                         sueldo_por_hora=sueldo
                     )
                     if resultado["status"] == "success":
-                        print("✅ Cambios guardados")
+                        ModalAlert.mostrar_info("Éxito", "Cambios guardados correctamente")
                         self._actualizar_tabla()
                     else:
-                        print("❌", resultado["message"])
+                        ModalAlert.mostrar_info("Error", f"No se pudo guardar: {resultado['message']}")
 
                 self.fila_editando = None
                 ModalAlert(
@@ -161,10 +161,12 @@ class EmpleadosContainer(ft.Container):
                     on_confirm=confirmar_guardado
                 ).mostrar()
 
+
             def cancelar_cambios(ev):
-                print(f"❌ Cancelada la edición de {numero}")
                 self.fila_editando = None
+                ModalAlert.mostrar_info("Edición cancelada", f"Se canceló la edición del empleado {numero}")
                 self._actualizar_tabla()
+
 
             def activar_edicion(ev, id=numero):
                 print(f"✏️ Editando fila {id}")
@@ -174,16 +176,17 @@ class EmpleadosContainer(ft.Container):
                 def on_confirm():
                     resultado = self.empleado_model.delete_by_numero_nomina(id)
                     if resultado["status"] == "success":
-                        print("🗑️ Empleado eliminado correctamente")
+                        ModalAlert.mostrar_info("Eliminado", "Empleado eliminado correctamente")
                         self._actualizar_tabla("")
                     else:
-                        print("❌ Error al eliminar:", resultado["message"])
+                        ModalAlert.mostrar_info("Error", f"No se pudo eliminar: {resultado['message']}")
 
                 ModalAlert(
                     title_text="¿Eliminar empleado?",
                     message=f"Esta acción no se puede deshacer. ID: {id}",
                     on_confirm=on_confirm
                 ).mostrar()
+
 
             if en_edicion:
                 acciones = ft.Row([
@@ -284,12 +287,13 @@ class EmpleadosContainer(ft.Container):
                 )
 
                 if resultado["status"] == "success":
-                    print(f"✅ Nuevo empleado agregado con ID {nuevo_id}")
+                    ModalAlert.mostrar_info("Éxito", f"Empleado agregado con ID {nuevo_id}")
                     self._actualizar_tabla("")
                 else:
-                    print("❌", resultado["message"])
+                    ModalAlert.mostrar_info("Error", resultado["message"])
             except Exception as ex:
-                print(f"⚠️ Error al agregar empleado: {ex}")
+                ModalAlert.mostrar_info("Error", f"No se pudo agregar el empleado: {ex}")
+
 
         def on_cancelar(_):
             self.table.rows.pop()
@@ -316,7 +320,7 @@ class EmpleadosContainer(ft.Container):
             empleados = empleados_result.get("data", [])
 
             if not empleados:
-                print("⚠️ No hay empleados para exportar.")
+                ModalAlert.mostrar_info("Atención", "No hay empleados para exportar.")
                 return
 
             df = pd.DataFrame(empleados)
@@ -330,6 +334,7 @@ class EmpleadosContainer(ft.Container):
             df = df[columnas_ordenadas]
             df.to_excel(path, index=False)
 
-            print(f"📄 Empleados exportados correctamente a: {path}")
+            ModalAlert.mostrar_info("Exportación", f"Archivo guardado en: {path}")
         except Exception as ex:
-            print(f"❌ Error al exportar empleados: {ex}")
+            ModalAlert.mostrar_info("Error de exportación", f"No se pudo guardar el archivo: {ex}")
+
