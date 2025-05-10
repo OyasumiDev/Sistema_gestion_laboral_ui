@@ -8,16 +8,10 @@ class AsistenciasImportController:
     COLUMN_MAP = {
         "ID Checador": "numero_nomina",
         "Fecha": "fecha",
-        "Turno": "turno",
-        "Entrada Turno": "entrada_turno",
-        "Salida Turno": "salida_turno",
         "Entrada": "hora_entrada",
-        "Salida": "hora_salida",
-        "Tiempo de trabajo": "tiempo_trabajo",
-        "Tiempo de descanso": "tiempo_descanso",
-        "Retardo": "retardo",
-        "Estado": "estado"
+        "Salida": "hora_salida"
     }
+
 
     def __init__(self, page: ft.Page, on_success: callable = None):
         self.page = page
@@ -73,60 +67,62 @@ class AsistenciasImportController:
         motores = ["openpyxl", "xlrd", "pyxlsb"]
         for motor in motores:
             try:
+                # Prueba con fila 6 como encabezado
                 df = pd.read_excel(path, engine=motor, header=5)
+                columnas = list(df.columns)
+
+                # Validar si se detectó realmente la columna "ID Checador"
+                if "ID Checador" not in columnas:
+                    print(f"❌ Encabezados inválidos detectados: {columnas}")
+                    continue
+
                 print(f"📥 Archivo cargado con motor '{motor}'")
+                print(f"🧪 Columnas detectadas: {columnas}")
                 return df
+
             except Exception as e:
                 print(f"❌ Error con motor {motor}: {e}")
         return None
+
 
     def _procesar_asistencias(self, df: pd.DataFrame) -> list:
         asistencias = []
 
         for index, row in df.iterrows():
             try:
-                data = {}
-                for col_excel, campo in self.COLUMN_MAP.items():
-                    valor = str(row.get(col_excel, "")).strip()
+                numero_nomina_str = str(row.get("ID Checador", "")).strip()
+                fecha_str = str(row.get("Fecha", "")).strip()
+                entrada_str = str(row.get("Entrada", "")).strip()
+                salida_str = str(row.get("Salida", "")).strip()
 
-                    if campo == "fecha":
-                        fecha_parseada = pd.to_datetime(valor, dayfirst=True, errors='coerce')
-                        if pd.isna(fecha_parseada):
-                            raise ValueError("Fecha inválida")
-                        data[campo] = fecha_parseada.strftime("%Y-%m-%d")
+                if not numero_nomina_str.isdigit():
+                    raise ValueError("ID Checador inválido")
 
-                    elif "tiempo" in campo or campo in ["hora_entrada", "hora_salida", "retardo"]:
-                        if valor in ["", "nan", "NaT"]:
-                            valor = "00:00:00"
-                        data[campo] = valor
+                numero_nomina = int(numero_nomina_str)
+                fecha = pd.to_datetime(fecha_str, dayfirst=True, errors='coerce')
+                if pd.isna(fecha):
+                    raise ValueError("Fecha inválida")
 
-                    elif campo == "numero_nomina":
-                        if valor == "" or valor.lower() in ["nan", "none"]:
-                            raise ValueError("ID Checador vacío")
-                        data[campo] = int(valor)
+                hora_entrada = entrada_str if entrada_str else "00:00:00"
+                hora_salida = salida_str if salida_str else "00:00:00"
 
-                    else:
-                        data[campo] = valor
+                asistencia = {
+                    "numero_nomina": numero_nomina,
+                    "fecha": fecha.strftime("%Y-%m-%d"),
+                    "hora_entrada": hora_entrada,
+                    "hora_salida": hora_salida,
+                    "retardo": "00:00:00",
+                    "estado": "incompleto" if hora_entrada == "00:00:00" or hora_salida == "00:00:00" else "completo",
+                    "tiempo_trabajo": "00:00:00",
+                    "total_horas_trabajadas": "00:00:00"
+                }
 
-                asistencias.append(data)
+                asistencias.append(asistencia)
 
             except Exception as e:
                 print(f"⚠️ Error procesando fila {index + 1}: {e}")
 
         return asistencias
-    
-    def _asistencia_existente(self, numero_nomina: int, fecha: str) -> bool:
-        try:
-            query = """
-                SELECT COUNT(*) AS c FROM asistencias
-                WHERE numero_nomina = %s AND fecha = %s
-            """
-            result = self.db.get_data(query, (numero_nomina, fecha), dictionary=True)
-            return result.get("c", 0) > 0
-        except Exception as e:
-            print(f"❌ Error al verificar existencia de asistencia: {e}")
-            return True  # Por seguridad, evitar insert si hay error
-
 
     def _insertar_asistencias(self, asistencias: list):
         for asistencia in asistencias:
@@ -141,25 +137,17 @@ class AsistenciasImportController:
 
                 query = """
                     INSERT INTO asistencias (
-                        numero_nomina, fecha, turno,
-                        entrada_turno, salida_turno,
-                        hora_entrada, hora_salida,
-                        tiempo_trabajo, tiempo_descanso,
-                        retardo, estado
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        numero_nomina,
+                        fecha,
+                        hora_entrada,
+                        hora_salida
+                    ) VALUES (%s, %s, %s, %s)
                 """
                 valores = (
                     asistencia["numero_nomina"],
                     asistencia["fecha"],
-                    asistencia["turno"],
-                    asistencia["entrada_turno"],
-                    asistencia["salida_turno"],
                     asistencia["hora_entrada"],
-                    asistencia["hora_salida"],
-                    asistencia["tiempo_trabajo"],
-                    asistencia["tiempo_descanso"],
-                    asistencia["retardo"],
-                    asistencia["estado"]
+                    asistencia["hora_salida"]
                 )
 
                 self.db.run_query(query, valores)
@@ -179,3 +167,22 @@ class AsistenciasImportController:
         except Exception as e:
             print(f"❌ Error al verificar existencia de empleado {numero_nomina}: {e}")
             return False
+
+    def _asistencia_existente(self, numero_nomina: int, fecha: str) -> bool:
+        try:
+            query = """
+                SELECT COUNT(*) AS c FROM asistencias
+                WHERE numero_nomina = %s AND fecha = %s
+            """
+            result = self.db.get_data(query, (numero_nomina, fecha), dictionary=True)
+            existe = result.get("c", 0) > 0
+
+            if existe:
+                print(f"⛔ Duplicado detectado: asistencia ya existe para empleado {numero_nomina} en fecha {fecha}")
+
+            return existe
+
+        except Exception as e:
+            print(f"❌ Error al verificar existencia de asistencia: {e}")
+            return True  # Asumir duplicado si ocurre error
+

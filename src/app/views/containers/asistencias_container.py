@@ -41,10 +41,11 @@ class AsistenciasContainer(ft.Container):
         self.table = None
 
         self.scroll_column = ft.Column(
-            expand=True,
-            controls=[],
-            scroll=ft.ScrollMode.ALWAYS
+            controls=[],  # aquí se inyectan las filas
+            scroll=ft.ScrollMode.ALWAYS,
+            expand=True
         )
+
 
         self.import_button = self._build_action_button(
             label="Importar",
@@ -66,7 +67,7 @@ class AsistenciasContainer(ft.Container):
 
         self.content = ft.Column(
             controls=[
-                ft.Text("Registro de Asistencias", size=24, weight="bold"),
+                ft.Text("Registro de Asistencias", size=24, weight="bold", text_align=ft.TextAlign.CENTER),
                 ft.Container(
                     alignment=ft.alignment.center_right,
                     padding=ft.padding.only(right=60, bottom=10),
@@ -80,16 +81,28 @@ class AsistenciasContainer(ft.Container):
                     )
                 ),
                 ft.Container(
+                    alignment=ft.alignment.center,
                     expand=True,
-                    content=self.scroll_column
+                    padding=ft.padding.symmetric(horizontal=20, vertical=30),
+                    content=ft.Container(
+                        width=1500,
+                        expand=True,
+                        content=ft.Column(
+                            controls=[self.scroll_column],
+                            scroll=ft.ScrollMode.AUTO,
+                            expand=True
+                        )
+                    )
                 )
             ],
             spacing=20,
             expand=True
         )
 
+
         self._actualizar_tabla()
         self.page.update()
+
 
     def _get_sort_icon(self, key):
         if self.sort_key == key:
@@ -108,35 +121,39 @@ class AsistenciasContainer(ft.Container):
         datos = self.asistencia_model.get_all()["data"]
         datos.sort(key=lambda x: x.get(self.sort_key, 0), reverse=not self.sort_asc)
 
-        def build_col(label, key):
+        def build_col(label, key, width=140):
             return ft.DataColumn(
-                ft.Row([
-                    ft.Text(label),
-                    ft.IconButton(
-                        icon=self._get_sort_icon(key),
-                        icon_size=16,
-                        tooltip=f"Ordenar por {label}",
-                        on_click=lambda e, k=key: self._sort_by(k)
-                    )
-                ])
+                ft.Container(
+                    content=ft.Row(
+                        [
+                            ft.Text(label, weight=ft.FontWeight.BOLD),
+                            ft.IconButton(
+                                icon=self._get_sort_icon(key),
+                                icon_size=16,
+                                tooltip=f"Ordenar por {label}",
+                                on_click=lambda e, k=key: self._sort_by(k)
+                            )
+                        ],
+                        alignment=ft.MainAxisAlignment.START
+                    ),
+                    alignment=ft.alignment.center_left,
+                    width=width
+                )
             )
 
         columnas = [
-            build_col("ID Empleado", "numero_nomina"),
-            ft.DataColumn(ft.Text("Empleado")),
-            build_col("Fecha", "fecha"),
-            ft.DataColumn(ft.Text("Turno")),
-            ft.DataColumn(ft.Text("Entrada Turno")),
-            ft.DataColumn(ft.Text("Salida Turno")),
-            ft.DataColumn(ft.Text("Entrada")),
-            ft.DataColumn(ft.Text("Salida")),
-            ft.DataColumn(ft.Text("Descanso")),
-            ft.DataColumn(ft.Text("Retardo")),
-            build_col("Estado", "estado"),
-            ft.DataColumn(ft.Text("Horas Trabajadas")),
-            ft.DataColumn(ft.Text("Total Horas")),
-            ft.DataColumn(ft.Text("Acciones"))
+            build_col("ID Empleado", "numero_nomina", width=110),
+            ft.DataColumn(ft.Container(ft.Text("Empleado", weight="bold"), width=220)),
+            build_col("Fecha", "fecha", width=130),
+            ft.DataColumn(ft.Container(ft.Text("Entrada", weight="bold"), width=110)),
+            ft.DataColumn(ft.Container(ft.Text("Salida", weight="bold"), width=110)),
+            ft.DataColumn(ft.Container(ft.Text("Retardo", weight="bold"), width=110)),
+            build_col("Estado", "estado", width=130),
+            ft.DataColumn(ft.Container(ft.Text("Horas Trabajadas", weight="bold"), width=150)),
+            ft.DataColumn(ft.Container(ft.Text("Acciones", weight="bold"), width=120))
         ]
+
+
 
         filas = []
         for reg in datos:
@@ -167,16 +184,11 @@ class AsistenciasContainer(ft.Container):
                 ft.DataCell(ft.Text(limpiar("numero_nomina"), style=estilo)),
                 ft.DataCell(ft.Text(limpiar("nombre"), style=estilo)),
                 ft.DataCell(ft.Text(limpiar("fecha"), style=estilo)),
-                ft.DataCell(ft.Text(limpiar("turno"), style=estilo)),
-                ft.DataCell(ft.Text(limpiar("entrada_turno"), style=estilo)),
-                ft.DataCell(ft.Text(limpiar("salida_turno"), style=estilo)),
                 ft.DataCell(ft.Text(limpiar("hora_entrada"), style=estilo)),
                 ft.DataCell(ft.Text(limpiar("hora_salida"), style=estilo)),
-                ft.DataCell(ft.Text(limpiar("tiempo_descanso"), style=estilo)),
                 ft.DataCell(ft.Text(limpiar("retardo"), style=estilo)),
                 ft.DataCell(ft.Text(limpiar("estado"), style=estilo)),
                 ft.DataCell(ft.Text(limpiar("tiempo_trabajo"), style=estilo)),
-                ft.DataCell(ft.Text(limpiar("total_horas_trabajadas"), style=estilo)),
                 ft.DataCell(ft.Row([editar_btn, eliminar_btn], spacing=5))
             ])
             filas.append(fila)
@@ -192,6 +204,7 @@ class AsistenciasContainer(ft.Container):
         self.scroll_column.controls.clear()
         self.scroll_column.controls.append(self.table)
         self.page.update()
+
 
     def _confirmar_eliminacion(self, numero, fecha, e=None):
         ModalAlert(
@@ -221,22 +234,26 @@ class AsistenciasContainer(ft.Container):
 
         fila = ft.DataRow(cells=[
             ft.DataCell(numero_input),
-            ft.DataCell(ft.Text("-")),
+            ft.DataCell(ft.Text("-")),  # Nombre (no editable desde aquí)
             ft.DataCell(fecha_input),
-            ft.DataCell(ft.Text("Turno General")),
-            ft.DataCell(ft.Text("06:00:00")),
-            ft.DataCell(ft.Text("23:00:00")),
             ft.DataCell(entrada_input),
             ft.DataCell(salida_input),
-            ft.DataCell(ft.Text("00:00:00")),
-            ft.DataCell(ft.Text("00:00:00")),
-            ft.DataCell(ft.Text("completo")),  # El estado real lo determina el trigger
-            ft.DataCell(ft.Text("00:00:00")),
-            ft.DataCell(ft.Text("00:00:00")),
+            ft.DataCell(ft.Text("00:00:00")),  # Retardo (calculado por trigger)
+            ft.DataCell(ft.Text("completo")),  # Estado (calculado por trigger)
+            ft.DataCell(ft.Text("00:00:00")),  # Tiempo trabajado (calculado por trigger)
             ft.DataCell(ft.Row([
-                ft.IconButton(icon=ft.icons.CHECK, icon_color=ft.colors.GREEN_600,
-                            on_click=lambda _: self._confirmar_insertar_asistencia(numero_input, fecha_input, entrada_input, salida_input)),
-                ft.IconButton(icon=ft.icons.CLOSE, icon_color=ft.colors.RED_600, on_click=self._actualizar_tabla)
+                ft.IconButton(
+                    icon=ft.icons.CHECK,
+                    icon_color=ft.colors.GREEN_600,
+                    on_click=lambda _: self._confirmar_insertar_asistencia(
+                        numero_input, fecha_input, entrada_input, salida_input
+                    )
+                ),
+                ft.IconButton(
+                    icon=ft.icons.CLOSE,
+                    icon_color=ft.colors.RED_600,
+                    on_click=self._actualizar_tabla
+                )
             ]))
         ])
 
@@ -258,11 +275,11 @@ class AsistenciasContainer(ft.Container):
     def _guardar_asistencia_desde_columna(self, numero_input, fecha_input, entrada_input, salida_input):
         try:
             numero_str = numero_input.value.strip()
-            fecha_user = fecha_input.value.strip()
+            fecha_str = fecha_input.value.strip()
             entrada_str = entrada_input.value.strip()
             salida_str = salida_input.value.strip()
 
-            if not numero_str or not fecha_user:
+            if not numero_str or not fecha_str:
                 ModalAlert.mostrar_info("Validación", "El ID de empleado y la fecha son obligatorios")
                 return
 
@@ -273,18 +290,16 @@ class AsistenciasContainer(ft.Container):
                 return
 
             try:
-                datetime.strptime(fecha_user, "%d/%m/%Y")
+                fecha_sql = datetime.strptime(fecha_str, "%d/%m/%Y").strftime("%Y-%m-%d")
             except ValueError:
                 ModalAlert.mostrar_info("Error", "Formato de fecha inválido. Usa DD/MM/YYYY")
                 return
 
-            if self.asistencia_model.get_by_empleado_fecha(numero, fecha_user):
+            if self.asistencia_model.get_by_empleado_fecha(numero, fecha_sql):
                 ModalAlert.mostrar_info("Advertencia", "Ya existe una asistencia para este empleado en esta fecha")
                 return
 
-            estado = "completo"
             if not entrada_str or not salida_str:
-                estado = "incompleto"
                 entrada_str = "00:00:00"
                 salida_str = "00:00:00"
             else:
@@ -300,10 +315,9 @@ class AsistenciasContainer(ft.Container):
 
             resultado = self.asistencia_model.add_manual_assistance(
                 numero_nomina=numero,
-                fecha=fecha_user,
+                fecha=fecha_sql,
                 hora_entrada=entrada_str,
-                hora_salida=salida_str,
-                estado=estado
+                hora_salida=salida_str
             )
 
             if resultado["status"] == "success":
@@ -317,7 +331,6 @@ class AsistenciasContainer(ft.Container):
             ModalAlert.mostrar_info("Excepción", str(e))
 
         self._actualizar_tabla()
-
 
 
 
@@ -356,16 +369,11 @@ class AsistenciasContainer(ft.Container):
                 ("numero_nomina", "ID Checador"),
                 ("nombre", "Nombre"),
                 ("fecha", "Fecha"),
-                ("turno", "Turno"),
-                ("entrada_turno", "Entrada Turno"),
-                ("salida_turno", "Salida Turno"),
                 ("hora_entrada", "Entrada"),
                 ("hora_salida", "Salida"),
-                ("tiempo_trabajo", "Tiempo de trabajo"),
-                ("tiempo_descanso", "Tiempo de descanso"),
                 ("retardo", "Retardo"),
                 ("estado", "Estado"),
-                ("total_horas_trabajadas", "Total de horas")
+                ("tiempo_trabajo", "Tiempo de trabajo")
             ]
 
             encabezado = [
@@ -402,6 +410,7 @@ class AsistenciasContainer(ft.Container):
         except Exception as e:
             print(f"❌ Error al exportar: {e}")
 
+
     def depurar_asistencias(self):
         resultado = self.asistencia_model.get_all()
         if resultado["status"] != "success":
@@ -418,6 +427,7 @@ class AsistenciasContainer(ft.Container):
         print("\n📋 Asistencias registradas en la base de datos:")
         print(tabulate(tabla, headers=columnas, tablefmt="grid"))
             
+
     def _insertar_fila_editable(self, e=None):
         numero_input = ft.TextField(hint_text="ID Empleado", width=100, keyboard_type=ft.KeyboardType.NUMBER)
         fecha_input = ft.TextField(hint_text="Fecha (DD/MM/YYYY)", width=150)
@@ -432,34 +442,37 @@ class AsistenciasContainer(ft.Container):
                 entrada = entrada_input.value.strip()
                 salida = salida_input.value.strip()
 
+                print(f"📥 Datos recibidos → ID: {numero_str}, Fecha: {fecha_str}, Entrada: {entrada}, Salida: {salida}")
+
                 if not numero_str or not fecha_str:
-                    raise ValueError("El ID de empleado y la fecha son obligatorios")
+                    raise ValueError("El ID de empleado y la fecha son obligatorios.")
 
                 try:
                     numero = int(numero_str)
+                    print(f"✅ ID convertido correctamente: {numero}")
                 except ValueError:
-                    raise ValueError("El ID debe ser un número entero válido")
+                    raise ValueError("El ID debe ser un número entero válido.")
 
                 try:
-                    datetime.strptime(fecha_str, "%d/%m/%Y")
+                    fecha_sql = datetime.strptime(fecha_str, "%d/%m/%Y").strftime("%Y-%m-%d")
+                    print(f"✅ Fecha convertida a SQL: {fecha_sql}")
                 except ValueError:
-                    raise ValueError("Formato de fecha inválido. Usa DD/MM/YYYY")
+                    raise ValueError("Formato de fecha inválido. Usa DD/MM/YYYY.")
 
                 estado = "completo"
                 if not entrada or not salida:
+                    print("⚠️ Faltan horas. Se asigna 'incompleto' y se usa 00:00:00.")
                     estado = "incompleto"
                     entrada = "00:00:00"
                     salida = "00:00:00"
                 else:
                     try:
-                        hora_entrada = datetime.strptime(entrada, "%H:%M:%S")
-                        hora_salida = datetime.strptime(salida, "%H:%M:%S")
-                        if hora_salida <= hora_entrada:
-                            raise ValueError("La hora de salida debe ser mayor que la de entrada")
+                        h_ent = datetime.strptime(entrada, "%H:%M:%S")
+                        h_sal = datetime.strptime(salida, "%H:%M:%S")
+                        if h_sal <= h_ent:
+                            raise ValueError("La hora de salida debe ser mayor que la de entrada.")
                     except ValueError:
                         raise ValueError("Formato de hora inválido. Usa HH:MM:SS")
-
-                fecha_sql = datetime.strptime(fecha_str, "%d/%m/%Y").strftime("%Y-%m-%d")
 
                 resultado = self.asistencia_model.add_manual_assistance(
                     numero_nomina=numero,
@@ -477,7 +490,7 @@ class AsistenciasContainer(ft.Container):
                     ModalAlert.mostrar_info("Error", f"❌ {resultado['message']}")
 
             except Exception as ex:
-                print(f"❌ Excepción: {ex}")
+                print(f"❌ Excepción atrapada: {ex}")
                 ModalAlert.mostrar_info("Error de validación", str(ex))
 
             self.page.update()
@@ -489,18 +502,13 @@ class AsistenciasContainer(ft.Container):
 
         nueva_fila = ft.DataRow(cells=[
             ft.DataCell(numero_input),
-            ft.DataCell(ft.Text("")),
+            ft.DataCell(ft.Text("-")),  # nombre
             ft.DataCell(fecha_input),
-            ft.DataCell(ft.Text("Turno General")),
-            ft.DataCell(ft.Text("-")),
-            ft.DataCell(ft.Text("-")),
             ft.DataCell(entrada_input),
             ft.DataCell(salida_input),
-            ft.DataCell(ft.Text("-")),
-            ft.DataCell(ft.Text("-")),
-            ft.DataCell(ft.Text("-")),
-            ft.DataCell(ft.Text("-")),
-            ft.DataCell(ft.Text("-")),
+            ft.DataCell(ft.Text("-")),  # retardo
+            ft.DataCell(ft.Text("-")),  # estado
+            ft.DataCell(ft.Text("-")),  # tiempo_trabajo
             ft.DataCell(ft.Row([
                 ft.IconButton(icon=ft.icons.CHECK, icon_color=ft.colors.GREEN_600, on_click=on_guardar),
                 ft.IconButton(icon=ft.icons.CLOSE, icon_color=ft.colors.RED_600, on_click=on_cancelar)
@@ -509,6 +517,7 @@ class AsistenciasContainer(ft.Container):
 
         self.table.rows.append(nueva_fila)
         self.page.update()
+
 
 
     def _editar_asistencia(self, numero_nomina, fecha, e=None):
@@ -538,14 +547,16 @@ class AsistenciasContainer(ft.Container):
                     raise ValueError("Hora de entrada y salida son obligatorias.")
 
                 try:
+                    print(f"⏰ Entrada: '{entrada}', Salida: '{salida}'")
                     h_ent = datetime.strptime(entrada, "%H:%M:%S")
                     h_sal = datetime.strptime(salida, "%H:%M:%S")
                     if h_sal <= h_ent:
                         raise ValueError("La hora de salida debe ser mayor que la de entrada.")
-                except ValueError:
-                    raise ValueError("Formato de hora inválido. Usa HH:MM:SS")
+                except ValueError as ve:
+                    raise ValueError(f"Formato de hora inválido. Usa HH:MM:SS — {ve}")
 
-                fecha_sql = datetime.strptime(fecha, "%d/%m/%Y").strftime("%Y-%m-%d")
+                # Se asume que la fecha ya viene en formato YYYY-MM-DD
+                fecha_sql = fecha
 
                 resultado = self.asistencia_model.actualizar_asistencia_completa(
                     numero_nomina=numero_nomina,
@@ -575,16 +586,11 @@ class AsistenciasContainer(ft.Container):
             ft.DataCell(ft.Text(str(numero_nomina))),
             ft.DataCell(ft.Text(registro.get("nombre", "-"))),
             ft.DataCell(ft.Text(fecha)),
-            ft.DataCell(ft.Text(registro.get("turno", "-"))),
-            ft.DataCell(ft.Text(registro.get("entrada_turno", "-"))),
-            ft.DataCell(ft.Text(registro.get("salida_turno", "-"))),
             ft.DataCell(entrada_input),
             ft.DataCell(salida_input),
-            ft.DataCell(ft.Text(registro.get("tiempo_descanso", "-"))),
             ft.DataCell(ft.Text(registro.get("retardo", "-"))),
             ft.DataCell(estado_dropdown),
             ft.DataCell(ft.Text(registro.get("tiempo_trabajo", "-"))),
-            ft.DataCell(ft.Text(registro.get("total_horas_trabajadas", "-"))),
             ft.DataCell(ft.Row([
                 ft.IconButton(icon=ft.icons.CHECK, icon_color=ft.colors.GREEN_600, on_click=on_guardar),
                 ft.IconButton(icon=ft.icons.CLOSE, icon_color=ft.colors.RED_600, on_click=on_cancelar)
