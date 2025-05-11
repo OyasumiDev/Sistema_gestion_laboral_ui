@@ -11,3 +11,5 @@ class E_LOAN(Enum):
     PRESTAMO_FECHA_SOLICITUD = 'fecha_solicitud'
     PRESTAMO_FECHA_CREACION = 'fecha_creacion'
     PRESTAMO_FECHA_MODIFICACION = 'fecha_modificacion'
+
+

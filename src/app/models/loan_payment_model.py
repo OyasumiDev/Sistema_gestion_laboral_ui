@@ -1,4 +1,5 @@
 from datetime import datetime
+from decimal import Decimal
 from app.core.interfaces.database_mysql import DatabaseMysql
 from app.core.enums.e_loan_payment_model import E_LOAN_PAYMENT
 from app.core.enums.e_loan_model import E_LOAN
@@ -7,29 +8,27 @@ class LoanPaymentModel:
     """
     Modelo de pagos de préstamos.
     Permite registrar pagos con interés, fechas de generación/pago y días de retraso.
+    Solo se permiten los porcentajes: 5%, 10% o 15%.
     """
+
+    INTERESES_PERMITIDOS = (5.0, 10.0, 15.0)
 
     def __init__(self):
         self.db = DatabaseMysql()
         self._exists_table = self.check_table()
-        self.verificar_o_crear_triggers()
 
     def check_table(self) -> bool:
-        """
-        Verifica si la tabla de pagos de préstamo existe y la crea si no.
-        """
         try:
             query = """
                 SELECT COUNT(*) AS c
                 FROM information_schema.tables
                 WHERE table_schema = %s AND table_name = %s
             """
-            result = self.db.get_data(query, (self.db.database, E_LOAN_PAYMENT.TABLE.value))
-            count = result[0] if isinstance(result, tuple) else result.get("c", 0)
+            result = self.db.get_data(query, (self.db.database, E_LOAN_PAYMENT.TABLE.value), dictionary=True)
+            count = result.get("c", 0)
 
             if count == 0:
                 print(f"⚠️ La tabla {E_LOAN_PAYMENT.TABLE.value} no existe. Creando...")
-
                 create_query = f"""
                 CREATE TABLE {E_LOAN_PAYMENT.TABLE.value} (
                     {E_LOAN_PAYMENT.PAGO_ID.value} INT AUTO_INCREMENT PRIMARY KEY,
@@ -53,109 +52,36 @@ class LoanPaymentModel:
             print(f"❌ Error al verificar/crear la tabla {E_LOAN_PAYMENT.TABLE.value}: {ex}")
             return False
 
-    def verificar_o_crear_triggers(self):
-        self._crear_trigger_actualizar_saldo()
-        self._crear_trigger_cerrar_prestamo()
-
-    def _crear_trigger_actualizar_saldo(self):
+    def add_payment(self, id_prestamo: int, monto_pagado: float, fecha_pago: str, fecha_generacion: str, interes: float = None):
         try:
-            trigger_name = "trg_actualizar_saldo_prestamo"
-            check_query = """
-                SELECT COUNT(*) AS c
-                FROM information_schema.triggers
-                WHERE trigger_schema = %s AND trigger_name = %s
-            """
-            result = self.db.get_data(check_query, (self.db.database, trigger_name), dictionary=True)
-            count = result.get("c", 0)
-
-            if count == 0:
-                print(f"⚠️ Trigger '{trigger_name}' no existe. Creando...")
-                trigger_sql = """
-                CREATE TRIGGER trg_actualizar_saldo_prestamo
-                AFTER INSERT ON pagos_prestamo
-                FOR EACH ROW
-                BEGIN
-                    DECLARE saldo_anterior DECIMAL(10,2);
-                    DECLARE saldo_actualizado DECIMAL(10,2);
-
-                    SELECT saldo_prestamo INTO saldo_anterior
-                    FROM prestamos
-                    WHERE id_prestamo = NEW.id_prestamo;
-
-                    SET saldo_actualizado = (saldo_anterior - NEW.monto_pagado) * 1.10;
-
-                    UPDATE prestamos
-                    SET saldo_prestamo = ROUND(saldo_actualizado, 2)
-                    WHERE id_prestamo = NEW.id_prestamo;
-                END
-                """
-                cursor = self.db.connection.cursor()
-                cursor.execute(trigger_sql)
-                self.db.connection.commit()
-                cursor.close()
-                print(f"✅ Trigger '{trigger_name}' creado correctamente.")
-            else:
-                print(f"✔️ Trigger '{trigger_name}' ya existe.")
-        except Exception as ex:
-            print(f"❌ Error creando trigger '{trigger_name}': {ex}")
-
-    def _crear_trigger_cerrar_prestamo(self):
-        try:
-            trigger_name = "trg_cerrar_prestamo_si_pagado"
-            check_query = """
-                SELECT COUNT(*) AS c
-                FROM information_schema.triggers
-                WHERE trigger_schema = %s AND trigger_name = %s
-            """
-            result = self.db.get_data(check_query, (self.db.database, trigger_name), dictionary=True)
-            count = result.get("c", 0)
-
-            if count == 0:
-                print(f"⚠️ Trigger '{trigger_name}' no existe. Creando...")
-                trigger_sql = """
-                CREATE TRIGGER trg_cerrar_prestamo_si_pagado
-                AFTER UPDATE ON prestamos
-                FOR EACH ROW
-                BEGIN
-                    IF NEW.saldo_prestamo <= 0 THEN
-                        UPDATE prestamos
-                        SET estado = 'pagado'
-                        WHERE id_prestamo = NEW.id_prestamo;
-                    END IF;
-                END
-                """
-                cursor = self.db.connection.cursor()
-                cursor.execute(trigger_sql)
-                self.db.connection.commit()
-                cursor.close()
-                print(f"✅ Trigger '{trigger_name}' creado correctamente.")
-            else:
-                print(f"✔️ Trigger '{trigger_name}' ya existe.")
-        except Exception as ex:
-            print(f"❌ Error creando trigger '{trigger_name}': {ex}")
-
-    def add_payment(self, id_prestamo: int, monto_pagado: float, fecha_pago: str, fecha_generacion: str):
-        """
-        Registra un nuevo pago, calcula interés y días de retraso.
-        """
-        try:
+            # 1. Obtener saldo actual
             query_saldo = f"""
                 SELECT {E_LOAN.PRESTAMO_SALDO.value}
                 FROM {E_LOAN.TABLE.value}
                 WHERE {E_LOAN.PRESTAMO_ID.value} = %s
             """
-            result = self.db.get_data(query_saldo, (id_prestamo,))
+            result = self.db.get_data(query_saldo, (id_prestamo,), dictionary=True)
             if not result:
                 return {"status": "error", "message": "Préstamo no encontrado"}
 
-            saldo_actual = float(result[E_LOAN.PRESTAMO_SALDO.value])
-            interes_aplicado = round(saldo_actual * 0.10, 2)
-            nuevo_saldo = round(saldo_actual + interes_aplicado - monto_pagado, 2)
+            saldo_actual = float(result.get(E_LOAN.PRESTAMO_SALDO.value, 0))
 
+            # 2. Aplicar interés permitido
+            porcentaje_interes = 10.0 if interes is None else float(interes)
+            if porcentaje_interes not in self.INTERESES_PERMITIDOS:
+                return {"status": "error", "message": "Solo se permiten intereses del 5%, 10% o 15%"}
+
+            # 3. Calcular el interés y nuevo saldo
+            interes_monto = round(saldo_actual * (porcentaje_interes / 100), 2)
+            saldo_actual += interes_monto
+            nuevo_saldo = round(saldo_actual - monto_pagado, 2)
+
+            # 4. Calcular días de retraso
             f_gen = datetime.strptime(fecha_generacion, "%Y-%m-%d")
             f_pago = datetime.strptime(fecha_pago, "%Y-%m-%d")
             dias_retraso = max((f_pago - f_gen).days, 0)
 
+            # 5. Insertar pago
             insert_query = f"""
                 INSERT INTO {E_LOAN_PAYMENT.TABLE.value} (
                     {E_LOAN_PAYMENT.PAGO_ID_PRESTAMO.value},
@@ -171,44 +97,54 @@ class LoanPaymentModel:
                 monto_pagado,
                 fecha_pago,
                 fecha_generacion,
-                interes_aplicado,
+                interes_monto,
                 dias_retraso
             ))
 
-            update_saldo_query = f"""
-                UPDATE {E_LOAN.TABLE.value}
-                SET {E_LOAN.PRESTAMO_SALDO.value} = %s
-                WHERE {E_LOAN.PRESTAMO_ID.value} = %s
-            """
-            self.db.run_query(update_saldo_query, (nuevo_saldo, id_prestamo))
+            # 6. Actualizar saldo del préstamo
+            self.db.run_query(
+                f"UPDATE {E_LOAN.TABLE.value} SET {E_LOAN.PRESTAMO_SALDO.value} = %s WHERE {E_LOAN.PRESTAMO_ID.value} = %s",
+                (nuevo_saldo, id_prestamo)
+            )
+
+            # 7. Cerrar préstamo si ya se liquidó
+            if nuevo_saldo <= 0:
+                self.db.run_query(
+                    f"UPDATE {E_LOAN.TABLE.value} SET {E_LOAN.PRESTAMO_ESTADO.value} = 'terminado' WHERE {E_LOAN.PRESTAMO_ID.value} = %s",
+                    (id_prestamo,)
+                )
 
             return {
                 "status": "success",
-                "message": f"Pago registrado. Interés aplicado: ${interes_aplicado}, nuevo saldo: ${nuevo_saldo}, días de retraso: {dias_retraso}"
+                "message": f"Pago registrado. Interés aplicado: ${interes_monto}, nuevo saldo: ${nuevo_saldo}, días de retraso: {dias_retraso}"
             }
 
         except Exception as ex:
             return {"status": "error", "message": f"Error al registrar pago: {ex}"}
 
+
     def get_by_prestamo(self, id_prestamo: int):
-        """
-        Obtiene todos los pagos asociados a un préstamo.
-        """
         try:
             query = f"""
-                SELECT * FROM {E_LOAN_PAYMENT.TABLE.value}
+                SELECT
+                    {E_LOAN_PAYMENT.PAGO_ID.value} AS id_pago_prestamo,
+                    {E_LOAN_PAYMENT.PAGO_ID_PRESTAMO.value} AS id_prestamo,
+                    {E_LOAN_PAYMENT.PAGO_MONTO_PAGADO.value} AS monto_pagado,
+                    {E_LOAN_PAYMENT.PAGO_FECHA_PAGO.value} AS fecha_pago,
+                    {E_LOAN_PAYMENT.PAGO_FECHA_GENERACION.value} AS fecha_generacion,
+                    {E_LOAN_PAYMENT.PAGO_INTERES_APLICADO.value} AS interes_aplicado,
+                    {E_LOAN_PAYMENT.PAGO_DIAS_RETRASO.value} AS dias_retraso
+                FROM {E_LOAN_PAYMENT.TABLE.value}
                 WHERE {E_LOAN_PAYMENT.PAGO_ID_PRESTAMO.value} = %s
                 ORDER BY {E_LOAN_PAYMENT.PAGO_FECHA_PAGO.value} ASC
             """
-            result = self.db.get_data_list(query, (id_prestamo,))
+            result = self.db.get_data_list(query, (id_prestamo,), dictionary=True)
             return {"status": "success", "data": result}
         except Exception as ex:
             return {"status": "error", "message": f"Error al obtener pagos: {ex}"}
 
+
     def update_by_id_pago(self, id_pago: int, campos: dict):
-        """
-        Actualiza cualquier campo de un pago específico usando su ID.
-        """
         try:
             if not campos:
                 return {"status": "error", "message": "No se proporcionaron campos para actualizar"}
@@ -222,17 +158,14 @@ class LoanPaymentModel:
                 WHERE {E_LOAN_PAYMENT.PAGO_ID.value} = %s
             """
             valores.append(id_pago)
-
             self.db.run_query(query, tuple(valores))
+
             return {"status": "success", "message": "Pago actualizado correctamente"}
 
         except Exception as ex:
             return {"status": "error", "message": f"Error al actualizar el pago: {ex}"}
 
     def delete_by_id_pago(self, id_pago: int):
-        """
-        Elimina un pago por su ID.
-        """
         try:
             query = f"""
                 DELETE FROM {E_LOAN_PAYMENT.TABLE.value}
@@ -242,3 +175,21 @@ class LoanPaymentModel:
             return {"status": "success", "message": f"Pago ID {id_pago} eliminado correctamente"}
         except Exception as ex:
             return {"status": "error", "message": f"Error al eliminar el pago: {ex}"}
+
+    def get_saldo_y_monto_prestamo(self, id_prestamo: int):
+        try:
+            query = f"""
+                SELECT {E_LOAN.PRESTAMO_MONTO.value} AS monto_prestamo, {E_LOAN.PRESTAMO_SALDO.value} AS saldo_prestamo
+                FROM {E_LOAN.TABLE.value}
+                WHERE {E_LOAN.PRESTAMO_ID.value} = %s
+            """
+            result = self.db.get_data(query, (id_prestamo,), dictionary=True)
+            return result if result else {}
+        except Exception:
+            return {}
+        
+    def get_next_id(self):
+        query = "SELECT MAX(id_pago) AS max_id FROM pagos_prestamo"
+        result = self.db.get_data(query, dictionary=True)
+        max_id = result.get("max_id", 0) if result else 0
+        return int(max_id) + 1 if max_id else 1

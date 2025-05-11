@@ -45,8 +45,9 @@ class WindowMain:
         # self._page.go('/login')
         # self._page.go('/home/empleados')
         # self._page.go('/home/asistencias')
-        self._page.go('/home/pagos')
+        # self._page.go('/home/pagos')
         # self._page.go('/settings')
+        self._page.go('/prestamos')
 
     def route_change(self, route: ft.RouteChangeEvent):
         """
@@ -63,11 +64,11 @@ class WindowMain:
 
         elif path == '/home' or path.startswith('/home/') or path.lstrip('/') in {
             'usuario', 'empleados', 'asistencias', 'pagos', 'prestamos', 'desempeno', 'reportes', 'config'
-        }:
+        } or path.startswith('/home/prestamos/pagosprestamos'):
             if path == '/home':
                 section = 'overview'
             elif path.startswith('/home/'):
-                section = path.split('/')[-1]
+                section = path[len('/home/'):]  # Captura sección completa, incl. subrutas como prestamos/pagosprestamos
             else:
                 section = path.lstrip('/')
             self.home_view.update_content(section)

@@ -1,5 +1,3 @@
-# app/views/home_view.py
-
 import flet as ft
 from app.core.app_state import AppState
 from app.views.nvar_view import NavBarView
@@ -8,6 +6,8 @@ from app.views.containers.asistencias_container import AsistenciasContainer
 from app.views.empleados_view import EmpleadosView
 from app.views.containers.usuarios_container import UsuariosContainer
 from app.views.containers.pagos_container import PagosContainer
+from app.views.containers.prestamos_container import PrestamosContainer
+from app.views.containers.pagos_prestamo_container import PagosPrestamoContainer
 
 
 class HomeView(ft.View):
@@ -17,11 +17,9 @@ class HomeView(ft.View):
         self.page = AppState().page
         self.theme_ctrl = ThemeController()
 
-        # Obtener usuario y verificar si es root
         user_data = self.page.client_storage.get("app.user")
         self.is_root = user_data and user_data.get("role") == "root"
 
-        # Vista lateral persistente y contenedor principal
         self.nav_bar = NavBarView(is_root=self.is_root)
         self.content_area = ft.Container(expand=True)
 
@@ -31,7 +29,6 @@ class HomeView(ft.View):
         )
         self.controls.append(layout)
 
-        # Vista por defecto
         self.update_content("overview")
 
     def update_content(self, section: str):
@@ -47,6 +44,7 @@ class HomeView(ft.View):
             "asistencias": "Sección: Asistencias",
             "pagos": "Sección: Pagos",
             "prestamos": "Sección: Préstamos",
+            "prestamos/pagosprestamos": "Pagos del préstamo",
             "desempeno": "Sección: Desempeño",
             "reportes": "Sección: Reportes",
             "config": "Configuración del sistema",
@@ -59,17 +57,7 @@ class HomeView(ft.View):
 
         fg_color = self.theme_ctrl.get_fg_color()
 
-        # Vistas especiales con sus contenedores
-        if section == "asistencias":
-            self.content_area.content = ft.Column(
-                expand=True,
-                controls=[
-                    ft.Text("AREA DE ASISTENCIAS", size=20, weight="bold", color=fg_color),
-                    AsistenciasContainer()
-                ]
-            )
-
-        elif section == "empleados":
+        if section == "empleados":
             from app.views.containers.empleados_container import EmpleadosContainer
             self.content_area.content = ft.Column(
                 expand=True,
@@ -78,13 +66,40 @@ class HomeView(ft.View):
                     EmpleadosContainer()
                 ]
             )
-            
+
+        elif section == "asistencias":
+            self.content_area.content = ft.Column(
+                expand=True,
+                controls=[
+                    ft.Text("AREA DE ASISTENCIAS", size=20, weight="bold", color=fg_color),
+                    AsistenciasContainer()
+                ]
+            )
+
         elif section == "pagos":
             self.content_area.content = ft.Column(
                 expand=True,
                 controls=[
                     ft.Text("AREA DE PAGOS", size=20, weight="bold", color=fg_color),
                     PagosContainer()
+                ]
+            )
+
+        elif section == "prestamos":
+            self.content_area.content = ft.Column(
+                expand=True,
+                controls=[
+                    ft.Text("ÁREA DE PRÉSTAMOS", size=20, weight="bold", color=fg_color),
+                    PrestamosContainer()
+                ]
+            )
+
+        elif section.startswith("prestamos/pagosprestamos"):
+            self.content_area.content = ft.Column(
+                expand=True,
+                controls=[
+                    ft.Text("PAGOS DEL PRÉSTAMO", size=20, weight="bold", color=fg_color),
+                    PagosPrestamoContainer()
                 ]
             )
 
@@ -96,7 +111,6 @@ class HomeView(ft.View):
                 ]
             )
 
-        # Vistas por defecto o no implementadas
         else:
             self.content_area.content = ft.Column(
                 expand=True,

@@ -63,3 +63,4 @@ class ModalAlert:
     def mostrar_info(titulo: str, mensaje: str):
         modal = ModalAlert(title_text=titulo, message=mensaje, only_info=True)
         modal.mostrar()
+
