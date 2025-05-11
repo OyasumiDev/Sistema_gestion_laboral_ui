@@ -3,7 +3,8 @@ from app.core.interfaces.database_mysql import DatabaseMysql
 
 class LoanModel:
     """
-    Modelo de préstamos.
+    Modelo de préstamos: permite registrar múltiples préstamos por empleado
+    y consultarlos por empleado o globalmente.
     """
 
     def __init__(self):
@@ -12,7 +13,7 @@ class LoanModel:
 
     def check_table(self) -> bool:
         """
-        Verifica si la tabla de préstamos existe y la crea con la estructura correcta si no.
+        Verifica si la tabla de préstamos existe y la crea si no.
         """
         try:
             query = """
@@ -21,27 +22,22 @@ class LoanModel:
                 WHERE table_schema = %s AND table_name = %s
             """
             result = self.db.get_data(query, (self.db.database, E_LOAN.TABLE.value))
-            # Ajuste aquí: `result` puede ser una tupla, no un dict
             count = result[0] if isinstance(result, tuple) else result.get("c", 0)
+
             if count == 0:
                 print(f"⚠️ La tabla {E_LOAN.TABLE.value} no existe. Creando...")
 
                 create_query = f"""
-                CREATE TABLE IF NOT EXISTS {E_LOAN.TABLE.value} (
-                    {E_LOAN.ID.value} INT AUTO_INCREMENT PRIMARY KEY,
-                    {E_LOAN.NUMERO_NOMINA.value} SMALLINT UNSIGNED NOT NULL,
-                    {E_LOAN.MONTO.value} DECIMAL(10,2) NOT NULL,
-                    {E_LOAN.SALDO_PRESTAMO.value} DECIMAL(10,2) NOT NULL,
-                    {E_LOAN.ESTADO.value} ENUM('aprobado','pendiente','rechazado') NOT NULL,
-                    {E_LOAN.FECHA_SOLICITUD.value} DATE NOT NULL,
-                    {E_LOAN.HISTORIAL_PAGOS.value} JSON,
-                    {E_LOAN.DESCUENTO_SEMANAL.value} DECIMAL(10,2) DEFAULT 50,
-                    {E_LOAN.TIPO_DESCUENTO.value} ENUM('monto fijo','porcentaje') NOT NULL DEFAULT 'monto fijo',
-                    fecha_creacion TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    fecha_modificacion TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-                    FOREIGN KEY ({E_LOAN.NUMERO_NOMINA.value})
-                        REFERENCES empleados(numero_nomina)
-                        ON DELETE CASCADE
+                CREATE TABLE {E_LOAN.TABLE.value} (
+                    {E_LOAN.PRESTAMO_ID.value} INT AUTO_INCREMENT PRIMARY KEY,
+                    {E_LOAN.PRESTAMO_NUMERO_NOMINA.value} SMALLINT UNSIGNED NOT NULL,
+                    {E_LOAN.PRESTAMO_MONTO.value} DECIMAL(10,2) NOT NULL,
+                    {E_LOAN.PRESTAMO_SALDO.value} DECIMAL(10,2) NOT NULL,
+                    {E_LOAN.PRESTAMO_ESTADO.value} ENUM('aprobado','pendiente','rechazado') NOT NULL,
+                    {E_LOAN.PRESTAMO_FECHA_SOLICITUD.value} DATE NOT NULL,
+                    {E_LOAN.PRESTAMO_FECHA_CREACION.value} TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    {E_LOAN.PRESTAMO_FECHA_MODIFICACION.value} TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                    FOREIGN KEY ({E_LOAN.PRESTAMO_NUMERO_NOMINA.value}) REFERENCES empleados(numero_nomina) ON DELETE CASCADE
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
                 """
                 self.db.run_query(create_query)
@@ -53,32 +49,26 @@ class LoanModel:
             print(f"❌ Error al verificar/crear la tabla {E_LOAN.TABLE.value}: {ex}")
             return False
 
-    def add(self, numero_nomina, monto, saldo_prestamo, estado, fecha_solicitud, historial_pagos, descuento_semanal, tipo_descuento):
+    def add(self, numero_nomina, monto, saldo_prestamo, estado, fecha_solicitud):
         """
-        Agrega un nuevo préstamo.
+        Registra un nuevo préstamo.
         """
         try:
             query = f"""
-            INSERT INTO {E_LOAN.TABLE.value} (
-                {E_LOAN.NUMERO_NOMINA.value},
-                {E_LOAN.MONTO.value},
-                {E_LOAN.SALDO_PRESTAMO.value},
-                {E_LOAN.ESTADO.value},
-                {E_LOAN.FECHA_SOLICITUD.value},
-                {E_LOAN.HISTORIAL_PAGOS.value},
-                {E_LOAN.DESCUENTO_SEMANAL.value},
-                {E_LOAN.TIPO_DESCUENTO.value}
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                INSERT INTO {E_LOAN.TABLE.value} (
+                    {E_LOAN.PRESTAMO_NUMERO_NOMINA.value},
+                    {E_LOAN.PRESTAMO_MONTO.value},
+                    {E_LOAN.PRESTAMO_SALDO.value},
+                    {E_LOAN.PRESTAMO_ESTADO.value},
+                    {E_LOAN.PRESTAMO_FECHA_SOLICITUD.value}
+                ) VALUES (%s, %s, %s, %s, %s)
             """
             self.db.run_query(query, (
                 numero_nomina,
                 monto,
                 saldo_prestamo,
                 estado,
-                fecha_solicitud,
-                historial_pagos,
-                descuento_semanal,
-                tipo_descuento
+                fecha_solicitud
             ))
             return {"status": "success", "message": "Préstamo registrado correctamente"}
         except Exception as ex:
@@ -102,7 +92,7 @@ class LoanModel:
         try:
             query = f"""
                 SELECT * FROM {E_LOAN.TABLE.value}
-                WHERE {E_LOAN.ID.value} = %s
+                WHERE {E_LOAN.PRESTAMO_ID.value} = %s
             """
             result = self.db.get_data(query, (id_prestamo,))
             return {"status": "success", "data": result}
@@ -111,14 +101,52 @@ class LoanModel:
 
     def get_by_empleado(self, numero_nomina: int):
         """
-        Retorna los préstamos asociados a un número de nómina.
+        Retorna todos los préstamos asociados a un número de nómina.
         """
         try:
             query = f"""
                 SELECT * FROM {E_LOAN.TABLE.value}
-                WHERE {E_LOAN.NUMERO_NOMINA.value} = %s
+                WHERE {E_LOAN.PRESTAMO_NUMERO_NOMINA.value} = %s
             """
             result = self.db.get_data_list(query, (numero_nomina,))
             return {"status": "success", "data": result}
         except Exception as ex:
             return {"status": "error", "message": f"Error al obtener préstamos del empleado: {ex}"}
+
+    def update_by_id_prestamo(self, id_prestamo: int, campos: dict):
+        """
+        Actualiza cualquier campo del préstamo especificado por su ID.
+        """
+        try:
+            if not campos:
+                return {"status": "error", "message": "No se proporcionaron campos para actualizar"}
+
+            campos_sql = ", ".join(f"{k.value} = %s" for k in campos.keys())
+            valores = [v for v in campos.values()]
+
+            query = f"""
+                UPDATE {E_LOAN.TABLE.value}
+                SET {campos_sql}
+                WHERE {E_LOAN.PRESTAMO_ID.value} = %s
+            """
+            valores.append(id_prestamo)
+
+            self.db.run_query(query, tuple(valores))
+            return {"status": "success", "message": "Préstamo actualizado correctamente"}
+
+        except Exception as ex:
+            return {"status": "error", "message": f"Error al actualizar el préstamo: {ex}"}
+
+    def delete_by_id_prestamo(self, id_prestamo: int):
+        """
+        Elimina un préstamo por su ID.
+        """
+        try:
+            query = f"""
+                DELETE FROM {E_LOAN.TABLE.value}
+                WHERE {E_LOAN.PRESTAMO_ID.value} = %s
+            """
+            self.db.run_query(query, (id_prestamo,))
+            return {"status": "success", "message": f"Préstamo ID {id_prestamo} eliminado correctamente"}
+        except Exception as ex:
+            return {"status": "error", "message": f"Error al eliminar el préstamo: {ex}"}

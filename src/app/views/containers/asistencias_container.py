@@ -39,13 +39,13 @@ class AsistenciasContainer(ft.Container):
 
         self.window_snackbar = WindowSnackbar(self.page)
         self.table = None
+        self.tabla_vacia = True  # ✅ inicialización correcta
 
         self.scroll_column = ft.Column(
-            controls=[],  # aquí se inyectan las filas
+            controls=[],
             scroll=ft.ScrollMode.ALWAYS,
             expand=True
         )
-
 
         self.import_button = self._build_action_button(
             label="Importar",
@@ -81,9 +81,9 @@ class AsistenciasContainer(ft.Container):
                     )
                 ),
                 ft.Container(
-                    alignment=ft.alignment.center,
+                    alignment=ft.alignment.top_center,  # ✅ Esto fija la tabla arriba
                     expand=True,
-                    padding=ft.padding.symmetric(horizontal=20, vertical=30),
+                    padding=ft.padding.only(top=10, left=20, right=20, bottom=30),
                     content=ft.Container(
                         width=1500,
                         expand=True,
@@ -94,6 +94,7 @@ class AsistenciasContainer(ft.Container):
                         )
                     )
                 )
+
             ],
             spacing=20,
             expand=True
@@ -102,7 +103,6 @@ class AsistenciasContainer(ft.Container):
 
         self._actualizar_tabla()
         self.page.update()
-
 
     def _get_sort_icon(self, key):
         if self.sort_key == key:
@@ -153,45 +153,49 @@ class AsistenciasContainer(ft.Container):
             ft.DataColumn(ft.Container(ft.Text("Acciones", weight="bold"), width=120))
         ]
 
-
-
         filas = []
         for reg in datos:
-            estilo = ft.TextStyle(color=ft.colors.RED) if reg.get("estado") == "incompleto" else None
-            numero = reg.get("numero_nomina")
-            fecha = reg.get("fecha")
+            try:
+                estilo = ft.TextStyle(color=ft.colors.RED) if reg.get("estado") == "incompleto" else None
+                numero = reg.get("numero_nomina")
+                fecha = reg.get("fecha")
 
-            eliminar_btn = ft.IconButton(
-                icon=ft.icons.DELETE_OUTLINE,
-                icon_size=20,
-                icon_color=ft.colors.RED_600,
-                tooltip="Eliminar registro",
-                on_click=functools.partial(self._confirmar_eliminacion, numero, fecha)
-            )
+                eliminar_btn = ft.IconButton(
+                    icon=ft.icons.DELETE_OUTLINE,
+                    icon_size=20,
+                    icon_color=ft.colors.RED_600,
+                    tooltip="Eliminar registro",
+                    on_click=functools.partial(self._confirmar_eliminacion, numero, fecha)
+                )
 
-            editar_btn = ft.IconButton(
-                icon=ft.icons.EDIT,
-                icon_size=20,
-                icon_color=ft.colors.BLUE,
-                tooltip="Editar asistencia",
-                on_click=functools.partial(self._editar_asistencia, numero, fecha)
-            )
+                editar_btn = ft.IconButton(
+                    icon=ft.icons.EDIT,
+                    icon_size=20,
+                    icon_color=ft.colors.BLUE,
+                    tooltip="Editar asistencia",
+                    on_click=functools.partial(self._editar_asistencia, numero, fecha)
+                )
 
-            def limpiar(campo):
-                return str(reg.get(campo)) if reg.get(campo) not in [None, ""] else "-"
+                def limpiar(campo):
+                    return str(reg.get(campo)) if reg.get(campo) not in [None, ""] else "-"
 
-            fila = ft.DataRow(cells=[
-                ft.DataCell(ft.Text(limpiar("numero_nomina"), style=estilo)),
-                ft.DataCell(ft.Text(limpiar("nombre"), style=estilo)),
-                ft.DataCell(ft.Text(limpiar("fecha"), style=estilo)),
-                ft.DataCell(ft.Text(limpiar("hora_entrada"), style=estilo)),
-                ft.DataCell(ft.Text(limpiar("hora_salida"), style=estilo)),
-                ft.DataCell(ft.Text(limpiar("retardo"), style=estilo)),
-                ft.DataCell(ft.Text(limpiar("estado"), style=estilo)),
-                ft.DataCell(ft.Text(limpiar("tiempo_trabajo"), style=estilo)),
-                ft.DataCell(ft.Row([editar_btn, eliminar_btn], spacing=5))
-            ])
-            filas.append(fila)
+                fila = ft.DataRow(cells=[
+                    ft.DataCell(ft.Text(limpiar("numero_nomina"), style=estilo)),
+                    ft.DataCell(ft.Text(limpiar("nombre"), style=estilo)),
+                    ft.DataCell(ft.Text(limpiar("fecha"), style=estilo)),
+                    ft.DataCell(ft.Text(limpiar("hora_entrada"), style=estilo)),
+                    ft.DataCell(ft.Text(limpiar("hora_salida"), style=estilo)),
+                    ft.DataCell(ft.Text(limpiar("retardo"), style=estilo)),
+                    ft.DataCell(ft.Text(limpiar("estado"), style=estilo)),
+                    ft.DataCell(ft.Text(limpiar("tiempo_trabajo"), style=estilo)),
+                    ft.DataCell(ft.Row([editar_btn, eliminar_btn], spacing=5))
+                ])
+                filas.append(fila)
+
+            except Exception as e:
+                print(f"❌ Error al construir fila (Empleado {reg.get('numero_nomina')}, Fecha {reg.get('fecha')}): {e}")
+
+        self.tabla_vacia = len(filas) == 0  # ✅ después de construir todas las filas
 
         self.table = ft.DataTable(
             expand=True,
@@ -606,3 +610,5 @@ class AsistenciasContainer(ft.Container):
 
         self.table.update()
         self.page.update()
+        
+        

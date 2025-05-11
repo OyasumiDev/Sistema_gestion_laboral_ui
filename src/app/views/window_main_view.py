@@ -44,7 +44,8 @@ class WindowMain:
         # Iniciar en login
         # self._page.go('/login')
         # self._page.go('/home/empleados')
-        self._page.go('/home/asistencias')
+        # self._page.go('/home/asistencias')
+        self._page.go('/home/pagos')
         # self._page.go('/settings')
 
     def route_change(self, route: ft.RouteChangeEvent):

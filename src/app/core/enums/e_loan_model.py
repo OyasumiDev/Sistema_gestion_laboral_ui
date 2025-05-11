@@ -1,17 +1,13 @@
-# Constante de la tabla prestamos
-
 from enum import Enum
 
 class E_LOAN(Enum):
     TABLE = 'prestamos'
-    ID = 'id_prestamo'
-    NUMERO_NOMINA = 'numero_nomina'
-    MONTO = 'monto'
-    SALDO_PRESTAMO = 'saldo_prestamo'
-    ESTADO = 'estado'
-    FECHA_SOLICITUD = 'fecha_solicitud'
-    HISTORIAL_PAGOS = 'historial_pagos'
-    DESCUENTO_SEMANAL = 'descuento_semanal'
-    TIPO_DESCUENTO = 'tipo_descuento'
-    FECHA_CREACION = 'fecha_creacion'
-    FECHA_MODIFICACION = 'fecha_modificacion'
+
+    PRESTAMO_ID = 'id_prestamo'
+    PRESTAMO_NUMERO_NOMINA = 'numero_nomina'
+    PRESTAMO_MONTO = 'monto'
+    PRESTAMO_SALDO = 'saldo_prestamo'
+    PRESTAMO_ESTADO = 'estado'
+    PRESTAMO_FECHA_SOLICITUD = 'fecha_solicitud'
+    PRESTAMO_FECHA_CREACION = 'fecha_creacion'
+    PRESTAMO_FECHA_MODIFICACION = 'fecha_modificacion'

@@ -29,6 +29,7 @@ class AssistanceModel:
                     retardo TIME,
                     estado VARCHAR(20),
                     tiempo_trabajo TIME,
+                    total_horas_trabajadas TIME,  -- ← Campo nuevo
                     FOREIGN KEY (numero_nomina)
                         REFERENCES empleados(numero_nomina)
                         ON DELETE CASCADE
@@ -49,6 +50,7 @@ class AssistanceModel:
         try:
             self._crear_trigger_calculo_horas()
             self._crear_trigger_estado()
+            self._crear_sp_total_horas_trabajadas()
         except Exception as ex:
             print(f"❌ Error al verificar/crear triggers: {ex}")
 
@@ -160,6 +162,61 @@ class AssistanceModel:
             print(f"✔️ Trigger '{trigger_name}' ya existe.")
 
 
+    def _crear_sp_total_horas_trabajadas(self):
+        sp_name = "horas_trabajadas"
+        check_query = """
+            SELECT COUNT(*) AS c
+            FROM information_schema.routines
+            WHERE routine_schema = %s AND routine_name = %s AND routine_type = 'PROCEDURE'
+        """
+        result = self.db.get_data(check_query, (self.db.database, sp_name), dictionary=True)
+        if result.get("c", 0) == 0:
+            print(f"⚠️ Stored Procedure '{sp_name}' no existe. Creando...")
+
+            cursor = self.db.connection.cursor()
+            cursor.execute(f"DROP PROCEDURE IF EXISTS {sp_name}")
+
+            sp_sql = f"""
+            CREATE PROCEDURE {sp_name} (
+                IN p_numero_nomina INT,
+                IN p_fecha_inicio DATE,
+                IN p_fecha_fin DATE
+            )
+            BEGIN
+                IF p_numero_nomina IS NOT NULL THEN
+                    -- Total por un solo empleado
+                    SELECT
+                        a.numero_nomina,
+                        e.nombre_completo,
+                        SEC_TO_TIME(SUM(TIME_TO_SEC(a.tiempo_trabajo))) AS total_horas_trabajadas
+                    FROM asistencias a
+                    JOIN empleados e ON a.numero_nomina = e.numero_nomina
+                    WHERE a.numero_nomina = p_numero_nomina
+                    AND a.fecha BETWEEN p_fecha_inicio AND p_fecha_fin
+                    AND a.estado = 'completo'
+                    GROUP BY a.numero_nomina, e.nombre_completo;
+                ELSE
+                    -- Total de todos los empleados
+                    SELECT
+                        a.numero_nomina,
+                        e.nombre_completo,
+                        SEC_TO_TIME(SUM(TIME_TO_SEC(a.tiempo_trabajo))) AS total_horas_trabajadas
+                    FROM asistencias a
+                    JOIN empleados e ON a.numero_nomina = e.numero_nomina
+                    WHERE a.fecha BETWEEN p_fecha_inicio AND p_fecha_fin
+                    AND a.estado = 'completo'
+                    GROUP BY a.numero_nomina, e.nombre_completo;
+                END IF;
+            END
+            """
+
+            cursor.execute(sp_sql)
+            self.db.connection.commit()
+            cursor.close()
+
+            print(f"✅ Stored Procedure '{sp_name}' creado correctamente.")
+        else:
+            print(f"✔️ Stored Procedure '{sp_name}' ya existe.")
 
     def add(self,
             numero_nomina: int,
@@ -380,5 +437,20 @@ class AssistanceModel:
             return {"status": "success", "message": "Asistencia actualizada"}
         except Exception as e:
             return {"status": "error", "message": str(e)}
+        
+    def get_total_horas_trabajadas(self, fecha_inicio: str, fecha_fin: str, numero_nomina: int = None) -> dict:
+        """
+        Obtiene el total de horas trabajadas desde la base de datos, usando el stored procedure 'horas_trabajadas'.
+        Si se proporciona un numero_nomina, devuelve solo ese empleado. Si es None, devuelve todos.
+        """
+        try:
+            resultados = self.db.call_procedure("horas_trabajadas", (numero_nomina, fecha_inicio, fecha_fin))
+            if not resultados:
+                return {"status": "success", "data": [], "message": "No se encontraron registros en ese rango"}
+            return {"status": "success", "data": resultados}
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
+
+
 
 
