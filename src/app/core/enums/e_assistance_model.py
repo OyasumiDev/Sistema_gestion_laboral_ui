@@ -10,4 +10,3 @@ class E_ASSISTANCE(Enum):
     RETARDO = "retardo"
     ESTADO = "estado"
     TIEMPO_TRABAJO = "tiempo_trabajo"
-    TOTAL_HORAS_TRABAJADAS = "total_horas_trabajadas"

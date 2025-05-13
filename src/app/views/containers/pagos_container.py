@@ -5,12 +5,15 @@ from app.views.containers.modal_alert import ModalAlert
 from app.models.payment_model import PaymentModel
 from app.models.discount_model import DiscountModel
 from app.views.containers.date_modal_selector import DateModalSelector
+from app.views.containers.modal_descuentos import ModalDescuentos
+
 
 class PagosContainer(ft.Container):
     def __init__(self):
         super().__init__(expand=True, padding=20, alignment=ft.alignment.top_center)
         self.page = AppState().page
         self.payment_model = PaymentModel()
+        self.payment_model.crear_sp_horas_trabajadas_para_pagos()
         self.discount_model = DiscountModel()
 
         self.fecha_inicio_id = None
@@ -27,7 +30,7 @@ class PagosContainer(ft.Container):
         self.resumen_pagos = ft.Text(value="", weight=ft.FontWeight.BOLD, size=14)
 
         self._build()
-        self._mostrar_pagos_pagados()  # 🆕 Mostrar pagos pagados al iniciar
+        self._mostrar_pagos_pagados()
 
     def _actualizar_fechas_id(self, inicio, fin):
         self.fecha_inicio_id = inicio
@@ -64,105 +67,17 @@ class PagosContainer(ft.Container):
             return
 
         try:
-            empleados = self.payment_model.employee_model.get_all()
-            if empleados["status"] != "success":
-                ModalAlert.mostrar_info("Error", "No se pudieron cargar los empleados.")
-                return
-
-            errores = 0
-            for emp in empleados["data"]:
-                res = self.payment_model.generar_pago_por_empleado(
-                    emp["numero_nomina"], self.fecha_inicio_periodo, self.fecha_fin_periodo
-                )
-                if res["status"] != "success":
-                    errores += 1
-
-            mensaje = f"Pagos generados del {self.fecha_inicio_periodo} al {self.fecha_fin_periodo}."
-            if errores > 0:
-                mensaje += f" Algunos empleados no tenían asistencias registradas ({errores} errores)."
-
-            ModalAlert.mostrar_info("Nómina Generada", mensaje)
+            resultado = self.payment_model.generar_pagos_por_rango(
+                fecha_inicio=self.fecha_inicio_periodo,
+                fecha_fin=self.fecha_fin_periodo
+            )
+            if resultado["status"] == "success":
+                ModalAlert.mostrar_info("Nómina Generada", resultado["message"])
+            else:
+                ModalAlert.mostrar_info("Error", resultado["message"])
             self._mostrar_pagos_pagados()
         except Exception as ex:
             ModalAlert.mostrar_info("Error al generar pagos", str(ex))
-
-    def _generar_nomina_automatica(self, e):
-        try:
-            ultima_fecha = self.payment_model.get_ultima_fecha_pago()
-            if not ultima_fecha:
-                ModalAlert.mostrar_info("Sin historial", "No hay pagos previos registrados.")
-                return
-
-            fecha_inicio = (ultima_fecha + timedelta(days=1)).strftime("%Y-%m-%d")
-            fecha_fin = datetime.now().strftime("%Y-%m-%d")
-
-            empleados = self.payment_model.employee_model.get_all()
-            if empleados["status"] != "success":
-                ModalAlert.mostrar_info("Error", "No se pudieron cargar los empleados.")
-                return
-
-            for emp in empleados["data"]:
-                self.payment_model.generar_pago_por_empleado(emp["numero_nomina"], fecha_inicio, fecha_fin)
-
-            ModalAlert.mostrar_info("Nómina Automática", f"Pagos generados desde {fecha_inicio} hasta hoy.")
-            self._mostrar_pagos_pagados()
-        except Exception as ex:
-            ModalAlert.mostrar_info("Error automático", str(ex))
-
-    def _mostrar_pagos_pagados(self):
-        try:
-            self.tabla_pagos.columns = [
-                ft.DataColumn(label=ft.Text("ID Empleado")),
-                ft.DataColumn(label=ft.Text("Nombre")),
-                ft.DataColumn(label=ft.Text("Fecha Pago")),
-                ft.DataColumn(label=ft.Text("Horas Trabajadas")),
-                ft.DataColumn(label=ft.Text("Sueldo x Hora")),
-                ft.DataColumn(label=ft.Text("Monto Base")),
-                ft.DataColumn(label=ft.Text("Descuentos")),
-                ft.DataColumn(label=ft.Text("Monto Final")),
-                ft.DataColumn(label=ft.Text("Acciones"))
-            ]
-
-            self.tabla_pagos.rows.clear()
-            total_pagado = 0
-
-            query = """
-                SELECT p.id_pago, p.numero_nomina, p.fecha_pago, p.horas_trabajadas,
-                       p.monto_base, p.monto_total, p.estado,
-                       e.nombre_completo, e.sueldo_por_hora
-                FROM pagos p
-                JOIN empleados e ON p.numero_nomina = e.numero_nomina
-                WHERE p.estado = 'pagado'
-            """
-            pagos = self.payment_model.db.get_data(query, dictionary=True)
-
-            for p in pagos:
-                descuentos = self.discount_model.get_total_descuentos_por_pago(p["id_pago"])
-                self.tabla_pagos.rows.append(ft.DataRow(cells=[
-                    ft.DataCell(ft.Text(str(p["numero_nomina"]))),
-                    ft.DataCell(ft.Text(p["nombre_completo"])),
-                    ft.DataCell(ft.Text(str(p["fecha_pago"]))),
-                    ft.DataCell(ft.Text(str(p["horas_trabajadas"]))),
-                    ft.DataCell(ft.Text(f"${p['sueldo_por_hora']:.2f}")),
-                    ft.DataCell(ft.Text(f"${p['monto_base']:.2f}")),
-                    ft.DataCell(ft.Text(f"${descuentos:.2f}")),
-                    ft.DataCell(ft.Text(f"${p['monto_total']:.2f}")),
-                    ft.DataCell(ft.Row([
-                        ft.IconButton(icon=ft.icons.EDIT),
-                        ft.IconButton(icon=ft.icons.DELETE)
-                    ]))
-                ]))
-                total_pagado += float(p["monto_total"])
-
-            if not self.tabla_pagos.rows:
-                self.tabla_pagos.rows.append(ft.DataRow(cells=[
-                    ft.DataCell(ft.Text("-")) for _ in range(9)
-                ]))
-
-            self.resumen_pagos.value = f"Total pagado: ${total_pagado:.2f}"
-            self.page.update()
-        except Exception as ex:
-            ModalAlert.mostrar_info("Error al cargar pagos", str(ex))
 
     def _abrir_modal_fecha_id(self, e):
         self.date_selector_id.fecha_inicio = self.fecha_inicio_id
@@ -187,8 +102,6 @@ class PagosContainer(ft.Container):
         return ft.Row([
             self._build_icon_button("Importar", ft.icons.FILE_DOWNLOAD, lambda _: print("📁 Importar presionado")),
             self._build_icon_button("Exportar", ft.icons.FILE_UPLOAD, lambda _: print("📤 Exportar presionado")),
-            self._build_icon_button("Generar automáticamente", ft.icons.PLAY_ARROW, self._generar_nomina_automatica),
-            self._build_icon_button("Limpiar", ft.icons.CLEAR_ALL, self._mostrar_pagos_pagados),
             ft.Container(
                 content=ft.Row([
                     ft.Icon(name=ft.icons.PERSON_SEARCH),
@@ -226,3 +139,143 @@ class PagosContainer(ft.Container):
                 ft.Text(text)
             ], spacing=5)
         )
+
+    def _make_descuento_handler(self, pago):
+        return lambda e: self._abrir_modal_descuentos(pago)
+
+    def _guardar_pago_confirmado(self, id_pago: int):
+        def confirmar():
+            try:
+                pago = self.payment_model.get_by_id(id_pago)
+                if pago["status"] != "success" or not pago["data"]:
+                    ModalAlert.mostrar_info("Error", f"No se encontró el pago con ID {id_pago}")
+                    return
+
+                total_descuentos = self.discount_model.get_total_descuentos_por_pago(id_pago)
+                monto_base = pago["data"]["monto_base"]
+                monto_total = max(0, monto_base - total_descuentos)
+
+                campos = {
+                    "estado": "pagado",
+                    "monto_total": monto_total,
+                    "pago_efectivo": monto_total,
+                    "fecha_pago": datetime.today().strftime("%Y-%m-%d")
+                }
+
+                result = self.payment_model.update_pago(id_pago, campos)
+                if result["status"] == "success":
+                    self._mostrar_pagos_pagados()
+                else:
+                    ModalAlert.mostrar_info("Error", result["message"])
+            except Exception as ex:
+                ModalAlert.mostrar_info("Error interno", str(ex))
+
+        ModalAlert(
+            title_text="Confirmar pago",
+            message=f"¿Deseas confirmar el pago con ID {id_pago}?",
+            on_confirm=confirmar
+        ).mostrar()
+
+    def _eliminar_pago(self, id_pago: int):
+        def eliminar():
+            try:
+                self.discount_model.eliminar_por_id_pago(id_pago)
+                self.payment_model.db.run_query("DELETE FROM pagos WHERE id_pago = %s", (id_pago,))
+                self._mostrar_pagos_pagados()
+            except Exception as ex:
+                ModalAlert.mostrar_info("Error al eliminar", str(ex))
+
+        ModalAlert(
+            title_text="Eliminar Pago",
+            message=f"¿Estás seguro de eliminar el pago con ID {id_pago}?",
+            on_confirm=eliminar
+        ).mostrar()
+
+    def _mostrar_pagos_pagados(self):
+        try:
+            self.tabla_pagos.columns = [
+                ft.DataColumn(label=ft.Text("ID Pago")),
+                ft.DataColumn(label=ft.Text("ID Empleado")),
+                ft.DataColumn(label=ft.Text("Nombre")),
+                ft.DataColumn(label=ft.Text("Fecha Pago")),
+                ft.DataColumn(label=ft.Text("Horas")),
+                ft.DataColumn(label=ft.Text("Sueldo/Hora")),
+                ft.DataColumn(label=ft.Text("Monto Base")),
+                ft.DataColumn(label=ft.Text("Descuentos")),
+                ft.DataColumn(label=ft.Text("Total")),
+                ft.DataColumn(label=ft.Text("Acciones")),
+                ft.DataColumn(label=ft.Text("Estado"))
+            ]
+
+            self.tabla_pagos.rows.clear()
+            total_pagado = 0
+
+            query = """
+                SELECT p.id_pago, p.numero_nomina, p.fecha_pago,
+                    p.total_horas_trabajadas, p.monto_base, p.monto_total, p.estado,
+                    e.nombre_completo, e.sueldo_por_hora
+                FROM pagos p
+                JOIN empleados e ON p.numero_nomina = e.numero_nomina
+                ORDER BY p.fecha_pago DESC
+            """
+            pagos = self.payment_model.db.get_data_list(query, dictionary=True)
+
+            if not pagos:
+                self.tabla_pagos.rows.append(ft.DataRow(cells=[
+                    ft.DataCell(ft.Text("-")) for _ in range(11)
+                ]))
+            else:
+                for p in pagos:
+                    if not p:
+                        continue
+                    descuentos = self.discount_model.get_total_descuentos_por_pago(p["id_pago"])
+                    estado = p["estado"]
+                    acciones = ft.DataCell(ft.Text("✔️")) if estado == "pagado" else ft.DataCell(ft.Row([
+                        ft.IconButton(icon=ft.icons.CHECK, tooltip="Confirmar pago", on_click=lambda e, id=p["id_pago"]: self._guardar_pago_confirmado(id)),
+                        ft.IconButton(icon=ft.icons.CANCEL, tooltip="Eliminar pago", on_click=lambda e, id=p["id_pago"]: self._eliminar_pago(id))
+                    ]))
+
+                    self.tabla_pagos.rows.append(ft.DataRow(cells=[
+                        ft.DataCell(ft.Text(str(p["id_pago"]))),
+                        ft.DataCell(ft.Text(str(p["numero_nomina"]))),
+                        ft.DataCell(ft.Text(p["nombre_completo"])),
+                        ft.DataCell(ft.Text(str(p["fecha_pago"]))),
+                        ft.DataCell(ft.Text(str(p["total_horas_trabajadas"]))),
+                        ft.DataCell(ft.Text(f"${p['sueldo_por_hora']:.2f}")),
+                        ft.DataCell(ft.Text(f"${p['monto_base']:.2f}")),
+                        ft.DataCell(ft.Row([
+                            ft.Text(f"${descuentos:.2f}"),
+                            ft.IconButton(icon=ft.icons.EDIT_NOTE, tooltip="Editar descuentos", on_click=self._make_descuento_handler(p))
+                        ])),
+                        ft.DataCell(ft.Text(f"${p['monto_total']:.2f}")),
+                        acciones,
+                        ft.DataCell(ft.Text("Pagado" if estado == "pagado" else "Pendiente"))
+                    ]))
+
+                    if estado == "pagado":
+                        total_pagado += float(p["monto_total"])
+
+            self.resumen_pagos.value = f"Total pagado: ${total_pagado:.2f}"
+            self.page.update()
+
+        except Exception as ex:
+            ModalAlert.mostrar_info("Error al cargar pagos", str(ex))
+
+    def _abrir_modal_descuentos(self, pago: dict):
+        def on_confirmar(data):
+            self.discount_model.guardar_descuentos_editables(
+                id_pago=pago["id_pago"],
+                aplicar_imss=data["aplicar_imss"],
+                aplicar_transporte=data["aplicar_transporte"],
+                monto_transporte=data["monto_transporte"],
+                aplicar_comida=data["aplicar_comida"],
+                estado_comida=data["estado_comida"],
+                descuento_extra=data["descuento_extra"],
+                descripcion_extra=data["descripcion_extra"],
+                numero_nomina=pago["numero_nomina"]
+            )
+            self._mostrar_pagos_pagados()
+
+        # ✅ MANTENER REFERENCIA
+        self.modal_descuentos = ModalDescuentos(pago, on_confirmar)
+        self.modal_descuentos.mostrar()
