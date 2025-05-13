@@ -194,3 +194,29 @@ class DatabaseMysql:
             if page:
                 mostrar_mensaje(page, "Error de Importación", str(e))
             return False
+
+    def execute_procedure(self, procedure_name: str, params: tuple = ()) -> list:
+        try:
+            cursor = self.connection.cursor(dictionary=True)
+            cursor.callproc(procedure_name, params)
+            results = []
+
+            for result in cursor.stored_results():
+                results = result.fetchall()
+
+            cursor.close()
+            return results
+        except Exception as ex:
+            print(f"❌ Error ejecutando SP '{procedure_name}': {ex}")
+            return []
+
+    def get_last_insert_id(self):
+        try:
+            cursor = self.connection.cursor()
+            cursor.execute("SELECT LAST_INSERT_ID()")
+            result = cursor.fetchone()
+            cursor.close()
+            return result[0] if result else None
+        except Exception as e:
+            print(f"❌ Error al obtener el último ID insertado: {e}")
+            return None

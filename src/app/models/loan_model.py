@@ -146,3 +146,15 @@ class LoanModel:
         query = "SELECT AUTO_INCREMENT FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = %s AND TABLE_NAME = 'prestamos'"
         result = self.db.get_data(query, (self.db.database,), dictionary=True)
         return result.get("AUTO_INCREMENT", None)
+
+    def incrementar_dias_retraso(self, id_prestamo: int):
+        try:
+            query = f"""
+                UPDATE {E_PRESTAMOS.TABLE.value}
+                SET {E_PRESTAMOS.PRESTAMO_DIAS_RETRASO.value} = {E_PRESTAMOS.PRESTAMO_DIAS_RETRASO.value} + 1
+                WHERE {E_PRESTAMOS.PRESTAMO_ID.value} = %s AND {E_PRESTAMOS.PRESTAMO_ESTADO.value} = 'activo'
+            """
+            self.db.run_query(query, (id_prestamo,))
+            return {"status": "success", "message": f"✅ Día de retraso agregado al préstamo {id_prestamo}"}
+        except Exception as ex:
+            return {"status": "error", "message": f"❌ Error al actualizar días de retraso: {ex}"}

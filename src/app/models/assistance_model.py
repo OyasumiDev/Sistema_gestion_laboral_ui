@@ -184,23 +184,28 @@ class AssistanceModel:
             )
             BEGIN
                 IF p_numero_nomina IS NOT NULL THEN
-                    -- Total por un solo empleado
-                    SELECT
-                        a.numero_nomina,
-                        e.nombre_completo,
-                        SEC_TO_TIME(SUM(TIME_TO_SEC(a.tiempo_trabajo))) AS total_horas_trabajadas
-                    FROM asistencias a
-                    JOIN empleados e ON a.numero_nomina = e.numero_nomina
-                    WHERE a.numero_nomina = p_numero_nomina
-                    AND a.fecha BETWEEN p_fecha_inicio AND p_fecha_fin
-                    AND a.estado = 'completo'
-                    GROUP BY a.numero_nomina, e.nombre_completo;
+                    -- Verificar si el empleado existe
+                    IF EXISTS (SELECT 1 FROM empleados WHERE numero_nomina = p_numero_nomina) THEN
+                        -- Total por un solo empleado
+                        SELECT
+                            a.numero_nomina,
+                            e.nombre_completo,
+                            IFNULL(SEC_TO_TIME(SUM(TIME_TO_SEC(a.tiempo_trabajo))), '00:00:00') AS total_horas_trabajadas
+                        FROM asistencias a
+                        JOIN empleados e ON a.numero_nomina = e.numero_nomina
+                        WHERE a.numero_nomina = p_numero_nomina
+                        AND a.fecha BETWEEN p_fecha_inicio AND p_fecha_fin
+                        AND a.estado = 'completo'
+                        GROUP BY a.numero_nomina, e.nombre_completo;
+                    ELSE
+                        SELECT 'Empleado no encontrado' AS mensaje;
+                    END IF;
                 ELSE
-                    -- Total de todos los empleados
+                    -- Total de todos los empleados con asistencias completas
                     SELECT
                         a.numero_nomina,
                         e.nombre_completo,
-                        SEC_TO_TIME(SUM(TIME_TO_SEC(a.tiempo_trabajo))) AS total_horas_trabajadas
+                        IFNULL(SEC_TO_TIME(SUM(TIME_TO_SEC(a.tiempo_trabajo))), '00:00:00') AS total_horas_trabajadas
                     FROM asistencias a
                     JOIN empleados e ON a.numero_nomina = e.numero_nomina
                     WHERE a.fecha BETWEEN p_fecha_inicio AND p_fecha_fin
@@ -217,6 +222,7 @@ class AssistanceModel:
             print(f"✅ Stored Procedure '{sp_name}' creado correctamente.")
         else:
             print(f"✔️ Stored Procedure '{sp_name}' ya existe.")
+
 
     def add(self,
             numero_nomina: int,
