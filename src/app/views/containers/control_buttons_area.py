@@ -64,20 +64,20 @@ class ControlButtonsArea(ft.Column):
             )
         ) if self.mostrar_theme else None
 
-        # Botón settings
-        btn_settings = ft.GestureDetector(
-            on_tap=self.on_settings,
-            content=ft.Container(
-                bgcolor=self.bg,
-                padding=6,
-                border_radius=6,
-                content=ft.Image(
-                    src="assets/buttons/settings-button.png",
-                    width=24,
-                    height=24
-                )
-            )
-        ) if self.mostrar_settings else None
+        # # Botón settings
+        # btn_settings = ft.GestureDetector(
+        #     on_tap=self.on_settings,
+        #     content=ft.Container(
+        #         bgcolor=self.bg,
+        #         padding=6,
+        #         border_radius=6,
+        #         content=ft.Image(
+        #             src="assets/buttons/settings-button.png",
+        #             width=24,
+        #             height=24
+        #         )
+        #     )
+        # ) if self.mostrar_settings else None
 
         # Botón salir
         btn_exit = ft.GestureDetector(
@@ -97,8 +97,8 @@ class ControlButtonsArea(ft.Column):
         controls = [btn_expand]
         if btn_theme:
             controls.append(btn_theme)
-        if btn_settings:
-            controls.append(btn_settings)
+        # if btn_settings:
+        #     controls.append(btn_settings)
         controls.append(btn_exit)
 
         self.controls = controls

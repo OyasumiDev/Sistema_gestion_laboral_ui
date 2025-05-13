@@ -16,7 +16,7 @@ class MenuButtonsArea(ft.Column):
             ("attendance-area-button.png",      "Asistencias","/home/asistencias"),
             ("payment-area-button.png",         "Pagos",      "/home/pagos"),
             ("nomina-area-button.png",          "Préstamos",  "/home/prestamos"),
-            ("performance-area-button.png",     "Desempeño",  "/home/desempeno"),
+            # ("performance-area-button.png",     "Desempeño",  "/home/desempeno"),
             ("reports-area-button.png",         "Reportes",   "/home/reportes"),
         ]
         if is_root:

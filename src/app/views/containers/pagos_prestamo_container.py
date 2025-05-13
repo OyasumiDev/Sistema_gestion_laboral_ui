@@ -1,17 +1,17 @@
 from datetime import datetime
-import pandas as pd
-import flet as ft
-from urllib.parse import urlparse, parse_qs
 from decimal import Decimal
-
+from urllib.parse import urlparse, parse_qs
+import flet as ft
+import os
 from app.core.app_state import AppState
 from app.views.containers.modal_alert import ModalAlert
-from app.models.loan_payment_model import LoanPaymentModel
 from app.models.loan_model import LoanModel
+from app.models.loan_payment_model import LoanPaymentModel
+from app.core.enums.e_loan_payment_model import E_PAGOS_PRESTAMO
+from app.core.enums.e_prestamos_model import E_PRESTAMOS
+import pandas as pd
 from app.core.invokers.file_open_invoker import FileOpenInvoker
 from app.core.invokers.file_save_invoker import FileSaveInvoker
-from app.core.enums.e_loan_payment_model import E_LOAN_PAYMENT
-from app.core.enums.e_loan_model import E_LOAN
 
 
 class PagosPrestamoContainer(ft.Container):
@@ -20,81 +20,130 @@ class PagosPrestamoContainer(ft.Container):
         self.page = AppState().page
         self.pago_model = LoanPaymentModel()
         self.prestamo_model = LoanModel()
+        self.E = E_PAGOS_PRESTAMO
+        self.P = E_PRESTAMOS
         self.tabla_pagos = ft.DataTable(columns=[], rows=[], expand=True)
 
-        self.orden_actual = "id_pago_prestamo"
-        self.orden_desc = False
-        self.interes_fijo = 10.0
-
-        self.fila_resumen = None
+        self.id_prestamo = None
         self.fila_nueva = None
+        self.resumen = ft.Text(value="", size=14, weight="bold", text_align=ft.TextAlign.CENTER)
 
         self.importador = FileOpenInvoker(
             page=self.page,
             on_select=self._procesar_importacion,
             allowed_extensions=["xlsx"]
         )
+
+        fecha_actual = datetime.today().strftime("%Y-%m-%d")
         self.exportador = FileSaveInvoker(
             page=self.page,
-            on_save=self._guardar_exportacion,
-            save_dialog_title="Guardar pagos en Excel",
-            file_name="pagos_prestamo.xlsx",
+            on_save=self._exportar_pagos,
+            save_dialog_title="Exportar pagos del préstamo",
+            file_name=f"Pagos_Prestamo_Fecha_{fecha_actual}_Exportados.xlsx",
             allowed_extensions=["xlsx"]
+        )
+
+        self.boton_regresar = self._boton_estilizado("Regresar", ft.icons.ARROW_BACK, self._volver)
+        self.boton_importar = self._boton_estilizado(
+            "Importar", ft.icons.FILE_UPLOAD, lambda _: self.importador.open()
+        )
+
+        self.boton_exportar = self._boton_estilizado(
+            "Exportar", ft.icons.FILE_DOWNLOAD, lambda _: self.exportador.open_save()
         )
 
         self.boton_agregar = self._boton_estilizado("Agregar", ft.icons.ADD, self._agregar_fila_pago)
 
-        self.layout = ft.Column(
-            expand=True,
-            alignment=ft.MainAxisAlignment.CENTER,
-            horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-            controls=[]
-        )
+        self.layout = ft.Column(expand=True, controls=[])
         self.content = self.layout
-
         self.did_mount()
-        
-    def _boton_estilizado(self, texto, icono, handler):
-        return ft.ElevatedButton(
-            icon=ft.Icon(icono),
-            text=texto,
-            on_click=handler,
-            style=ft.ButtonStyle(
-                padding=ft.padding.all(10),
-                shape=ft.RoundedRectangleBorder(radius=8)
-            )
-        )
 
-    def _volver(self, e=None):
-        ruta = "/prestamos"
-        if self.id_empleado and self.id_empleado.isdigit():
-            ruta += f"?id_empleado={self.id_empleado}"
-        self.page.go(ruta)
+    def _boton_estilizado(self, texto, icono, evento):
+        return ft.ElevatedButton(
+            text=texto,
+            icon=ft.Icon(icono),
+            on_click=evento,
+            style=ft.ButtonStyle(padding=10, shape=ft.RoundedRectangleBorder(radius=6))
+        )
 
     def did_mount(self):
-        parsed = urlparse(self.page.route)
-        query_params = parse_qs(parsed.query)
-        self.id_prestamo = query_params.get("id_prestamo", [None])[0]
-        self.id_empleado = query_params.get("id_empleado", [None])[0]
+        query = urlparse(self.page.route).query
+        params = parse_qs(query)
+        self.id_prestamo = int(params.get("id_prestamo", [0])[0])
+        self._cargar_pagos(self.id_prestamo)
 
-        self._build()
-        if self.id_prestamo and self.id_prestamo.isdigit():
-            self._cargar_pagos(int(self.id_prestamo))
-        else:
-            ModalAlert.mostrar_info("Error", "ID de préstamo no válido o faltante.")
+    def _cargar_pagos(self, id_prestamo: int):
+        self.tabla_pagos.columns = [
+            ft.DataColumn(label=ft.Text("ID Pago")),
+            ft.DataColumn(label=ft.Text("Fecha Gen.")),
+            ft.DataColumn(label=ft.Text("Fecha Real")),
+            ft.DataColumn(label=ft.Text("Monto Pagado")),
+            ft.DataColumn(label=ft.Text("Monto Original")),
+            ft.DataColumn(label=ft.Text("Saldo Actual")),
+            ft.DataColumn(label=ft.Text("Saldo + Interés")),
+            ft.DataColumn(label=ft.Text("Interés %")),
+            ft.DataColumn(label=ft.Text("Observaciones")),
+            ft.DataColumn(label=ft.Text("Acciones"))
+        ]
 
-    def _crear_fila_resumen(self, total_pagado, saldo_recalculado):
-        return ft.DataRow(cells=[
-            ft.DataCell(ft.Text("")),
-            ft.DataCell(ft.Text("")),
-            ft.DataCell(ft.Text("Total pagado:", weight=ft.FontWeight.BOLD)),
-            ft.DataCell(ft.Text(f"${total_pagado:.2f}", weight=ft.FontWeight.BOLD)),
-            ft.DataCell(ft.Text("")),
-            ft.DataCell(ft.Text(f"${saldo_recalculado:.2f}", weight=ft.FontWeight.BOLD)),
-            ft.DataCell(ft.Text("")),
-            ft.DataCell(ft.Text("")),
-            ft.DataCell(ft.Text(""))
-        ])
+        datos_prestamo = self.pago_model.get_saldo_y_monto_prestamo(id_prestamo)
+        if not datos_prestamo:
+            ModalAlert.mostrar_info("Error", "Préstamo no encontrado.")
+            return
+
+        resultado = self.pago_model.get_by_prestamo(id_prestamo)
+        if resultado["status"] != "success":
+            ModalAlert.mostrar_info("Error", resultado["message"])
+            return
+
+        total_pagado = 0
+        saldo_restante = float(datos_prestamo["saldo_prestamo"])
+        self.tabla_pagos.rows.clear()
+        for p in resultado["data"]:
+            interes_aplicado = float(p[self.E.PAGO_INTERES_APLICADO.value])
+            monto_pagado = float(p[self.E.PAGO_MONTO_PAGADO.value])
+            saldo_actual = float(p[self.E.PAGO_SALDO_RESTANTE.value])
+            saldo_con_interes = saldo_actual + interes_aplicado
+            total_pagado += monto_pagado
+
+            self.tabla_pagos.rows.append(ft.DataRow(cells=[
+                ft.DataCell(ft.Text(p[self.E.PAGO_ID.value])),
+                ft.DataCell(ft.Text(p[self.E.PAGO_FECHA_PAGO.value])),
+                ft.DataCell(ft.Text(p[self.E.PAGO_FECHA_REAL.value])),
+                ft.DataCell(ft.Text(f"${monto_pagado:.2f}")),
+                ft.DataCell(ft.Text(f"${datos_prestamo['monto_prestamo']:.2f}")),
+                ft.DataCell(ft.Text(f"${saldo_actual:.2f}")),
+                ft.DataCell(ft.Text(f"${saldo_con_interes:.2f}")),
+                ft.DataCell(ft.Text(f"{p[self.E.PAGO_INTERES_PORCENTAJE.value]}%")),
+                ft.DataCell(ft.Text(p.get(self.E.PAGO_OBSERVACIONES.value, "") or "")),
+                ft.DataCell(ft.IconButton(
+                    icon=ft.icons.DELETE,
+                    icon_color=ft.colors.RED,
+                    tooltip="Eliminar pago",
+                    on_click=lambda e, pid=p[self.E.PAGO_ID.value]: self._eliminar_pago(pid)
+                ))
+            ]))
+
+        self.resumen.value = f"💰 Total pagado: ${total_pagado:.2f} | 💸 Saldo restante: ${saldo_restante:.2f}"
+
+        self.layout.controls = [
+            ft.Row([
+                ft.Container(
+                    content=ft.Text(f"PRÉSTAMO DEL EMPLEADO #{self.id_prestamo}",
+                                    style=ft.TextThemeStyle.TITLE_LARGE,
+                                    text_align=ft.TextAlign.CENTER), expand=True
+                )
+            ]),
+            ft.Row([
+                self.boton_importar,
+                self.boton_exportar,
+                self.boton_agregar,
+                self.boton_regresar
+            ], alignment=ft.MainAxisAlignment.START),
+            ft.Row([self.tabla_pagos], alignment=ft.MainAxisAlignment.CENTER),
+            self.resumen
+        ]
+        self.page.update()
 
     def _crear_fila_nueva(self, monto_total, saldo_actual):
         hoy = datetime.today().strftime("%Y-%m-%d")
@@ -102,59 +151,66 @@ class PagosPrestamoContainer(ft.Container):
 
         interes_selector = ft.Dropdown(
             label="Interés %",
-            value=str(self.interes_fijo),
+            value="10",
             options=[
-                ft.dropdown.Option("0.0"),
-                ft.dropdown.Option("5.0"),
-                ft.dropdown.Option("10.0"),
-                ft.dropdown.Option("15.0")
-            ]
+                ft.dropdown.Option("5"),
+                ft.dropdown.Option("10"),
+                ft.dropdown.Option("15")
+            ],
+            width=80
         )
 
-        monto_input = ft.TextField(label="Monto a Pagar", value="")
-        saldo_sin_interes = Decimal(str(saldo_actual))
-        saldo_text = ft.Text(value=f"${saldo_sin_interes:.2f}")
-        saldo_nuevo_text = ft.Text(value="")
+        monto_input = ft.TextField(label="Monto a Pagar", value="", width=100)
+        observaciones_input = ft.TextField(label="Observaciones", value="", width=160)
 
-        def actualizar_saldo_con_interes(e):
+        saldo_actual_decimal = Decimal(str(saldo_actual))
+        saldo_con_interes_text = ft.Text(value="-", width=100)
+
+        def actualizar_interes(e):
             try:
-                interes = float(interes_selector.value)
-                nuevo_saldo = saldo_sin_interes + (saldo_sin_interes * Decimal(str(interes)) / 100)
-                saldo_nuevo_text.value = f"${nuevo_saldo:.2f}"
-                self.interes_fijo = interes
-                self.page.update()
-            except Exception:
-                saldo_nuevo_text.value = f"${saldo_sin_interes:.2f}"
+                interes = int(interes_selector.value)
+                interes_aplicado = saldo_actual_decimal * Decimal(interes) / 100
+                nuevo_saldo = saldo_actual_decimal + interes_aplicado
+                saldo_con_interes_text.value = f"${nuevo_saldo:.2f}"
+            except:
+                saldo_con_interes_text.value = "-"
+            self.page.update()
 
-        interes_selector.on_change = actualizar_saldo_con_interes
-        actualizar_saldo_con_interes(None)
+        interes_selector.on_change = actualizar_interes
+        actualizar_interes(None)
 
-        def confirmar_pago():
+        def confirmar_pago(e=None):
             try:
-                interes = float(interes_selector.value)
-                monto = float(monto_input.value)
+                monto_str = monto_input.value.strip()
+                if not monto_str:
+                    raise ValueError("Campo de monto vacío")
+                if not monto_str.replace(".", "", 1).isdigit():
+                    raise ValueError("Monto debe ser un número válido")
+                monto = float(monto_str)
                 if monto <= 0:
-                    raise ValueError("Monto no válido")
+                    raise ValueError("Monto inválido")
 
-                saldo_con_interes = saldo_sin_interes + (saldo_sin_interes * Decimal(str(interes)) / 100)
-                nuevo_saldo = saldo_con_interes - Decimal(str(monto))
+                observaciones = observaciones_input.value.strip()
+                if len(observaciones) > 100:
+                    raise ValueError("Observaciones demasiado largas (máx. 100 caracteres)")
 
-                if nuevo_saldo < 0:
-                    ModalAlert.mostrar_info("Error", "El monto es mayor al saldo total con intereses.")
-                    return
-            except Exception:
-                ModalAlert.mostrar_info("Error", "Debe ingresar un monto válido.")
-                return
+                interes = int(interes_selector.value)
 
-            resultado = self.pago_model.add_payment(
-                int(self.id_prestamo),
-                monto,
-                hoy,
-                hoy,
-                interes
-            )
-            ModalAlert.mostrar_info("Resultado", resultado["message"])
-            self._cargar_pagos(int(self.id_prestamo))
+                resultado = self.pago_model.add_payment(
+                    id_prestamo=int(self.id_prestamo),
+                    monto_pagado=monto,
+                    fecha_pago=hoy,
+                    fecha_generacion=hoy,
+                    interes_porcentaje=interes,
+                    fecha_real_pago=hoy,
+                    observaciones=observaciones
+                )
+
+                ModalAlert.mostrar_info("Resultado", resultado["message"])
+                self._cargar_pagos(int(self.id_prestamo))
+
+            except Exception as ex:
+                ModalAlert.mostrar_info("Error", f"Fallo al registrar pago: {str(ex)}")
 
         return ft.DataRow(cells=[
             ft.DataCell(ft.Text(nuevo_id)),
@@ -162,169 +218,151 @@ class PagosPrestamoContainer(ft.Container):
             ft.DataCell(ft.Text(hoy)),
             ft.DataCell(monto_input),
             ft.DataCell(ft.Text(f"${monto_total:.2f}")),
-            ft.DataCell(saldo_text),
-            ft.DataCell(saldo_nuevo_text),
+            ft.DataCell(ft.Text(f"${saldo_actual:.2f}")),
+            ft.DataCell(saldo_con_interes_text),
             ft.DataCell(interes_selector),
+            ft.DataCell(observaciones_input),
             ft.DataCell(ft.Row([
-                ft.IconButton(icon=ft.icons.CHECK, icon_color=ft.colors.GREEN_600, on_click=lambda _: confirmar_pago()),
+                ft.IconButton(icon=ft.icons.CHECK, icon_color=ft.colors.GREEN_600, on_click=confirmar_pago),
                 ft.IconButton(icon=ft.icons.CLOSE, icon_color=ft.colors.RED_600, on_click=lambda _: self._cargar_pagos(int(self.id_prestamo)))
             ]))
         ])
 
-
-    def _build(self):
-        botones = ft.Row([
-            self._boton_estilizado("Regresar", ft.icons.ARROW_BACK, self._volver),
-            self.importador.get_open_button("Importar Pagos"),
-            self.exportador.get_save_button("Exportar Pagos"),
-            self.boton_agregar
-        ], spacing=15)
-
-        self.layout.controls = [
-            ft.Text("PAGOS DEL PRÉSTAMO", style=ft.TextThemeStyle.TITLE_MEDIUM),
-            botones,
-            self.tabla_pagos
-        ]
-
-    def _cargar_pagos(self, id_prestamo):
-        self.tabla_pagos.rows.clear()
-
-        resultado = self.pago_model.get_by_prestamo(id_prestamo)
-        if resultado["status"] != "success":
-            ModalAlert.mostrar_info("Error", resultado["message"])
-            return
-
-        datos = resultado["data"]
-        datos = sorted(datos, key=lambda p: p.get(self.orden_actual, 0), reverse=self.orden_desc)
-
-        prestamo_info = self.prestamo_model.get_by_id(id_prestamo)
-        if prestamo_info["status"] != "success":
-            ModalAlert.mostrar_info("Error", prestamo_info["message"])
-            return
-
-        info = prestamo_info["data"]
-        monto_total = float(info[E_LOAN.PRESTAMO_MONTO.value])
-        saldo_actual = Decimal(str(monto_total))
-        total_pagado = 0
-
-        self.tabla_pagos.columns = [
-            ft.DataColumn(label=ft.Text("ID Pago")),
-            ft.DataColumn(label=ft.Text("Fecha Generada")),
-            ft.DataColumn(label=ft.Text("Fecha Pagada")),
-            ft.DataColumn(label=ft.Text("Monto Pagado")),
-            ft.DataColumn(label=ft.Text("Monto Original")),
-            ft.DataColumn(label=ft.Text("Saldo Actual")),
-            ft.DataColumn(label=ft.Text("Interés %")),
-            ft.DataColumn(label=ft.Text("Días de Retraso")),
-            ft.DataColumn(label=ft.Text("Acciones"))
-        ]
-
-        for p in datos:
-            monto_pagado = Decimal(str(p["monto_pagado"]))
-            interes_pct = Decimal(str(p["interes_aplicado"]))
-            saldo_actual -= monto_pagado
-            saldo_actual += round(saldo_actual * (interes_pct / 100), 2)
-            total_pagado += float(monto_pagado)
-
-            self.tabla_pagos.rows.append(ft.DataRow(cells=[
-                ft.DataCell(ft.Text(p["id_pago_prestamo"])),
-                ft.DataCell(ft.Text(p["fecha_generacion"])),
-                ft.DataCell(ft.Text(p["fecha_pago"])),
-                ft.DataCell(ft.Text(f"${monto_pagado:.2f}")),
-                ft.DataCell(ft.Text(f"${monto_total:.2f}")),
-                ft.DataCell(ft.Text(f"${max(saldo_actual, 0):.2f}")),
-                ft.DataCell(ft.Text(f"{interes_pct:.1f}%")),
-                ft.DataCell(ft.Text(str(p["dias_retraso"]))),
-                ft.DataCell(self._build_acciones_cell(p))
-            ]))
-
-        self.boton_agregar.disabled = saldo_actual <= 0
-
-        if saldo_actual > 0:
-            self.fila_nueva = self._crear_fila_nueva(monto_total, float(saldo_actual))
-            self.tabla_pagos.rows.append(self.fila_nueva)
-
-        self.fila_resumen = self._crear_fila_resumen(total_pagado, saldo_actual)
-        self.tabla_pagos.rows.append(self.fila_resumen)
-        self.page.update()
-
-
-    def _build_acciones_cell(self, pago):
-        return ft.Row([
-            ft.IconButton(icon=ft.icons.EDIT, tooltip="Editar", on_click=lambda _: self._editar_pago(pago)),
-            ft.IconButton(icon=ft.icons.DELETE, tooltip="Eliminar", on_click=lambda _: self._eliminar_pago(pago["id_pago_prestamo"]))
-        ])
-
-    def _ordenar_por_columna(self, nombre_columna):
-        try:
-            if self.orden_actual == nombre_columna:
-                self.orden_desc = not self.orden_desc
-            else:
-                self.orden_actual = nombre_columna
-                self.orden_desc = False
-            self._cargar_pagos(int(self.id_prestamo))
-        except Exception as e:
-            print(f"⚠️ Error al ordenar: {e}")
-
-    def _editar_pago(self, pago):
-        ModalAlert.mostrar_info("Editar", "Los pagos no pueden ser editados una vez registrados.")
-
-    def _eliminar_pago(self, id_pago):
-        resultado = self.pago_model.delete_by_id_pago(id_pago)
-        ModalAlert.mostrar_info("Resultado", resultado["message"])
-        self._cargar_pagos(int(self.id_prestamo))
-
     def _agregar_fila_pago(self, e=None):
-        prestamo_info = self.prestamo_model.get_by_id(int(self.id_prestamo))
-        if prestamo_info["status"] != "success":
-            ModalAlert.mostrar_info("Error", prestamo_info["message"])
+        datos_prestamo = self.pago_model.get_saldo_y_monto_prestamo(self.id_prestamo)
+        if not datos_prestamo:
+            ModalAlert.mostrar_info("Error", "No se puede generar fila sin datos de préstamo.")
             return
 
-        datos = prestamo_info["data"]
-        monto_total = float(datos[E_LOAN.PRESTAMO_MONTO.value])
-        saldo = float(datos[E_LOAN.PRESTAMO_SALDO.value])
+        self.fila_nueva = self._crear_fila_nueva(
+            monto_total=float(datos_prestamo["monto_prestamo"]),
+            saldo_actual=float(datos_prestamo["saldo_prestamo"])
+        )
 
-        if self.fila_resumen and self.fila_resumen in self.tabla_pagos.rows:
-            self.tabla_pagos.rows.remove(self.fila_resumen)
-        if self.fila_nueva and self.fila_nueva in self.tabla_pagos.rows:
-            self.tabla_pagos.rows.remove(self.fila_nueva)
-
-        self.fila_nueva = self._crear_fila_nueva(monto_total, saldo)
         self.tabla_pagos.rows.append(self.fila_nueva)
-        self.tabla_pagos.rows.append(self.fila_resumen)
         self.page.update()
 
-    def _procesar_importacion(self, path):
-        try:
-            df = pd.read_excel(path)
-            for _, row in df.iterrows():
-                monto = float(row.get(E_LOAN_PAYMENT.PAGO_MONTO_PAGADO.value, 0))
-                fecha_pago = str(row.get(E_LOAN_PAYMENT.PAGO_FECHA_PAGO.value, datetime.today().strftime("%Y-%m-%d")))
-                fecha_generacion = str(row.get(E_LOAN_PAYMENT.PAGO_FECHA_GENERACION.value, datetime.today().strftime("%Y-%m-%d")))
-                interes = float(row.get(E_LOAN_PAYMENT.PAGO_INTERES_APLICADO.value, self.interes_fijo))
-
-                self.pago_model.add_payment(
-                    int(self.id_prestamo),
-                    monto,
-                    fecha_pago,
-                    fecha_generacion,
-                    interes
-                )
-            ModalAlert.mostrar_info("Éxito", "Pagos importados correctamente.")
+    def _eliminar_pago(self, id_pago: int):
+        resultado = self.pago_model.delete_by_id_pago(id_pago)
+        if resultado["status"] == "success":
+            ModalAlert.mostrar_info("Eliminado", "El pago fue eliminado correctamente.")
             self._cargar_pagos(int(self.id_prestamo))
-        except Exception as ex:
-            ModalAlert.mostrar_info("Error", str(ex))
-
-    def _guardar_exportacion(self, path):
-        resultado = self.pago_model.get_by_prestamo(int(self.id_prestamo))
-        if resultado["status"] != "success":
+        else:
             ModalAlert.mostrar_info("Error", resultado["message"])
-            return
+
+    def _procesar_importacion(self, ruta_archivo: str):
         try:
-            df = pd.DataFrame(resultado["data"])
-            df[E_LOAN_PAYMENT.PAGO_FECHA_PAGO.value] = pd.to_datetime(df[E_LOAN_PAYMENT.PAGO_FECHA_PAGO.value]).dt.strftime("%Y-%m-%d")
-            df[E_LOAN_PAYMENT.PAGO_FECHA_GENERACION.value] = pd.to_datetime(df[E_LOAN_PAYMENT.PAGO_FECHA_GENERACION.value]).dt.strftime("%Y-%m-%d")
-            df.to_excel(path, index=False)
-            ModalAlert.mostrar_info("Exportado", f"Archivo guardado en {path}")
+            df = pd.read_excel(ruta_archivo)
+            columnas_requeridas = [
+                "Monto Pagado", "Fecha Generación", "Interés %", "Fecha Real", "Observaciones"
+            ]
+            for col in columnas_requeridas:
+                if col not in df.columns:
+                    ModalAlert.mostrar_info("Error", f"Falta la columna requerida: '{col}'")
+                    return
+
+            exitos = 0
+            duplicados = 0
+
+            for _, row in df.iterrows():
+                fecha_pago = str(row["Fecha Generación"])[:10]
+                fecha_real = str(row["Fecha Real"])[:10]
+                monto = float(row["Monto Pagado"])
+                interes = int(row["Interés %"])
+                observaciones = str(row.get("Observaciones", ""))
+
+                # Verificar duplicados
+                existente = self.pago_model.db.get_data(
+                    f"""SELECT COUNT(*) AS c FROM {self.E.TABLE.value}
+                        WHERE {self.E.PAGO_FECHA_PAGO.value} = %s
+                        AND {self.E.PAGO_FECHA_REAL.value} = %s
+                        AND {self.E.PAGO_MONTO_PAGADO.value} = %s
+                        AND {self.E.PAGO_ID_PRESTAMO.value} = %s""",
+                    (fecha_pago, fecha_real, monto, int(self.id_prestamo)),
+                    dictionary=True
+                )
+
+                if existente.get("c", 0) > 0:
+                    duplicados += 1
+                    continue
+
+                resultado = self.pago_model.add_payment(
+                    id_prestamo=int(self.id_prestamo),
+                    monto_pagado=monto,
+                    fecha_pago=fecha_pago,
+                    fecha_generacion=fecha_pago,
+                    interes_porcentaje=interes,
+                    fecha_real_pago=fecha_real,
+                    observaciones=observaciones
+                )
+
+                if resultado["status"] == "success":
+                    exitos += 1
+
+            mensaje = f"Importación completada.\nPagos agregados: {exitos}"
+            if duplicados:
+                mensaje += f"\nPagos duplicados ignorados: {duplicados}"
+
+            ModalAlert.mostrar_info("Resultado", mensaje)
+            self._cargar_pagos(int(self.id_prestamo))
+
         except Exception as ex:
-            ModalAlert.mostrar_info("Error", str(ex))
+            ModalAlert.mostrar_info("Error", f"No se pudo importar el archivo: {str(ex)}")
+
+
+    def _exportar_pagos(self, path: str = None):
+        try:
+            resultado = self.pago_model.get_by_prestamo(self.id_prestamo)
+            if resultado["status"] != "success":
+                ModalAlert.mostrar_info("Error", resultado["message"])
+                return
+
+            datos = resultado["data"]
+            if not datos:
+                ModalAlert.mostrar_info("Aviso", "No hay pagos registrados para exportar.")
+                return
+
+            columnas = [
+                (self.E.PAGO_ID.value, "ID Pago"),
+                (self.E.PAGO_FECHA_PAGO.value, "Fecha Generación"),
+                (self.E.PAGO_FECHA_REAL.value, "Fecha Real"),
+                (self.E.PAGO_MONTO_PAGADO.value, "Monto Pagado"),
+                (self.E.PAGO_INTERES_PORCENTAJE.value, "Interés %"),
+                (self.E.PAGO_INTERES_APLICADO.value, "Interés Aplicado"),
+                (self.E.PAGO_SALDO_RESTANTE.value, "Saldo Restante"),
+                (self.E.PAGO_OBSERVACIONES.value, "Observaciones")
+            ]
+
+            cuerpo = []
+            for reg in datos:
+                fila = []
+                for clave, _ in columnas:
+                    val = reg.get(clave)
+                    if isinstance(val, (pd.Timestamp, datetime)):
+                        fila.append(val.strftime("%Y-%m-%d"))
+                    elif val is None:
+                        fila.append("")
+                    else:
+                        fila.append(str(val))
+                cuerpo.append(fila)
+
+            df = pd.DataFrame(cuerpo, columns=[nombre for _, nombre in columnas])
+
+            if not path:
+                fecha = datetime.today().strftime("%Y-%m-%d")
+                nombre = f"Pagos_Prestamo_{self.id_prestamo}_{fecha}_Exportados.xlsx"
+                path = os.path.join(os.path.expanduser("~/Downloads"), nombre)
+
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+
+            with pd.ExcelWriter(path, engine="openpyxl") as writer:
+                df.to_excel(writer, index=False, sheet_name="Pagos")
+
+            ModalAlert.mostrar_info("Éxito", f"Pagos exportados correctamente a:\n{path}")
+
+        except Exception as e:
+            ModalAlert.mostrar_info("Error", f"Falló la exportación: {e}")
+
+
+    def _volver(self, e=None):
+        self.page.go("/home/prestamos")

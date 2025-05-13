@@ -1,4 +1,4 @@
-from app.core.enums.e_loan_model import E_LOAN
+from app.core.enums.e_prestamos_model import E_PRESTAMOS
 from app.core.interfaces.database_mysql import DatabaseMysql
 from datetime import datetime
 
@@ -10,7 +10,7 @@ class LoanModel:
 
     def __init__(self):
         self.db = DatabaseMysql()
-        self.E = E_LOAN
+        self.E = E_PRESTAMOS
         self._exists_table = self.check_table()
 
     def check_table(self) -> bool:
@@ -128,7 +128,6 @@ class LoanModel:
             valores.append(id_prestamo)
             self.db.run_query(query, tuple(valores))
             return {"status": "success", "message": "Préstamo actualizado correctamente"}
-
         except Exception as ex:
             return {"status": "error", "message": f"Error al actualizar el préstamo: {ex}"}
 

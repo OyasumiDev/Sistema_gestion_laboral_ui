@@ -10,8 +10,8 @@ from app.models.loan_payment_model import LoanPaymentModel
 from app.models.loan_model import LoanModel
 from app.core.invokers.file_open_invoker import FileOpenInvoker
 from app.core.invokers.file_save_invoker import FileSaveInvoker
-from app.core.enums.e_loan_payment_model import E_LOAN_PAYMENT
-from app.core.enums.e_loan_model import E_LOAN
+from app.core.enums.e_loan_payment_model import E_PAGOS_PRESTAMO
+from app.core.enums.e_prestamos_model import E_PRESTAMOS
 
 
 class PagosPrestamoContainer(ft.Container):
@@ -60,59 +60,56 @@ class PagosPrestamoContainer(ft.Container):
 
         interes_selector = ft.Dropdown(
             label="Interés %",
-            value=str(self.interes_fijo),
+            value="10",
             options=[
-                ft.dropdown.Option("0.0"),
-                ft.dropdown.Option("5.0"),
-                ft.dropdown.Option("10.0"),
-                ft.dropdown.Option("15.0")
-            ]
+                ft.dropdown.Option("5"),
+                ft.dropdown.Option("10"),
+                ft.dropdown.Option("15")
+            ],
+            width=80
         )
 
-        monto_input = ft.TextField(label="Monto a Pagar", value="")
-        saldo_sin_interes = Decimal(str(saldo_actual))
-        saldo_text = ft.Text(value=f"${saldo_sin_interes:.2f}")
-        saldo_nuevo_text = ft.Text(value="")
+        monto_input = ft.TextField(label="Monto a Pagar", value="", width=100)
+        observaciones_input = ft.TextField(label="Observaciones", value="", width=160)
 
-        def actualizar_saldo_con_interes(e):
+        saldo_actual_decimal = Decimal(str(saldo_actual))
+        saldo_con_interes_text = ft.Text(value="-", width=100)
+
+        def actualizar_interes(e):
             try:
-                interes = float(interes_selector.value)
-                nuevo_saldo = saldo_sin_interes + (saldo_sin_interes * Decimal(str(interes)) / 100)
-                saldo_nuevo_text.value = f"${nuevo_saldo:.2f}"
-                self.interes_fijo = interes
-                self.page.update()
-            except Exception:
-                saldo_nuevo_text.value = f"${saldo_sin_interes:.2f}"
+                interes = int(interes_selector.value)
+                interes_aplicado = saldo_actual_decimal * Decimal(interes) / 100
+                nuevo_saldo = saldo_actual_decimal + interes_aplicado
+                saldo_con_interes_text.value = f"${nuevo_saldo:.2f}"
+            except:
+                saldo_con_interes_text.value = "-"
+            self.page.update()
 
-        interes_selector.on_change = actualizar_saldo_con_interes
-        actualizar_saldo_con_interes(None)
+        interes_selector.on_change = actualizar_interes
+        actualizar_interes(None)
 
         def confirmar_pago():
             try:
-                interes = float(interes_selector.value)
-                monto = float(monto_input.value)
+                monto = float(monto_input.value.strip())
+                interes = int(interes_selector.value)
                 if monto <= 0:
-                    raise ValueError("Monto no válido")
+                    raise ValueError("Monto inválido")
 
-                saldo_con_interes = saldo_sin_interes + (saldo_sin_interes * Decimal(str(interes)) / 100)
-                nuevo_saldo = saldo_con_interes - Decimal(str(monto))
+                resultado = self.pago_model.add_payment(
+                    id_prestamo=int(self.id_prestamo),
+                    monto_pagado=monto,
+                    fecha_pago=hoy,
+                    fecha_generacion=hoy,
+                    interes_porcentaje=interes,
+                    fecha_real_pago=hoy,
+                    observaciones=observaciones_input.value.strip()
+                )
 
-                if nuevo_saldo < 0:
-                    ModalAlert.mostrar_info("Error", "El monto es mayor al saldo total con intereses.")
-                    return
-            except Exception:
-                ModalAlert.mostrar_info("Error", "Debe ingresar un monto válido.")
-                return
+                ModalAlert.mostrar_info("Resultado", resultado["message"])
+                self._cargar_pagos(int(self.id_prestamo))
 
-            resultado = self.pago_model.add_payment(
-                int(self.id_prestamo),
-                monto,
-                hoy,
-                hoy,
-                interes
-            )
-            ModalAlert.mostrar_info("Resultado", resultado["message"])
-            self._cargar_pagos(int(self.id_prestamo))
+            except Exception as ex:
+                ModalAlert.mostrar_info("Error", f"Fallo al registrar pago: {str(ex)}")
 
         return ft.DataRow(cells=[
             ft.DataCell(ft.Text(nuevo_id)),
@@ -120,9 +117,10 @@ class PagosPrestamoContainer(ft.Container):
             ft.DataCell(ft.Text(hoy)),
             ft.DataCell(monto_input),
             ft.DataCell(ft.Text(f"${monto_total:.2f}")),
-            ft.DataCell(saldo_text),
-            ft.DataCell(saldo_nuevo_text),
+            ft.DataCell(ft.Text(f"${saldo_actual:.2f}")),
+            ft.DataCell(saldo_con_interes_text),
             ft.DataCell(interes_selector),
+            ft.DataCell(observaciones_input),
             ft.DataCell(ft.Row([
                 ft.IconButton(icon=ft.icons.CHECK, icon_color=ft.colors.GREEN_600, on_click=lambda _: confirmar_pago()),
                 ft.IconButton(icon=ft.icons.CLOSE, icon_color=ft.colors.RED_600, on_click=lambda _: self._cargar_pagos(int(self.id_prestamo)))

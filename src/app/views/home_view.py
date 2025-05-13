@@ -8,7 +8,7 @@ from app.views.containers.usuarios_container import UsuariosContainer
 from app.views.containers.pagos_container import PagosContainer
 from app.views.containers.prestamos_container import PrestamosContainer
 from app.views.containers.pagos_prestamo_container import PagosPrestamoContainer
-
+from app.views.containers.overview_container import OverviewContainer
 
 class HomeView(ft.View):
     def __init__(self):
@@ -56,6 +56,13 @@ class HomeView(ft.View):
             content_text = "Vista no encontrada o sin acceso"
 
         fg_color = self.theme_ctrl.get_fg_color()
+
+        if section == "overview":
+            self.content_area.content = OverviewContainer()
+            self.page.update()
+            return
+
+
 
         if section == "empleados":
             from app.views.containers.empleados_container import EmpleadosContainer

@@ -1,6 +1,6 @@
 from enum import Enum
 
-class E_LOAN(Enum):
+class E_PRESTAMOS(Enum):
     TABLE = 'prestamos'
 
     PRESTAMO_ID = 'id_prestamo'
@@ -11,5 +11,3 @@ class E_LOAN(Enum):
     PRESTAMO_FECHA_SOLICITUD = 'fecha_solicitud'
     PRESTAMO_FECHA_CREACION = 'fecha_creacion'
     PRESTAMO_FECHA_MODIFICACION = 'fecha_modificacion'
-
-
