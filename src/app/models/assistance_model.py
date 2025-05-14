@@ -1,7 +1,7 @@
 from app.core.enums.e_assistance_model import E_ASSISTANCE
 from app.core.interfaces.database_mysql import DatabaseMysql
 from datetime import datetime, timedelta
-
+from typing import Optional
 
 class AssistanceModel:
     def __init__(self):
@@ -381,5 +381,29 @@ class AssistanceModel:
             return {"status": "error", "message": str(e)}
         
 
+    def get_fecha_minima_asistencia(self) -> datetime.date:
+        try:
+            query = f"SELECT MIN({E_ASSISTANCE.FECHA.value}) AS min_fecha FROM {E_ASSISTANCE.TABLE.value}"
+            result = self.db.get_data(query, dictionary=True)
+            min_fecha = result.get("min_fecha")
+            if isinstance(min_fecha, str):
+                min_fecha = datetime.strptime(min_fecha, "%Y-%m-%d").date()
+            return min_fecha
+        except Exception as e:
+            print(f"❌ Error al obtener fecha mínima de asistencia: {e}")
+            return None
+
+
+    def get_fecha_maxima_asistencia(self) -> datetime.date:
+        try:
+            query = f"SELECT MAX({E_ASSISTANCE.FECHA.value}) AS max_fecha FROM {E_ASSISTANCE.TABLE.value}"
+            result = self.db.get_data(query, dictionary=True)
+            max_fecha = result.get("max_fecha")
+            if isinstance(max_fecha, str):
+                max_fecha = datetime.strptime(max_fecha, "%Y-%m-%d").date()
+            return max_fecha
+        except Exception as e:
+            print(f"❌ Error al obtener fecha máxima de asistencia: {e}")
+            return None
 
 

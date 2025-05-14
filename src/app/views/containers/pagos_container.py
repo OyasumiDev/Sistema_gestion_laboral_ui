@@ -6,6 +6,9 @@ from app.models.payment_model import PaymentModel
 from app.models.discount_model import DiscountModel
 from app.views.containers.date_modal_selector import DateModalSelector
 from app.views.containers.modal_descuentos import ModalDescuentos
+from app.models.assistance_model import AssistanceModel
+import functools
+from decimal import Decimal
 
 
 class PagosContainer(ft.Container):
@@ -15,13 +18,22 @@ class PagosContainer(ft.Container):
         self.payment_model = PaymentModel()
         self.payment_model.crear_sp_horas_trabajadas_para_pagos()
         self.discount_model = DiscountModel()
-
+        self.assistance_model = AssistanceModel()
+        
+        
         self.fecha_inicio_id = None
         self.fecha_fin_id = None
         self.fecha_inicio_periodo = None
         self.fecha_fin_periodo = None
 
-        self.input_id = ft.TextField(label="ID Empleado", width=150, height=40)
+        self.input_id = ft.TextField(
+            label="ID Empleado",
+            width=150,
+            height=40,
+            border_color=ft.colors.OUTLINE,
+            on_change=self._validar_input_id
+        )
+
 
         self.date_selector_id = DateModalSelector(on_dates_confirmed=self._actualizar_fechas_id)
         self.date_selector_periodo = DateModalSelector(on_dates_confirmed=self._auto_generar_por_periodo)
@@ -32,26 +44,33 @@ class PagosContainer(ft.Container):
         self._build()
         self._mostrar_pagos_pagados()
 
-    def _actualizar_fechas_id(self, inicio, fin):
-        self.fecha_inicio_id = inicio
-        self.fecha_fin_id = fin
-
-    def _auto_generar_por_periodo(self, inicio, fin):
-        self.fecha_inicio_periodo = inicio
-        self.fecha_fin_periodo = fin
-        self._buscar_por_periodo(None)
-
     def _generar_pago_individual(self, e):
         if not self.fecha_inicio_id or not self.fecha_fin_id:
             ModalAlert.mostrar_info("Fechas no seleccionadas", "Primero selecciona el rango de fechas.")
             return
 
-        if not self.input_id.value.strip():
+        id_valor = self.input_id.value.strip()
+
+        if not id_valor:
+            self.input_id.border_color = ft.colors.RED_400
+            self.page.update()
             ModalAlert.mostrar_info("Campo vacío", "Debes escribir un número de nómina.")
             return
 
         try:
-            numero = int(self.input_id.value.strip())
+            numero = int(id_valor)
+            if numero <= 0:
+                raise ValueError
+        except ValueError:
+            self.input_id.border_color = ft.colors.RED_400
+            self.page.update()
+            ModalAlert.mostrar_info("ID inválido", "El ID debe ser un número entero positivo. Ejemplo: 103")
+            return
+
+        self.input_id.border_color = ft.colors.OUTLINE
+        self.page.update()
+
+        try:
             resultado = self.payment_model.generar_pago_por_empleado(numero, self.fecha_inicio_id, self.fecha_fin_id)
             if resultado["status"] == "success":
                 ModalAlert.mostrar_info("Pago generado", resultado["message"])
@@ -60,6 +79,8 @@ class PagosContainer(ft.Container):
                 ModalAlert.mostrar_info("Error", resultado["message"])
         except Exception as ex:
             ModalAlert.mostrar_info("Error interno", str(ex))
+
+
 
     def _buscar_por_periodo(self, e):
         if not self.fecha_inicio_periodo or not self.fecha_fin_periodo:
@@ -90,13 +111,29 @@ class PagosContainer(ft.Container):
         self.date_selector_periodo.abrir_dialogo()
 
     def _build(self):
-        self.content = ft.Column([
-            ft.Text("ÁREA DE PAGOS", style=ft.TextThemeStyle.TITLE_MEDIUM),
-            self._build_buttons_area(),
-            ft.Divider(),
-            self.tabla_pagos,
-            ft.Container(content=self.resumen_pagos, padding=10, alignment=ft.alignment.center)
-        ])
+        self.content = ft.Container(
+            expand=True,
+            padding=20,
+            content=ft.Row(
+                expand=True,
+                scroll=ft.ScrollMode.ALWAYS,  # Scroll horizontal
+                controls=[
+                    ft.Column(
+                        expand=True,
+                        scroll=ft.ScrollMode.ALWAYS,  # Scroll vertical
+                        spacing=20,
+                        controls=[
+                            ft.Text("ÁREA DE PAGOS", style=ft.TextThemeStyle.TITLE_MEDIUM),
+                            self._build_buttons_area(),
+                            ft.Divider(),
+                            self.tabla_pagos,
+                            ft.Container(content=self.resumen_pagos, padding=10, alignment=ft.alignment.center)
+                        ]
+                    )
+                ]
+            )
+        )
+
 
     def _build_buttons_area(self):
         return ft.Row([
@@ -143,7 +180,9 @@ class PagosContainer(ft.Container):
     def _make_descuento_handler(self, pago):
         return lambda e: self._abrir_modal_descuentos(pago)
 
-    def _guardar_pago_confirmado(self, id_pago: int):
+
+
+    def _guardar_pago_confirmado(self, e, id_pago: int):
         def confirmar():
             try:
                 pago = self.payment_model.get_by_id(id_pago)
@@ -151,14 +190,18 @@ class PagosContainer(ft.Container):
                     ModalAlert.mostrar_info("Error", f"No se encontró el pago con ID {id_pago}")
                     return
 
-                total_descuentos = self.discount_model.get_total_descuentos_por_pago(id_pago)
-                monto_base = pago["data"]["monto_base"]
-                monto_total = max(0, monto_base - total_descuentos)
+                try:
+                    monto_base = Decimal(str(pago["data"]["monto_base"]))
+                    total_descuentos = Decimal(str(self.discount_model.get_total_descuentos_por_pago(id_pago)))
+                    monto_total = max(Decimal("0.0"), monto_base - total_descuentos)
+                except (ValueError, TypeError, Decimal.InvalidOperation):
+                    ModalAlert.mostrar_info("Error de datos", "Monto base o descuentos no válidos. Usa un formato numérico como 1250.50")
+                    return
 
                 campos = {
                     "estado": "pagado",
-                    "monto_total": monto_total,
-                    "pago_efectivo": monto_total,
+                    "monto_total": float(monto_total),
+                    "pago_efectivo": float(monto_total),
                     "fecha_pago": datetime.today().strftime("%Y-%m-%d")
                 }
 
@@ -176,7 +219,8 @@ class PagosContainer(ft.Container):
             on_confirm=confirmar
         ).mostrar()
 
-    def _eliminar_pago(self, id_pago: int):
+
+    def _eliminar_pago(self, e, id_pago: int):
         def eliminar():
             try:
                 self.discount_model.eliminar_por_id_pago(id_pago)
@@ -230,10 +274,22 @@ class PagosContainer(ft.Container):
                         continue
                     descuentos = self.discount_model.get_total_descuentos_por_pago(p["id_pago"])
                     estado = p["estado"]
-                    acciones = ft.DataCell(ft.Text("✔️")) if estado == "pagado" else ft.DataCell(ft.Row([
-                        ft.IconButton(icon=ft.icons.CHECK, tooltip="Confirmar pago", on_click=lambda e, id=p["id_pago"]: self._guardar_pago_confirmado(id)),
-                        ft.IconButton(icon=ft.icons.CANCEL, tooltip="Eliminar pago", on_click=lambda e, id=p["id_pago"]: self._eliminar_pago(id))
-                    ]))
+
+                    if estado == "pagado":
+                        acciones = ft.DataCell(ft.Text("✔️"))
+                    else:
+                        acciones = ft.DataCell(ft.Row([
+                            ft.IconButton(
+                                icon=ft.icons.CHECK,
+                                tooltip="Confirmar pago",
+                                on_click=lambda e, id_pago=p["id_pago"]: self._guardar_pago_confirmado(e, id_pago)
+                            ),
+                            ft.IconButton(
+                                icon=ft.icons.CANCEL,
+                                tooltip="Eliminar pago",
+                                on_click=lambda e, id_pago=p["id_pago"]: self._eliminar_pago(e, id_pago)
+                            )
+                        ]))
 
                     self.tabla_pagos.rows.append(ft.DataRow(cells=[
                         ft.DataCell(ft.Text(str(p["id_pago"]))),
@@ -245,7 +301,11 @@ class PagosContainer(ft.Container):
                         ft.DataCell(ft.Text(f"${p['monto_base']:.2f}")),
                         ft.DataCell(ft.Row([
                             ft.Text(f"${descuentos:.2f}"),
-                            ft.IconButton(icon=ft.icons.EDIT_NOTE, tooltip="Editar descuentos", on_click=self._make_descuento_handler(p))
+                            ft.IconButton(
+                                icon=ft.icons.EDIT_NOTE,
+                                tooltip="Editar descuentos",
+                                on_click=self._make_descuento_handler(p)
+                            )
                         ])),
                         ft.DataCell(ft.Text(f"${p['monto_total']:.2f}")),
                         acciones,
@@ -261,21 +321,106 @@ class PagosContainer(ft.Container):
         except Exception as ex:
             ModalAlert.mostrar_info("Error al cargar pagos", str(ex))
 
+
     def _abrir_modal_descuentos(self, pago: dict):
         def on_confirmar(data):
+            try:
+                monto_transporte = float(data["monto_transporte"])
+                descuento_extra = float(data["descuento_extra"])
+            except (ValueError, TypeError):
+                ModalAlert.mostrar_info("Valor inválido", "Los montos deben ser numéricos. Ejemplo: 120.00")
+                return
+
             self.discount_model.guardar_descuentos_editables(
-                id_pago=pago["id_pago"],
+                id_pago=pago["id_pago"],    
                 aplicar_imss=data["aplicar_imss"],
                 aplicar_transporte=data["aplicar_transporte"],
-                monto_transporte=data["monto_transporte"],
+                monto_transporte=monto_transporte,
                 aplicar_comida=data["aplicar_comida"],
                 estado_comida=data["estado_comida"],
-                descuento_extra=data["descuento_extra"],
+                descuento_extra=descuento_extra,
                 descripcion_extra=data["descripcion_extra"],
                 numero_nomina=pago["numero_nomina"]
             )
             self._mostrar_pagos_pagados()
 
-        # ✅ MANTENER REFERENCIA
         self.modal_descuentos = ModalDescuentos(pago, on_confirmar)
         self.modal_descuentos.mostrar()
+
+
+    def _parse_fecha(self, fecha):
+        if isinstance(fecha, str):
+            return datetime.strptime(fecha, "%Y-%m-%d").date()
+        return fecha
+
+    def _actualizar_fechas_id(self, inicio, fin):
+        inicio = self._parse_fecha(inicio)
+        fin = self._parse_fecha(fin)
+
+        min_fecha = self.assistance_model.get_fecha_minima_asistencia()
+        max_fecha = self.assistance_model.get_fecha_maxima_asistencia()
+
+        if not min_fecha or not max_fecha:
+            ModalAlert.mostrar_info("Error de datos", "No se pudo obtener el rango válido de asistencias.")
+            return
+
+        fuera_min = inicio < min_fecha
+        fuera_max = fin > max_fecha
+
+        if fuera_min and fuera_max:
+            ModalAlert.mostrar_info(
+                "Fechas fuera de rango",
+                f"Las fechas deben estar entre:\nMínima: {min_fecha}\nMáxima: {max_fecha}"
+            )
+            return
+        elif fuera_min:
+            ModalAlert.mostrar_info("Fecha fuera de rango", f"La fecha mínima permitida es: {min_fecha}")
+            return
+        elif fuera_max:
+            ModalAlert.mostrar_info("Fecha fuera de rango", f"La fecha máxima permitida es: {max_fecha}")
+            return
+
+        self.fecha_inicio_id = inicio
+        self.fecha_fin_id = fin
+        self.date_selector_id.cerrar_dialogo()
+
+    def _auto_generar_por_periodo(self, inicio, fin):
+        inicio = self._parse_fecha(inicio)
+        fin = self._parse_fecha(fin)
+
+        min_fecha = self.assistance_model.get_fecha_minima_asistencia()
+        max_fecha = self.assistance_model.get_fecha_maxima_asistencia()
+
+        if not min_fecha or not max_fecha:
+            ModalAlert.mostrar_info("Error de datos", "No se pudo obtener el rango válido de asistencias.")
+            return
+
+        fuera_min = inicio < min_fecha
+        fuera_max = fin > max_fecha
+
+        if fuera_min and fuera_max:
+            ModalAlert.mostrar_info(
+                "Fechas fuera de rango",
+                f"Las fechas deben estar entre:\nMínima: {min_fecha}\nMáxima: {max_fecha}"
+            )
+            return
+        elif fuera_min:
+            ModalAlert.mostrar_info("Fecha fuera de rango", f"La fecha mínima permitida es: {min_fecha}")
+            return
+        elif fuera_max:
+            ModalAlert.mostrar_info("Fecha fuera de rango", f"La fecha máxima permitida es: {max_fecha}")
+            return
+
+        self.fecha_inicio_periodo = inicio
+        self.fecha_fin_periodo = fin
+        self.date_selector_periodo.cerrar_dialogo()
+        self._buscar_por_periodo(None)
+
+
+    def _validar_input_id(self, e):
+        texto = self.input_id.value.strip()
+        if texto and not texto.isdigit():
+            self.input_id.border_color = ft.colors.RED_400
+        else:
+            self.input_id.border_color = ft.colors.OUTLINE
+        self.page.update()

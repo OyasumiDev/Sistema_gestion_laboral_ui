@@ -89,12 +89,14 @@ class PaymentModel:
             """
             result = self.db.get_data(query, (id_pago,), dictionary=True)
 
-            if not isinstance(result, list):
-                return {"status": "error", "message": "Formato inesperado en respuesta de la base de datos."}
+            if not result:
+                return {"status": "error", "message": "No se encontró el pago con ese ID"}
 
-            return {"status": "success", "data": result[0] if result else None}
+            return {"status": "success", "data": result}
+
         except Exception as ex:
             return {"status": "error", "message": f"Error al obtener el pago: {ex}"}
+
 
 
     def get_pagos_pagados(self):
@@ -242,9 +244,6 @@ class PaymentModel:
         except Exception as ex:
             print(f"❌ Error al crear SP 'horas_trabajadas_para_pagos': {ex}")
 
-
-
-
     def generar_pagos_por_rango(self, fecha_inicio: str, fecha_fin: str) -> dict:
         try:
             empleados = self.employee_model.get_all()
@@ -258,6 +257,18 @@ class PaymentModel:
                 numero_nomina = emp.get("numero_nomina")
                 if not numero_nomina:
                     continue
+
+                # Verificar si ya existe un pago pagado dentro del rango
+                query = f"""
+                    SELECT COUNT(*) AS c FROM {E_PAYMENT.TABLE.value}
+                    WHERE {E_PAYMENT.NUMERO_NOMINA.value} = %s
+                    AND {E_PAYMENT.ESTADO.value} = 'pagado'
+                    AND {E_PAYMENT.FECHA_PAGO.value} BETWEEN %s AND %s
+                """
+                existente = self.db.get_data(query, (numero_nomina, fecha_inicio, fecha_fin), dictionary=True)
+
+                if existente and isinstance(existente, list) and existente[0]["c"] > 0:
+                    continue  # Ya tiene un pago confirmado en ese rango
 
                 resultado = self.generar_pago_por_empleado(numero_nomina, fecha_inicio, fecha_fin)
 
@@ -274,6 +285,7 @@ class PaymentModel:
 
         except Exception as e:
             return {"status": "error", "message": str(e)}
+
 
     def get_total_horas_trabajadas(self, fecha_inicio: str, fecha_fin: str, numero_nomina: int = None) -> dict:
         """
@@ -303,17 +315,31 @@ class PaymentModel:
             print(f"❌ Error en get_total_horas_trabajadas: {e}")
             return {"status": "error", "message": str(e)}
 
-    def existe_pago_para_fecha(self, numero_nomina: int, fecha: str) -> bool:
+    def existe_pago_para_fecha(self, numero_nomina: int, fecha: str, incluir_pendientes=False) -> bool:
         try:
-            query = f"""
-                SELECT COUNT(*) AS c
-                FROM {E_PAYMENT.TABLE.value}
-                WHERE {E_PAYMENT.NUMERO_NOMINA.value} = %s AND {E_PAYMENT.FECHA_PAGO.value} = %s
-            """
-            res = self.db.get_data(query, (numero_nomina, fecha), dictionary=True)
+            if incluir_pendientes:
+                query = f"""
+                    SELECT COUNT(*) AS c
+                    FROM {E_PAYMENT.TABLE.value}
+                    WHERE {E_PAYMENT.NUMERO_NOMINA.value} = %s
+                    AND {E_PAYMENT.FECHA_PAGO.value} = %s
+                """
+                params = (numero_nomina, fecha)
+            else:
+                query = f"""
+                    SELECT COUNT(*) AS c
+                    FROM {E_PAYMENT.TABLE.value}
+                    WHERE {E_PAYMENT.NUMERO_NOMINA.value} = %s
+                    AND {E_PAYMENT.FECHA_PAGO.value} = %s
+                    AND {E_PAYMENT.ESTADO.value} = 'pagado'
+                """
+                params = (numero_nomina, fecha)
+
+            res = self.db.get_data(query, params, dictionary=True)
             return res.get("c", 0) > 0
         except:
             return False
+
 
     def delete_pago(self, id_pago: int) -> dict:
         try:
@@ -373,8 +399,12 @@ class PaymentModel:
             if not fecha_inicio or not fecha_fin:
                 return {"status": "error", "message": "Fechas inválidas."}
 
-            if self.existe_pago_para_fecha(numero_nomina, fecha_fin):
-                return {"status": "error", "message": f"Ya existe un pago para el empleado {numero_nomina} en {fecha_fin}"}
+            # Verificar si ya existe un pago pagado para esa fecha
+            if self.existe_pago_para_fecha(numero_nomina, fecha_fin, incluir_pendientes=False):
+                return {
+                    "status": "error",
+                    "message": f"Ya existe un pago CONFIRMADO para el empleado {numero_nomina} en {fecha_fin}."
+                }
 
             empleado = self.employee_model.get_by_numero_nomina(numero_nomina)
             if not empleado or not isinstance(empleado, dict):
@@ -445,6 +475,7 @@ class PaymentModel:
             return {"status": "error", "message": str(e)}
 
 
+
     def update_pago(self, id_pago: int, campos_actualizados: dict):
         try:
             campos_sql = ", ".join([f"{campo} = %s" for campo in campos_actualizados.keys()])
@@ -459,3 +490,27 @@ class PaymentModel:
         except Exception as ex:
             return {"status": "error", "message": f"Error al actualizar el pago: {ex}"}
 
+    def get_fecha_minima_pago(self) -> date | None:
+        try:
+            query = f"SELECT MIN({E_PAYMENT.FECHA_PAGO.value}) AS min_fecha FROM {E_PAYMENT.TABLE.value}"
+            result = self.db.get_data(query, dictionary=True)
+            min_fecha = result.get("min_fecha")
+            if isinstance(min_fecha, str):
+                min_fecha = datetime.strptime(min_fecha, "%Y-%m-%d").date()
+            return min_fecha
+        except Exception as ex:
+            print(f"❌ Error al obtener fecha mínima: {ex}")
+            return None
+
+
+    def get_fecha_maxima_pago(self) -> date | None:
+        try:
+            query = f"SELECT MAX({E_PAYMENT.FECHA_PAGO.value}) AS max_fecha FROM {E_PAYMENT.TABLE.value}"
+            result = self.db.get_data(query, dictionary=True)
+            max_fecha = result.get("max_fecha")
+            if isinstance(max_fecha, str):
+                max_fecha = datetime.strptime(max_fecha, "%Y-%m-%d").date()
+            return max_fecha
+        except Exception as ex:
+            print(f"❌ Error al obtener fecha máxima: {ex}")
+            return None

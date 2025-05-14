@@ -9,7 +9,10 @@ class AppState:
     def __init__(self):
         self.page: ft.Page = None
         self.data = {}
-
+        self.window_width: int = 0
+        self.window_height: int = 0
+        self.responsive_mode: str = "desktop"
+        
     def set(self, key, value):
         """
         Establece un valor en el estado global.
@@ -56,3 +59,21 @@ class AppState:
             dark_mode = self.page.client_storage.get("dark_mode")
             if dark_mode is not None:
                 self.set("dark_mode", dark_mode)
+
+    def update_window_dimensions(self):
+        """
+        Actualiza las dimensiones actuales de la ventana y define el modo responsive.
+        """
+        if self.page:
+            self.window_width = self.page.window_width
+            self.window_height = self.page.window_height
+
+            # Detectar tipo de vista
+            if self.window_width < 768:
+                self.responsive_mode = "mobile"
+            elif self.window_width < 1200:
+                self.responsive_mode = "tablet"
+            else:
+                self.responsive_mode = "desktop"
+
+            print(f"📐 Resolución: {self.window_width}x{self.window_height} -> Modo: {self.responsive_mode}")

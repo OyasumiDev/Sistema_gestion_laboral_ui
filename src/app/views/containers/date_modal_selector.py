@@ -11,7 +11,6 @@ month_class = {
     7: "July", 8: "August", 9: "September", 10: "October", 11: "November", 12: "December"
 }
 
-
 class DateModalSelector:
     def __init__(self, on_dates_confirmed):
         self.page = AppState().page
@@ -20,7 +19,6 @@ class DateModalSelector:
         self.fecha_fin = None
         self.year = datetime.now().year
         self.month = datetime.now().month
-
         self.dialog = ft.AlertDialog(modal=True)
 
     def abrir_dialogo(self):
@@ -28,6 +26,10 @@ class DateModalSelector:
         if self.dialog not in self.page.overlay:
             self.page.overlay.append(self.dialog)
         self.dialog.open = True
+        self.page.update()
+
+    def cerrar_dialogo(self):
+        self.dialog.open = False
         self.page.update()
 
     def _construir_contenido(self):
@@ -60,7 +62,6 @@ class DateModalSelector:
         ], alignment="center")
 
         semana = ft.Row([ft.Text(d, width=30, text_align="center") for d in date_class], alignment="center")
-
         grid = ft.Column([encabezado, semana], expand=True)
 
         for semana_dias in cal.monthdayscalendar(self.year, self.month):
@@ -94,15 +95,12 @@ class DateModalSelector:
             grid.controls.append(fila)
 
         botones = ft.Row([
-            ft.TextButton("Cancelar", on_click=lambda e: self._cerrar_dialogo()),
+            ft.TextButton("Cancelar", on_click=lambda e: self.cerrar_dialogo()),
             ft.ElevatedButton("Guardar", on_click=lambda e: self._guardar_fechas())
         ], alignment="end")
 
         self.dialog.content = ft.Container(
-            content=ft.Column([
-                grid,
-                botones
-            ], spacing=15),
+            content=ft.Column([grid, botones], spacing=15),
             padding=20,
             width=330,
             height=350,
@@ -113,13 +111,7 @@ class DateModalSelector:
 
     def _guardar_fechas(self):
         if self.fecha_inicio and self.fecha_fin:
-            self.dialog.open = False
-            self.page.update()
-            self.on_dates_confirmed(self.fecha_inicio, self.fecha_fin)
-
-    def _cerrar_dialogo(self):
-        self.dialog.open = False
-        self.page.update()
+            self.on_dates_confirmed(self.fecha_inicio, self.fecha_fin)  # ✅ NO se cierra aquí
 
     def _cambiar_mes(self, delta):
         self.month += delta

@@ -46,23 +46,34 @@ class EmpleadosContainer(ft.Container):
             )
         )
 
-        self.content = ft.Column(
+        self.content = ft.Container(
             expand=True,
-            alignment=ft.MainAxisAlignment.START,
-            scroll="auto",
-            controls=[
-                ft.Row(
-                    spacing=10,
-                    controls=[
-                        self._build_import_button(),
-                        self._build_export_button(),
-                        self._build_add_button()
-                    ]
-                ),
-                ft.Divider(height=10),
-                self.table_container
-            ]
+            padding=20,
+            content=ft.Row(
+                expand=True,
+                scroll=ft.ScrollMode.ALWAYS,  # Scroll horizontal
+                controls=[
+                    ft.Column(
+                        expand=True,
+                        scroll=ft.ScrollMode.ALWAYS,  # Scroll vertical
+                        spacing=10,
+                        controls=[
+                            ft.Row(
+                                spacing=10,
+                                controls=[
+                                    self._build_import_button(),
+                                    self._build_export_button(),
+                                    self._build_add_button()
+                                ]
+                            ),
+                            ft.Divider(height=10),
+                            self.table_container
+                        ]
+                    )
+                ]
+            )
         )
+
 
         self._actualizar_tabla("")
 
