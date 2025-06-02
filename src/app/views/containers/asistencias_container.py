@@ -232,148 +232,6 @@ class AsistenciasContainer(ft.Container):
 
         self._actualizar_tabla()
 
-    def _insertar_asistencia_desde_columna(self, _):
-        numero_input = ft.TextField(hint_text="ID Empleado", width=120, keyboard_type=ft.KeyboardType.NUMBER)
-        fecha_input = ft.TextField(hint_text="Fecha (DD/MM/YYYY)", width=160)
-        entrada_input = ft.TextField(hint_text="Entrada (HH:MM:SS)", width=140)
-        salida_input = ft.TextField(hint_text="Salida (HH:MM:SS)", width=140)
-
-        def validar_datos(_=None):
-            numero_input.border_color = None
-            fecha_input.border_color = None
-
-            numero_str = numero_input.value.strip()
-            fecha_str = fecha_input.value.strip()
-
-            try:
-                numero = int(numero_str)
-                if numero <= 0:
-                    raise ValueError
-            except ValueError:
-                numero_input.border_color = ft.colors.RED
-                self.page.update()
-                return
-
-            try:
-                fecha_sql = datetime.strptime(fecha_str, "%d/%m/%Y").strftime("%Y-%m-%d")
-                fecha_dt = datetime.strptime(fecha_sql, "%Y-%m-%d").date()
-                min_fecha = self.asistencia_model.get_fecha_minima_asistencia()
-                max_fecha = self.asistencia_model.get_fecha_maxima_asistencia()
-                if (min_fecha and fecha_dt < min_fecha) or (max_fecha and fecha_dt > max_fecha):
-                    fecha_input.border_color = ft.colors.RED
-            except ValueError:
-                fecha_input.border_color = ft.colors.RED
-
-            if self.asistencia_model.get_by_empleado_fecha(numero, fecha_sql):
-                fecha_input.border_color = ft.colors.RED
-
-            self.page.update()
-
-        numero_input.on_change = validar_datos
-        fecha_input.on_change = validar_datos
-
-        def validar_hora(input_field):
-            try:
-                datetime.strptime(input_field.value.strip(), "%H:%M:%S")
-                input_field.border_color = None
-            except ValueError:
-                input_field.border_color = ft.colors.RED
-            self.page.update()
-
-        entrada_input.on_change = lambda e: validar_hora(entrada_input)
-        salida_input.on_change = lambda e: validar_hora(salida_input)
-
-        def on_guardar(_):
-            numero_input.border_color = None
-            fecha_input.border_color = None
-            entrada_input.border_color = None
-            salida_input.border_color = None
-
-            numero_str = numero_input.value.strip()
-            fecha_str = fecha_input.value.strip()
-            entrada_str = entrada_input.value.strip()
-            salida_str = salida_input.value.strip()
-
-            try:
-                numero = int(numero_str)
-                if numero <= 0:
-                    raise ValueError
-            except ValueError:
-                numero_input.border_color = ft.colors.RED
-                ModalAlert.mostrar_info("Error", "El ID debe ser un número entero positivo. Ejemplo: 102")
-                self.page.update()
-                return
-
-            try:
-                fecha_sql = datetime.strptime(fecha_str, "%d/%m/%Y").strftime("%Y-%m-%d")
-                fecha_dt = datetime.strptime(fecha_sql, "%Y-%m-%d").date()
-                min_fecha = self.asistencia_model.get_fecha_minima_asistencia()
-                max_fecha = self.asistencia_model.get_fecha_maxima_asistencia()
-                if not min_fecha or not max_fecha:
-                    raise ValueError("No se pudo verificar el rango de fechas permitidas.")
-                if fecha_dt < min_fecha or fecha_dt > max_fecha:
-                    raise ValueError(f"La fecha debe estar entre {min_fecha} y {max_fecha}")
-            except ValueError as ve:
-                fecha_input.border_color = ft.colors.RED
-                ModalAlert.mostrar_info("Error", f"Fecha inválida: {ve}")
-                self.page.update()
-                return
-
-            if self.asistencia_model.get_by_empleado_fecha(numero, fecha_sql):
-                fecha_input.border_color = ft.colors.RED
-                ModalAlert.mostrar_info("Advertencia", "Ya existe una asistencia para este empleado en esta fecha.")
-                self.page.update()
-                return
-
-            if not entrada_str or not salida_str:
-                entrada_str = salida_str = "00:00:00"
-            else:
-                try:
-                    h_ent = datetime.strptime(entrada_str, "%H:%M:%S")
-                    h_sal = datetime.strptime(salida_str, "%H:%M:%S")
-                    if h_sal <= h_ent:
-                        raise ValueError
-                except:
-                    entrada_input.border_color = salida_input.border_color = ft.colors.RED
-                    ModalAlert.mostrar_info("Error", "Formato de hora inválido o inconsistente. Usa HH:MM:SS.")
-                    self.page.update()
-                    return
-
-            resultado = self.asistencia_model.add_manual_assistance(
-                numero_nomina=numero,
-                fecha=fecha_sql,
-                hora_entrada=entrada_str,
-                hora_salida=salida_str
-            )
-
-            if resultado["status"] == "success":
-                self.window_snackbar.show_success("✅ Asistencia registrada correctamente.")
-                self.depurar_asistencias()
-            else:
-                ModalAlert.mostrar_info("Error", "❌ " + resultado["message"])
-
-            self._actualizar_tabla()
-
-        fila = ft.DataRow(cells=[
-            ft.DataCell(numero_input),
-            ft.DataCell(ft.Text("-")),
-            ft.DataCell(fecha_input),
-            ft.DataCell(entrada_input),
-            ft.DataCell(salida_input),
-            ft.DataCell(ft.Text("00:00:00")),
-            ft.DataCell(ft.Text("completo")),
-            ft.DataCell(ft.Text("00:00:00")),
-            ft.DataCell(ft.Row([
-                ft.IconButton(icon=ft.icons.CHECK, icon_color=ft.colors.GREEN_600, on_click=on_guardar),
-                ft.IconButton(icon=ft.icons.CLOSE, icon_color=ft.colors.RED_600, on_click=self._actualizar_tabla)
-            ]))
-        ])
-
-        if self.table:
-            self.table.rows.append(fila)
-            self.table.update()
-        self.page.update()
-
 
     def _build_action_button(self, label, icon_path=None, icon=None, on_tap=None):
         content = ft.Row(spacing=5, alignment=ft.MainAxisAlignment.CENTER)
@@ -465,6 +323,142 @@ class AsistenciasContainer(ft.Container):
         print("\n📋 Asistencias registradas en la base de datos:")
         print(tabulate(tabla, headers=columnas, tablefmt="grid"))
 
+    def _insertar_asistencia_desde_columna(self, _):
+        numero_input = ft.TextField(hint_text="ID Empleado", width=120, keyboard_type=ft.KeyboardType.NUMBER)
+        fecha_input = ft.TextField(hint_text="Fecha (DD/MM/YYYY)", width=160)
+        entrada_input = ft.TextField(hint_text="Entrada (HH:MM:SS)", width=140)
+        salida_input = ft.TextField(hint_text="Salida (HH:MM:SS)", width=140)
+
+        def validar_en_tiempo_real(_=None):
+            numero_input.border_color = None
+            fecha_input.border_color = None
+            entrada_input.border_color = None
+            salida_input.border_color = None
+
+            h_ent = h_sal = None
+
+            try:
+                numero = int(numero_input.value.strip())
+                if numero <= 0:
+                    raise ValueError
+            except:
+                numero_input.border_color = ft.colors.RED
+
+            try:
+                fecha_sql = datetime.strptime(fecha_input.value.strip(), "%d/%m/%Y").strftime("%Y-%m-%d")
+                if self.asistencia_model.get_by_empleado_fecha(numero, fecha_sql):
+                    fecha_input.border_color = ft.colors.RED
+            except:
+                fecha_input.border_color = ft.colors.RED
+
+            try:
+                h_ent = datetime.strptime(entrada_input.value.strip(), "%H:%M:%S")
+            except:
+                entrada_input.border_color = ft.colors.RED
+
+            try:
+                h_sal = datetime.strptime(salida_input.value.strip(), "%H:%M:%S")
+            except:
+                salida_input.border_color = ft.colors.RED
+
+            if h_ent and h_sal and h_sal <= h_ent:
+                salida_input.border_color = ft.colors.RED
+
+            self.page.update()
+
+        numero_input.on_change = validar_en_tiempo_real
+        fecha_input.on_change = validar_en_tiempo_real
+        entrada_input.on_change = validar_en_tiempo_real
+        salida_input.on_change = validar_en_tiempo_real
+
+        def on_guardar(_):
+            errores = []
+            numero_input.border_color = None
+            fecha_input.border_color = None
+            entrada_input.border_color = None
+            salida_input.border_color = None
+
+            numero_str = str(numero_input.value).strip()
+            fecha_str = str(fecha_input.value).strip()
+            entrada_str = str(entrada_input.value).strip()
+            salida_str = str(salida_input.value).strip()
+
+            try:
+                numero = int(numero_str)
+                if numero <= 0:
+                    raise ValueError
+            except:
+                errores.append("🟥 El ID de empleado debe ser un número entero positivo.")
+                numero_input.border_color = ft.colors.RED
+
+            try:
+                fecha_sql = datetime.strptime(fecha_str, "%d/%m/%Y").strftime("%Y-%m-%d")
+            except:
+                errores.append("🟥 Fecha inválida. Usa el formato DD/MM/YYYY.")
+                fecha_input.border_color = ft.colors.RED
+
+            if not errores and self.asistencia_model.get_by_empleado_fecha(numero, fecha_sql):
+                errores.append("🟥 Ya existe una asistencia para este empleado en esa fecha.")
+                fecha_input.border_color = ft.colors.RED
+
+            try:
+                h_ent = datetime.strptime(entrada_str, "%H:%M:%S")
+            except:
+                errores.append("🟥 La hora de entrada debe tener el formato HH:MM:SS.")
+                entrada_input.border_color = ft.colors.RED
+
+            try:
+                h_sal = datetime.strptime(salida_str, "%H:%M:%S")
+            except:
+                errores.append("🟥 La hora de salida debe tener el formato HH:MM:SS.")
+                salida_input.border_color = ft.colors.RED
+
+            if "h_ent" in locals() and "h_sal" in locals():
+                if h_sal <= h_ent:
+                    errores.append("🟥 La hora de salida debe ser mayor que la de entrada.")
+                    salida_input.border_color = ft.colors.RED
+
+            self.page.update()
+
+            if errores:
+                ModalAlert.mostrar_info("Errores encontrados", "\n".join(errores))
+                return
+
+            resultado = self.asistencia_model.add_manual_assistance(
+                numero_nomina=numero,
+                fecha=fecha_sql,
+                hora_entrada=entrada_str,
+                hora_salida=salida_str
+            )
+
+            if resultado["status"] == "success":
+                self.window_snackbar.show_success("✅ Asistencia registrada correctamente.")
+                self.depurar_asistencias()
+            else:
+                ModalAlert.mostrar_info("Error", "❌ " + resultado["message"])
+
+            self._actualizar_tabla()
+
+        fila = ft.DataRow(cells=[
+            ft.DataCell(numero_input),
+            ft.DataCell(ft.Text("-")),
+            ft.DataCell(fecha_input),
+            ft.DataCell(entrada_input),
+            ft.DataCell(salida_input),
+            ft.DataCell(ft.Text("00:00:00")),
+            ft.DataCell(ft.Text("completo")),
+            ft.DataCell(ft.Text("00:00:00")),
+            ft.DataCell(ft.Row([
+                ft.IconButton(icon=ft.icons.CHECK, icon_color=ft.colors.GREEN_600, on_click=on_guardar),
+                ft.IconButton(icon=ft.icons.CLOSE, icon_color=ft.colors.RED_600, on_click=self._actualizar_tabla)
+            ]))
+        ])
+
+        if self.table:
+            self.table.rows.append(fila)
+            self.table.update()
+        self.page.update()
+
     def _editar_asistencia(self, numero_nomina, fecha, e=None):
         registro = next((r for r in self.asistencia_model.get_all()["data"]
                         if r["numero_nomina"] == numero_nomina and r["fecha"] == fecha), None)
@@ -473,85 +467,97 @@ class AsistenciasContainer(ft.Container):
             self.window_snackbar.show_error("Registro no encontrado.")
             return
 
-        entrada_input = ft.TextField(
-            value=str(registro.get("hora_entrada", "")), width=130, on_change=lambda e: validar_hora(entrada_input)
-        )
-        salida_input = ft.TextField(
-            value=str(registro.get("hora_salida", "")), width=130, on_change=lambda e: validar_hora(salida_input)
-        )
+        entrada_input = ft.TextField(value=registro.get("hora_entrada", ""), width=130)
+        salida_input = ft.TextField(value=registro.get("hora_salida", ""), width=130)
         estado_dropdown = ft.Dropdown(
             value=registro.get("estado", "incompleto"),
             options=[ft.dropdown.Option("completo"), ft.dropdown.Option("incompleto")],
             width=130
         )
 
-        def validar_hora(input_field):
-            valor = input_field.value.strip()
+        def validar_en_tiempo_real(_=None):
+            entrada_input.border_color = None
+            salida_input.border_color = None
+            estado_dropdown.border_color = None
+
+            h_ent = h_sal = None
+
             try:
-                datetime.strptime(valor, "%H:%M:%S")
-                input_field.border_color = None
-            except ValueError:
-                input_field.border_color = ft.colors.RED
+                h_ent = datetime.strptime(entrada_input.value.strip(), "%H:%M:%S")
+            except:
+                entrada_input.border_color = ft.colors.RED
+
+            try:
+                h_sal = datetime.strptime(salida_input.value.strip(), "%H:%M:%S")
+            except:
+                salida_input.border_color = ft.colors.RED
+
+            if h_ent and h_sal:
+                if h_sal <= h_ent:
+                    salida_input.border_color = ft.colors.RED
+                if estado_dropdown.value == "incompleto":
+                    estado_dropdown.border_color = ft.colors.RED
             self.page.update()
 
+        entrada_input.on_change = validar_en_tiempo_real
+        salida_input.on_change = validar_en_tiempo_real
+        estado_dropdown.on_change = validar_en_tiempo_real
+
         def on_guardar(_):
-            print("✏️ Guardar edición de asistencia")
+            errores = []
+
+            entrada_input.border_color = None
+            salida_input.border_color = None
+            estado_dropdown.border_color = None
+
+            entrada_str = str(entrada_input.value).strip()
+            salida_str = str(salida_input.value).strip()
+            estado = estado_dropdown.value.strip()
+
+            h_ent = h_sal = None
+
             try:
-                entrada_input.border_color = None
-                salida_input.border_color = None
+                h_ent = datetime.strptime(entrada_str, "%H:%M:%S")
+            except:
+                entrada_input.border_color = ft.colors.RED
+                errores.append("🟥 Hora de entrada inválida (formato HH:MM:SS)")
 
-                entrada = entrada_input.value.strip()
-                salida = salida_input.value.strip()
-                estado = estado_dropdown.value
+            try:
+                h_sal = datetime.strptime(salida_str, "%H:%M:%S")
+            except:
+                salida_input.border_color = ft.colors.RED
+                errores.append("🟥 Hora de salida inválida (formato HH:MM:SS)")
 
-                if not entrada or not salida:
-                    entrada_input.border_color = ft.colors.RED
+            if h_ent and h_sal:
+                if h_sal <= h_ent:
                     salida_input.border_color = ft.colors.RED
-                    ModalAlert.mostrar_info("Error", "Hora de entrada y salida son obligatorias.")
-                    self.page.update()
-                    return
+                    errores.append("🟥 La hora de salida debe ser mayor que la de entrada")
+                if estado == "incompleto":
+                    estado_dropdown.border_color = ft.colors.RED
+                    errores.append("🟥 El estado no puede ser 'incompleto' si las horas están completas")
 
-                try:
-                    print(f"⏰ Entrada: '{entrada}', Salida: '{salida}'")
-                    h_ent = datetime.strptime(entrada, "%H:%M:%S")
-                    h_sal = datetime.strptime(salida, "%H:%M:%S")
-                    if h_sal <= h_ent:
-                        entrada_input.border_color = ft.colors.RED
-                        salida_input.border_color = ft.colors.RED
-                        ModalAlert.mostrar_info("Error", "La hora de salida debe ser mayor que la de entrada.")
-                        self.page.update()
-                        return
-                except ValueError as ve:
-                    entrada_input.border_color = ft.colors.RED
-                    salida_input.border_color = ft.colors.RED
-                    ModalAlert.mostrar_info("Error", f"Formato de hora inválido. Usa HH:MM:SS — {ve}")
-                    self.page.update()
-                    return
+            self.page.update()
 
-                fecha_sql = fecha  # ya viene en formato correcto
+            if errores:
+                ModalAlert.mostrar_info("Errores al guardar", "\n".join(errores))
+                return
 
-                resultado = self.asistencia_model.actualizar_asistencia_completa(
-                    numero_nomina=numero_nomina,
-                    fecha=fecha_sql,
-                    hora_entrada=h_ent.strftime("%H:%M:%S"),
-                    hora_salida=h_sal.strftime("%H:%M:%S"),
-                    estado=estado
-                )
+            resultado = self.asistencia_model.actualizar_asistencia_completa(
+                numero_nomina=numero_nomina,
+                fecha=fecha,
+                hora_entrada=h_ent.strftime("%H:%M:%S"),
+                hora_salida=h_sal.strftime("%H:%M:%S"),
+                estado=estado
+            )
 
-                print("📝 Resultado edición:", resultado)
-                if resultado["status"] == "success":
-                    self.window_snackbar.show_success("✅ Asistencia actualizada correctamente.")
-                else:
-                    ModalAlert.mostrar_info("Error", f"❌ {resultado['message']}")
-
-            except Exception as ex:
-                print(f"❌ Excepción: {ex}")
-                ModalAlert.mostrar_info("Error de edición", str(ex))
+            if resultado["status"] == "success":
+                self.window_snackbar.show_success("✅ Asistencia actualizada correctamente.")
+            else:
+                ModalAlert.mostrar_info("Error", f"❌ {resultado['message']}")
 
             self._actualizar_tabla()
 
         def on_cancelar(_):
-            print("❌ Cancelación de edición de asistencia")
             self._actualizar_tabla()
 
         nueva_fila = ft.DataRow(cells=[
