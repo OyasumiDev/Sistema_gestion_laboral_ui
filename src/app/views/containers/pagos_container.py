@@ -34,8 +34,9 @@ class PagosContainer(ft.Container):
         self.input_id = ft.TextField(label="ID Empleado", width=150, height=40,
                                     border_color=ft.colors.OUTLINE,
                                     on_change=self._validar_input_id)
-        self.date_selector_id = DateModalSelector(on_dates_confirmed=self._set_fechas_id)
-        self.date_selector_periodo = DateModalSelector(on_dates_confirmed=self._generar_por_periodo)
+        fechas_utilizadas = self.payment_model.get_fechas_utilizadas()
+        self.date_selector_id = DateModalSelector(on_dates_confirmed=self._set_fechas_id, fechas_bloqueadas=fechas_utilizadas)
+        self.date_selector_periodo = DateModalSelector(on_dates_confirmed=self._generar_por_periodo, fechas_bloqueadas=fechas_utilizadas)
 
         self.tabla_pagos = ft.DataTable(columns=[], rows=[], expand=True)
         self.resumen_pagos = ft.Text(value="", weight=ft.FontWeight.BOLD, size=14)
@@ -115,11 +116,13 @@ class PagosContainer(ft.Container):
     def _abrir_modal_fecha_id(self, e):
         self.date_selector_id.fecha_inicio = self.fecha_inicio_id
         self.date_selector_id.fecha_fin = self.fecha_fin_id
+        self.date_selector_id.set_fechas_bloqueadas(self.payment_model.get_fechas_utilizadas())
         self.date_selector_id.abrir_dialogo()
 
     def _abrir_modal_fecha_periodo(self, e):
         self.date_selector_periodo.fecha_inicio = self.fecha_inicio_periodo
         self.date_selector_periodo.fecha_fin = self.fecha_fin_periodo
+        self.date_selector_periodo.set_fechas_bloqueadas(self.payment_model.get_fechas_utilizadas())
         self.date_selector_periodo.abrir_dialogo()
 
     def _generar_pago_individual(self, e):
@@ -269,6 +272,9 @@ class PagosContainer(ft.Container):
                         total_pagado += float(p["monto_total"])
 
             self.resumen_pagos.value = f"Total pagado: ${total_pagado:.2f}"
+            fechas = self.payment_model.get_fechas_utilizadas()
+            self.date_selector_id.set_fechas_bloqueadas(fechas)
+            self.date_selector_periodo.set_fechas_bloqueadas(fechas)
             self.page.update()
         except Exception as ex:
             ModalAlert.mostrar_info("Error al cargar pagos", str(ex))

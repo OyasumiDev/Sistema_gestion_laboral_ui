@@ -514,3 +514,20 @@ class PaymentModel:
         except Exception as ex:
             print(f"❌ Error al obtener fecha máxima: {ex}")
             return None
+
+    def get_fechas_utilizadas(self) -> list[date]:
+        """Obtiene una lista de fechas ya utilizadas para generar pagos."""
+        try:
+            query = f"SELECT DISTINCT {E_PAYMENT.FECHA_PAGO.value} FROM {E_PAYMENT.TABLE.value}"
+            resultados = self.db.get_data_list(query, dictionary=True)
+            fechas = []
+            for row in resultados:
+                fecha = row.get(E_PAYMENT.FECHA_PAGO.value)
+                if isinstance(fecha, str):
+                    fecha = datetime.strptime(fecha, "%Y-%m-%d").date()
+                if isinstance(fecha, date):
+                    fechas.append(fecha)
+            return fechas
+        except Exception as ex:
+            print(f"❌ Error al obtener fechas utilizadas: {ex}")
+            return []
