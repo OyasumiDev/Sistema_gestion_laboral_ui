@@ -10,3 +10,4 @@ class E_ASSISTANCE(Enum):
     RETARDO = "retardo"
     ESTADO = "estado"
     TIEMPO_TRABAJO = "tiempo_trabajo"
+    FECHA_GENERADA = "fecha_generada"

@@ -12,7 +12,7 @@ month_class = {
 }
 
 class DateModalSelector:
-    def __init__(self, on_dates_confirmed):
+    def __init__(self, on_dates_confirmed, fechas_bloqueadas=None):
         self.page = AppState().page
         self.on_dates_confirmed = on_dates_confirmed
         self.fecha_inicio = None
@@ -20,6 +20,16 @@ class DateModalSelector:
         self.year = datetime.now().year
         self.month = datetime.now().month
         self.dialog = ft.AlertDialog(modal=True)
+        self.fechas_bloqueadas = set(
+            f.strftime("%Y-%m-%d") if not isinstance(f, str) else f
+            for f in (fechas_bloqueadas or [])
+        )
+
+    def set_fechas_bloqueadas(self, fechas):
+        self.fechas_bloqueadas = set(
+            f.strftime("%Y-%m-%d") if not isinstance(f, str) else f
+            for f in (fechas or [])
+        )
 
     def abrir_dialogo(self):
         self._construir_contenido()
@@ -34,6 +44,12 @@ class DateModalSelector:
 
     def _construir_contenido(self):
         def seleccionar_fecha(fecha):
+            if fecha in self.fechas_bloqueadas:
+                ModalAlert.mostrar_info(
+                    "Fecha no disponible",
+                    "Esta fecha ya fue utilizada para generar un periodo anterior. Por favor, selecciona un rango diferente."
+                )
+                return
             if self.fecha_inicio == fecha:
                 self.fecha_inicio = None
             elif self.fecha_fin == fecha:
@@ -81,15 +97,26 @@ class DateModalSelector:
                         color = ft.colors.RED
                 elif self.fecha_inicio and fecha_mysql == self.fecha_inicio:
                     color = ft.colors.GREEN
+                deshabilitada = fecha_mysql in self.fechas_bloqueadas
 
                 box = ft.Container(
                     width=30,
                     height=30,
-                    bgcolor=color,
+                    bgcolor=ft.colors.GREY_300 if deshabilitada else color,
                     border_radius=5,
                     alignment=ft.alignment.center,
-                    content=ft.Text(str(dia)),
-                    on_click=lambda e, f=fecha: seleccionar_fecha(formato_fecha_mysql(f))
+                    content=ft.Text(
+                        str(dia),
+                        color=ft.colors.GREY if deshabilitada else None,
+                    ),
+                    on_click=(
+                        (lambda e, f=fecha: seleccionar_fecha(formato_fecha_mysql(f)))
+                        if not deshabilitada
+                        else (lambda e: ModalAlert.mostrar_info(
+                            "Fecha no disponible",
+                            "Esta fecha ya fue utilizada para generar un periodo anterior. Por favor, selecciona un rango diferente."
+                        ))
+                    ),
                 )
                 fila.controls.append(box)
             grid.controls.append(fila)

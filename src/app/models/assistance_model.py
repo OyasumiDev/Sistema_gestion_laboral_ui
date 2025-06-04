@@ -7,6 +7,7 @@ class AssistanceModel:
     def __init__(self):
         self.db = DatabaseMysql()
         self._exists_table = self.check_table()
+        self._agregar_columna_fecha_generada()
         self.verificar_o_crear_triggers()
 
     def check_table(self) -> bool:
@@ -42,6 +43,25 @@ class AssistanceModel:
         except Exception as ex:
             print(f"❌ Error al verificar/crear la tabla {E_ASSISTANCE.TABLE.value}: {ex}")
             return False
+
+    def _agregar_columna_fecha_generada(self):
+        """Asegura que exista la columna fecha_generada."""
+        try:
+            check = """
+                SELECT COUNT(*) AS c
+                FROM information_schema.columns
+                WHERE table_schema = %s AND table_name = %s AND column_name = %s
+            """
+            res = self.db.get_data(
+                check,
+                (self.db.database, E_ASSISTANCE.TABLE.value, E_ASSISTANCE.FECHA_GENERADA.value),
+                dictionary=True,
+            )
+            if res.get("c", 0) == 0:
+                alter = f"ALTER TABLE {E_ASSISTANCE.TABLE.value} ADD COLUMN {E_ASSISTANCE.FECHA_GENERADA.value} DATE DEFAULT NULL"
+                self.db.run_query(alter)
+        except Exception as ex:
+            print(f"❌ Error al agregar columna fecha_generada: {ex}")
 
 
 
@@ -405,5 +425,34 @@ class AssistanceModel:
         except Exception as e:
             print(f"❌ Error al obtener fecha máxima de asistencia: {e}")
             return None
+
+    def get_fechas_generadas(self) -> list[datetime.date]:
+        """Obtiene todas las fechas marcadas como generadas."""
+        try:
+            query = f"SELECT DISTINCT {E_ASSISTANCE.FECHA_GENERADA.value} FROM {E_ASSISTANCE.TABLE.value} WHERE {E_ASSISTANCE.FECHA_GENERADA.value} IS NOT NULL"
+            datos = self.db.get_data_list(query, dictionary=True)
+            fechas = []
+            for row in datos:
+                f = row.get(E_ASSISTANCE.FECHA_GENERADA.value)
+                if isinstance(f, str):
+                    f = datetime.strptime(f, "%Y-%m-%d").date()
+                if f:
+                    fechas.append(f)
+            return fechas
+        except Exception as ex:
+            print(f"❌ Error al obtener fechas generadas: {ex}")
+            return []
+
+    def marcar_asistencias_como_generadas(self, inicio: str, fin: str):
+        """Marca asistencias en rango como generadas con la fecha actual."""
+        try:
+            query = f"""
+                UPDATE {E_ASSISTANCE.TABLE.value}
+                SET {E_ASSISTANCE.FECHA_GENERADA.value} = CURDATE()
+                WHERE {E_ASSISTANCE.FECHA.value} BETWEEN %s AND %s
+            """
+            self.db.run_query(query, (inicio, fin))
+        except Exception as ex:
+            print(f"❌ Error al marcar asistencias generadas: {ex}")
 
 

@@ -3,6 +3,7 @@ from app.core.enums.e_payment_model import E_PAYMENT
 from app.core.interfaces.database_mysql import DatabaseMysql
 from app.models.employes_model import EmployesModel
 from app.models.discount_model import DiscountModel
+from app.models.assistance_model import AssistanceModel
 
 class PaymentModel:
     def __init__(self):
@@ -10,6 +11,7 @@ class PaymentModel:
         self.employee_model = EmployesModel()
         self._exists_table = self.check_table()
         self.discount_model = DiscountModel()
+        self.assistance_model = AssistanceModel()
 
     def check_table(self) -> bool:
         try:
@@ -117,66 +119,6 @@ class PaymentModel:
 
 
 
-    def registrar_pago_manual(self, numero_nomina: int) -> dict:
-        try:
-            if not isinstance(numero_nomina, int) or numero_nomina <= 0:
-                return {"status": "error", "message": "Número de nómina inválido"}
-
-            today = datetime.now().strftime("%Y-%m-%d")
-
-            if self.existe_pago_para_hoy(numero_nomina):
-                return {"status": "error", "message": "Ya existe un pago registrado para hoy"}
-
-            empleado = self.employee_model.get_by_numero_nomina(numero_nomina)
-            if not empleado or not isinstance(empleado, dict):
-                return {"status": "error", "message": "Empleado no encontrado"}
-
-            sueldo = empleado.get("sueldo_por_hora", 0)
-            if not isinstance(sueldo, (int, float)) or sueldo <= 0:
-                return {"status": "error", "message": "Sueldo por hora inválido"}
-
-            resultados = self.db.call_procedure("horas_trabajadas_para_pagos", (numero_nomina, today, today))
-            print(f"📥 Resultado SP (manual): {resultados}")
-
-            if not resultados or "total_horas_trabajadas" not in resultados[0]:
-                return {"status": "error", "message": "No hay horas trabajadas hoy"}
-
-            h, m, s = map(int, resultados[0]["total_horas_trabajadas"].split(":"))
-            horas = round(h + m / 60 + s / 3600, 2)
-            monto_base = round(sueldo * horas, 2)
-
-            insert_pago = f"""
-                INSERT INTO {E_PAYMENT.TABLE.value} (
-                    {E_PAYMENT.NUMERO_NOMINA.value}, {E_PAYMENT.FECHA_PAGO.value},
-                    {E_PAYMENT.TOTAL_HORAS_TRABAJADAS.value}, {E_PAYMENT.MONTO_BASE.value},
-                    {E_PAYMENT.MONTO_TOTAL.value}, {E_PAYMENT.PAGO_DEPOSITO.value},
-                    {E_PAYMENT.PAGO_EFECTIVO.value}, {E_PAYMENT.ESTADO.value}
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-            """
-            self.db.run_query(insert_pago, (
-                numero_nomina, today, horas, monto_base,
-                monto_base, 0.0, monto_base, "pagado"
-            ))
-
-            id_pago = self.db.get_last_insert_id()
-            return {"status": "success", "message": "Pago manual registrado", "id_pago": id_pago}
-
-        except Exception as e:
-            print(f"❌ Error en registrar_pago_manual: {e}")
-            return {"status": "error", "message": str(e)}
-
-
-    def existe_pago_para_hoy(self, numero_nomina: int) -> bool:
-        try:
-            query = f"""
-                SELECT COUNT(*) AS c
-                FROM {E_PAYMENT.TABLE.value}
-                WHERE {E_PAYMENT.NUMERO_NOMINA.value} = %s AND {E_PAYMENT.FECHA_PAGO.value} = CURDATE()
-            """
-            res = self.db.get_data(query, (numero_nomina,), dictionary=True)
-            return res.get("c", 0) > 0
-        except:
-            return False
 
     def crear_sp_horas_trabajadas_para_pagos(self):
         """
@@ -265,17 +207,77 @@ class PaymentModel:
                     AND {E_PAYMENT.ESTADO.value} = 'pagado'
                     AND {E_PAYMENT.FECHA_PAGO.value} BETWEEN %s AND %s
                 """
-                existente = self.db.get_data(query, (numero_nomina, fecha_inicio, fecha_fin), dictionary=True)
+                existente = self.db.get_data(
+                    query,
+                    (numero_nomina, fecha_inicio, fecha_fin),
+                    dictionary=True,
+                )
 
                 if existente and isinstance(existente, list) and existente[0]["c"] > 0:
                     continue  # Ya tiene un pago confirmado en ese rango
 
-                resultado = self.generar_pago_por_empleado(numero_nomina, fecha_inicio, fecha_fin)
-
-                if resultado["status"] != "success":
+                sueldo_hora = float(emp.get("sueldo_por_hora", 0))
+                if sueldo_hora <= 0:
                     errores += 1
-                else:
-                    pagos_generados += 1
+                    continue
+
+                resultado = self.get_total_horas_trabajadas(fecha_inicio, fecha_fin, numero_nomina)
+                if (
+                    resultado["status"] != "success"
+                    or not resultado["data"]
+                    or "total_horas_trabajadas" not in resultado["data"][0]
+                ):
+                    errores += 1
+                    continue
+
+                tiempo_str = resultado["data"][0]["total_horas_trabajadas"]
+                try:
+                    h, m, s = map(int, tiempo_str.split(":"))
+                except ValueError:
+                    errores += 1
+                    continue
+
+                horas_decimales = round(h + m / 60 + s / 3600, 2)
+                monto_base = round(sueldo_hora * horas_decimales, 2)
+
+                insert_pago = f"""
+                    INSERT INTO {E_PAYMENT.TABLE.value}
+                    ({E_PAYMENT.NUMERO_NOMINA.value}, {E_PAYMENT.FECHA_PAGO.value},
+                    {E_PAYMENT.TOTAL_HORAS_TRABAJADAS.value}, {E_PAYMENT.MONTO_BASE.value},
+                    {E_PAYMENT.MONTO_TOTAL.value}, {E_PAYMENT.PAGO_DEPOSITO.value},
+                    {E_PAYMENT.PAGO_EFECTIVO.value})
+                    VALUES (%s, CURDATE(), %s, %s, %s, %s, %s)
+                """
+                self.db.run_query(
+                    insert_pago,
+                    (numero_nomina, horas_decimales, monto_base, monto_base, 0.0, monto_base),
+                )
+
+                id_pago = self.db.get_last_insert_id()
+
+                self.discount_model.agregar_descuentos_opcionales(
+                    numero_nomina=numero_nomina,
+                    id_pago=id_pago,
+                    aplicar_imss=True,
+                    aplicar_transporte=True,
+                    aplicar_comida=True,
+                    estado_comida="media",
+                )
+
+                total_descuentos = self.discount_model.get_total_descuentos_por_pago(id_pago)
+                monto_final = max(0, monto_base - total_descuentos)
+
+                self.update_pago(
+                    id_pago,
+                    {
+                        E_PAYMENT.MONTO_TOTAL.value: monto_final,
+                        E_PAYMENT.PAGO_EFECTIVO.value: monto_final,
+                    },
+                )
+
+                pagos_generados += 1
+
+            self.assistance_model.marcar_asistencias_como_generadas(fecha_inicio, fecha_fin)
 
             mensaje = f"{pagos_generados} pagos generados del {fecha_inicio} al {fecha_fin}."
             if errores > 0:
@@ -389,90 +391,6 @@ class PaymentModel:
             print(f"❌ Error en update_pago_completo: {ex}")
             return {"status": "error", "message": str(ex)}
 
-    def generar_pago_por_empleado(self, numero_nomina: int, fecha_inicio: str, fecha_fin: str) -> dict:
-        try:
-            print(f"🔎 Generando pago para empleado {numero_nomina} entre {fecha_inicio} y {fecha_fin}")
-
-            if not numero_nomina or not isinstance(numero_nomina, int):
-                return {"status": "error", "message": "Número de nómina inválido."}
-
-            if not fecha_inicio or not fecha_fin:
-                return {"status": "error", "message": "Fechas inválidas."}
-
-            # Verificar si ya existe un pago pagado para esa fecha
-            if self.existe_pago_para_fecha(numero_nomina, fecha_fin, incluir_pendientes=False):
-                return {
-                    "status": "error",
-                    "message": f"Ya existe un pago CONFIRMADO para el empleado {numero_nomina} en {fecha_fin}."
-                }
-
-            empleado = self.employee_model.get_by_numero_nomina(numero_nomina)
-            if not empleado or not isinstance(empleado, dict):
-                return {"status": "error", "message": f"Empleado {numero_nomina} no encontrado."}
-
-            sueldo_hora = float(empleado.get("sueldo_por_hora", 0))
-            if sueldo_hora <= 0:
-                return {"status": "error", "message": "Sueldo por hora inválido o no definido."}
-
-            resultado = self.get_total_horas_trabajadas(fecha_inicio, fecha_fin, numero_nomina)
-            if resultado["status"] != "success":
-                return {"status": "error", "message": resultado.get("message", "Error desconocido.")}
-
-            if not resultado["data"] or "total_horas_trabajadas" not in resultado["data"][0]:
-                return {"status": "error", "message": f"No hay horas válidas para el empleado {numero_nomina}."}
-
-            tiempo_str = resultado["data"][0]["total_horas_trabajadas"]
-            try:
-                h, m, s = map(int, tiempo_str.split(":"))
-            except ValueError:
-                return {"status": "error", "message": f"Formato de tiempo inválido: {tiempo_str}"}
-
-            horas_decimales = round(h + m / 60 + s / 3600, 2)
-            monto_base = round(sueldo_hora * horas_decimales, 2)
-
-            insert_pago = f"""
-                INSERT INTO {E_PAYMENT.TABLE.value}
-                ({E_PAYMENT.NUMERO_NOMINA.value}, {E_PAYMENT.FECHA_PAGO.value},
-                {E_PAYMENT.TOTAL_HORAS_TRABAJADAS.value}, {E_PAYMENT.MONTO_BASE.value},
-                {E_PAYMENT.MONTO_TOTAL.value}, {E_PAYMENT.PAGO_DEPOSITO.value},
-                {E_PAYMENT.PAGO_EFECTIVO.value})
-                VALUES (%s, CURDATE(), %s, %s, %s, %s, %s)
-            """
-            self.db.run_query(insert_pago, (
-                numero_nomina, horas_decimales, monto_base,
-                monto_base, 0.0, monto_base
-            ))
-
-            id_pago = self.db.get_last_insert_id()
-
-            self.discount_model.agregar_descuentos_opcionales(
-                numero_nomina=numero_nomina,
-                id_pago=id_pago,
-                aplicar_imss=True,
-                aplicar_transporte=True,
-                aplicar_comida=True,
-                estado_comida="media"
-            )
-
-            total_descuentos = self.discount_model.get_total_descuentos_por_pago(id_pago)
-            monto_final = max(0, monto_base - total_descuentos)
-
-            self.update_pago(id_pago, {
-                E_PAYMENT.MONTO_TOTAL.value: monto_final,
-                E_PAYMENT.PAGO_EFECTIVO.value: monto_final
-            })
-
-            return {
-                "status": "success",
-                "message": f"✅ Pago generado por ${monto_final:.2f} con ${total_descuentos:.2f} en descuentos",
-                "id_pago": id_pago,
-                "monto_base": monto_base,
-                "total_descuentos": total_descuentos
-            }
-
-        except Exception as e:
-            print(f"❌ Error en generar_pago_por_empleado: {e}")
-            return {"status": "error", "message": str(e)}
 
 
 
@@ -514,3 +432,20 @@ class PaymentModel:
         except Exception as ex:
             print(f"❌ Error al obtener fecha máxima: {ex}")
             return None
+
+    def get_fechas_utilizadas(self) -> list[date]:
+        """Obtiene una lista de fechas ya utilizadas para generar pagos."""
+        try:
+            query = f"SELECT DISTINCT {E_PAYMENT.FECHA_PAGO.value} FROM {E_PAYMENT.TABLE.value}"
+            resultados = self.db.get_data_list(query, dictionary=True)
+            fechas = []
+            for row in resultados:
+                fecha = row.get(E_PAYMENT.FECHA_PAGO.value)
+                if isinstance(fecha, str):
+                    fecha = datetime.strptime(fecha, "%Y-%m-%d").date()
+                if isinstance(fecha, date):
+                    fechas.append(fecha)
+            return fechas
+        except Exception as ex:
+            print(f"❌ Error al obtener fechas utilizadas: {ex}")
+            return []
