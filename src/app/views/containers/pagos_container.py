@@ -1,8 +1,9 @@
 from datetime import datetime
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 import flet as ft
 
 from app.core.app_state import AppState
+from app.core.enums.e_payment_model import E_PAYMENT
 from app.models.payment_model import PaymentModel
 from app.models.discount_model import DiscountModel
 from app.models.assistance_model import AssistanceModel
@@ -27,6 +28,11 @@ class PagosContainer(ft.Container):
         # rangos de fechas
         self.fecha_inicio_periodo = None
         self.fecha_fin_periodo = None
+
+        # mapas para edicion de depositos
+        self.inputs_deposito: dict[int, ft.TextField] = {}
+        self.labels_efectivo: dict[int, ft.Text] = {}
+        self.monto_base_map: dict[int, float] = {}
 
         # controles
         fechas_bloqueadas = self.assistance_model.get_fechas_generadas()
@@ -146,6 +152,8 @@ class PagosContainer(ft.Container):
                 ft.DataColumn(label=ft.Text("Horas")),
                 ft.DataColumn(label=ft.Text("Sueldo/Hora")),
                 ft.DataColumn(label=ft.Text("Monto Base")),
+                ft.DataColumn(label=ft.Text("Pago Depósito")),
+                ft.DataColumn(label=ft.Text("Pago Efectivo")),
                 ft.DataColumn(label=ft.Text("Descuentos")),
                 ft.DataColumn(label=ft.Text("Total")),
                 ft.DataColumn(label=ft.Text("Acciones")),
@@ -153,24 +161,48 @@ class PagosContainer(ft.Container):
             ]
 
             self.tabla_pagos.rows.clear()
+            self.inputs_deposito.clear()
+            self.labels_efectivo.clear()
+            self.monto_base_map.clear()
             total_pagado = 0.0
 
             query = (
                 "SELECT p.id_pago, p.numero_nomina, p.fecha_pago, p.total_horas_trabajadas, "
-                "p.monto_base, p.monto_total, p.estado, e.nombre_completo, e.sueldo_por_hora "
+                "p.monto_base, p.pago_deposito, p.pago_efectivo, p.monto_total, p.estado, "
+                "e.nombre_completo, e.sueldo_por_hora "
                 "FROM pagos p JOIN empleados e ON p.numero_nomina = e.numero_nomina "
                 "ORDER BY p.fecha_pago DESC"
             )
             pagos = self.payment_model.db.get_data_list(query, dictionary=True)
 
             if not pagos:
-                self.tabla_pagos.rows.append(ft.DataRow(cells=[ft.DataCell(ft.Text("-")) for _ in range(11)]))
+                self.tabla_pagos.rows.append(ft.DataRow(cells=[ft.DataCell(ft.Text("-")) for _ in range(13)]))
             else:
                 for p in pagos:
                     if not p:
                         continue
                     descuentos = self.discount_model.get_total_descuentos_por_pago(p["id_pago"])
                     estado = p["estado"]
+                    self.monto_base_map[p["id_pago"]] = float(p["monto_base"])
+
+                    if estado == "pendiente":
+                        input_dep = ft.TextField(
+                            value=f"{p['pago_deposito']:.2f}",
+                            width=90,
+                            height=28,
+                            dense=True,
+                            text_align=ft.TextAlign.RIGHT,
+                            keyboard_type=ft.KeyboardType.NUMBER,
+                            on_change=lambda e, pid=p["id_pago"]: self._on_cambio_deposito(pid, e)
+                        )
+                        self.inputs_deposito[p["id_pago"]] = input_dep
+                        deposito_cell = ft.DataCell(input_dep)
+                        efectivo_label = ft.Text(f"${p['pago_efectivo']:.2f}")
+                        self.labels_efectivo[p["id_pago"]] = efectivo_label
+                        efectivo_cell = ft.DataCell(efectivo_label)
+                    else:
+                        deposito_cell = ft.DataCell(ft.Text(f"${p['pago_deposito']:.2f}"))
+                        efectivo_cell = ft.DataCell(ft.Text(f"${p['pago_efectivo']:.2f}"))
 
                     if estado == "pagado":
                         acciones = ft.DataCell(ft.Text("✔️"))
@@ -194,12 +226,17 @@ class PagosContainer(ft.Container):
                                 ft.DataCell(ft.Text(str(p["total_horas_trabajadas"]))),
                                 ft.DataCell(ft.Text(f"${p['sueldo_por_hora']:.2f}")),
                                 ft.DataCell(ft.Text(f"${p['monto_base']:.2f}")),
+                                deposito_cell,
+                                efectivo_cell,
                                 ft.DataCell(
                                     ft.Row(
                                         [
                                             ft.Text(f"${descuentos:.2f}"),
-                                            ft.IconButton(icon=ft.icons.EDIT_NOTE, tooltip="Editar descuentos",
-                                                          on_click=lambda e, pago=p: self._abrir_modal_descuentos(pago)),
+                                            ft.IconButton(
+                                                icon=ft.icons.EDIT_NOTE,
+                                                tooltip="Editar descuentos",
+                                                on_click=lambda e, pago=p: self._abrir_modal_descuentos(pago)
+                                            ),
                                         ]
                                     )
                                 ),
@@ -220,6 +257,30 @@ class PagosContainer(ft.Container):
         except Exception as ex:
             ModalAlert.mostrar_info("Error al cargar pagos", str(ex))
 
+    def _on_cambio_deposito(self, id_pago: int, e):
+        campo = e.control
+        valor = campo.value.strip()
+        try:
+            deposito = Decimal(valor) if valor else Decimal("0")
+        except InvalidOperation:
+            campo.error_text = "Formato inválido"
+            self.page.update()
+            return
+
+        monto_base = Decimal(str(self.monto_base_map.get(id_pago, 0)))
+        if deposito < 0:
+            campo.error_text = "No negativo"
+        elif deposito > monto_base:
+            campo.error_text = "Mayor al monto base"
+        else:
+            campo.error_text = None
+
+        efectivo = max(Decimal("0"), monto_base - deposito)
+        etiqueta = self.labels_efectivo.get(id_pago)
+        if etiqueta:
+            etiqueta.value = f"${efectivo:.2f}"
+        self.page.update()
+
     def _guardar_pago_confirmado(self, id_pago: int):
         def confirmar():
             try:
@@ -230,17 +291,26 @@ class PagosContainer(ft.Container):
 
                 try:
                     monto_base = Decimal(str(pago["data"]["monto_base"]))
-                    total_descuentos = Decimal(str(self.discount_model.get_total_descuentos_por_pago(id_pago)))
-                    monto_total = max(Decimal("0.0"), monto_base - total_descuentos)
-                except (ValueError, TypeError, Decimal.InvalidOperation):
-                    ModalAlert.mostrar_info("Error de datos", "Monto base o descuentos no válidos. Usa un formato numérico como 1250.50")
+                    deposito_field = self.inputs_deposito.get(id_pago)
+                    deposito = Decimal(deposito_field.value) if deposito_field else Decimal(str(pago["data"]["pago_deposito"]))
+                except (InvalidOperation, ValueError):
+                    ModalAlert.mostrar_info("Valor inválido", "Depósito debe ser numérico")
                     return
 
+                if deposito < 0 or deposito > monto_base:
+                    ModalAlert.mostrar_info("Valor inválido", "El depósito no es válido para el monto base")
+                    return
+
+                descuentos = Decimal(str(self.discount_model.get_total_descuentos_por_pago(id_pago)))
+                efectivo = monto_base - deposito
+                monto_total = max(Decimal("0.0"), efectivo + deposito - descuentos)
+
                 campos = {
-                    "estado": "pagado",
-                    "monto_total": float(monto_total),
-                    "pago_efectivo": float(monto_total),
-                    "fecha_pago": datetime.today().strftime("%Y-%m-%d"),
+                    E_PAYMENT.PAGO_DEPOSITO.value: float(deposito),
+                    E_PAYMENT.PAGO_EFECTIVO.value: float(efectivo),
+                    E_PAYMENT.MONTO_TOTAL.value: float(monto_total),
+                    E_PAYMENT.ESTADO.value: "pagado",
+                    E_PAYMENT.FECHA_PAGO.value: datetime.today().strftime("%Y-%m-%d"),
                 }
                 result = self.payment_model.update_pago(id_pago, campos)
                 if result["status"] == "success":

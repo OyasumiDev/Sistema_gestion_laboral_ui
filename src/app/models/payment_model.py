@@ -1,5 +1,6 @@
 from datetime import datetime, date
 from app.core.enums.e_payment_model import E_PAYMENT
+from app.core.enums.e_discount_model import E_DISCOUNT
 from app.core.interfaces.database_mysql import DatabaseMysql
 from app.models.employes_model import EmployesModel
 from app.models.discount_model import DiscountModel
@@ -12,6 +13,7 @@ class PaymentModel:
         self._exists_table = self.check_table()
         self.discount_model = DiscountModel()
         self.assistance_model = AssistanceModel()
+        self.verificar_o_crear_triggers()
 
     def check_table(self) -> bool:
         try:
@@ -51,6 +53,44 @@ class PaymentModel:
         except Exception as ex:
             print(f"❌ Error al verificar/crear la tabla {E_PAYMENT.TABLE.value}: {ex}")
             return False
+
+    def verificar_o_crear_triggers(self):
+        try:
+            self._crear_trigger_pago_efectivo("trg_calcular_pago_efectivo_bi", "BEFORE INSERT")
+            self._crear_trigger_pago_efectivo("trg_calcular_pago_efectivo_bu", "BEFORE UPDATE")
+        except Exception as ex:
+            print(f"❌ Error al verificar/crear triggers: {ex}")
+
+    def _crear_trigger_pago_efectivo(self, nombre: str, momento: str):
+        check_query = """
+            SELECT COUNT(*) AS c
+            FROM information_schema.triggers
+            WHERE trigger_schema = %s AND trigger_name = %s
+        """
+        result = self.db.get_data(check_query, (self.db.database, nombre), dictionary=True)
+        if result.get("c", 0) == 0:
+            print(f"⚠️ Trigger '{nombre}' no existe. Creando...")
+            cursor = self.db.connection.cursor()
+            cursor.execute(f"DROP TRIGGER IF EXISTS {nombre}")
+            trigger_sql = f"""
+                CREATE TRIGGER {nombre}
+                {momento} ON {E_PAYMENT.TABLE.value}
+                FOR EACH ROW
+                BEGIN
+                    DECLARE descs DECIMAL(10,2);
+                    SET NEW.{E_PAYMENT.PAGO_EFECTIVO.value} = NEW.{E_PAYMENT.MONTO_BASE.value} - NEW.{E_PAYMENT.PAGO_DEPOSITO.value};
+                    SELECT IFNULL(SUM({E_DISCOUNT.MONTO.value}),0) INTO descs
+                    FROM {E_DISCOUNT.TABLE.value}
+                    WHERE {E_DISCOUNT.ID_PAGO.value} = NEW.{E_PAYMENT.ID.value};
+                    SET NEW.{E_PAYMENT.MONTO_TOTAL.value} = NEW.{E_PAYMENT.PAGO_EFECTIVO.value} + NEW.{E_PAYMENT.PAGO_DEPOSITO.value} - IFNULL(descs,0);
+                END
+            """
+            cursor.execute(trigger_sql)
+            self.db.connection.commit()
+            cursor.close()
+            print(f"✅ Trigger '{nombre}' creado correctamente.")
+        else:
+            print(f"✔️ Trigger '{nombre}' ya existe.")
 
 
     def get_pago_con_descuentos(self, id_pago: int):
