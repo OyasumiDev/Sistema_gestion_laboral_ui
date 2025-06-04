@@ -10,6 +10,10 @@ class AssistanceModel:
         self.verificar_o_crear_triggers()
 
     def check_table(self) -> bool:
+        """
+        Verifica si la tabla 'asistencias' existe. Si no existe, la crea con la estructura adecuada,
+        incluyendo la columna 'fecha_generada' para marcar asistencias ya utilizadas en generación de pagos.
+        """
         try:
             query = """
                 SELECT COUNT(*) AS c
@@ -17,10 +21,13 @@ class AssistanceModel:
                 WHERE table_schema = %s AND table_name = %s
             """
             result = self.db.get_data(query, (self.db.database, E_ASSISTANCE.TABLE.value), dictionary=True)
-            if result.get("c", 0) == 0:
+            existe = result.get("c", 0) > 0
+
+            if not existe:
                 print(f"⚠️ La tabla {E_ASSISTANCE.TABLE.value} no existe. Creando...")
+
                 create_query = f"""
-                CREATE TABLE IF NOT EXISTS asistencias (
+                CREATE TABLE IF NOT EXISTS {E_ASSISTANCE.TABLE.value} (
                     id_asistencia INT AUTO_INCREMENT PRIMARY KEY,
                     numero_nomina SMALLINT UNSIGNED NOT NULL,
                     fecha DATE NOT NULL,
@@ -29,20 +36,20 @@ class AssistanceModel:
                     retardo TIME,
                     estado VARCHAR(20),
                     tiempo_trabajo TIME,
-                    FOREIGN KEY (numero_nomina)
-                        REFERENCES empleados(numero_nomina)
-                        ON DELETE CASCADE
+                    fecha_generada DATE DEFAULT NULL,
+                    FOREIGN KEY (numero_nomina) REFERENCES empleados(numero_nomina) ON DELETE CASCADE
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
                 """
                 self.db.run_query(create_query)
                 print(f"✅ Tabla {E_ASSISTANCE.TABLE.value} creada correctamente.")
             else:
                 print(f"✔️ La tabla {E_ASSISTANCE.TABLE.value} ya existe.")
+
             return True
+
         except Exception as ex:
             print(f"❌ Error al verificar/crear la tabla {E_ASSISTANCE.TABLE.value}: {ex}")
             return False
-
 
 
     def verificar_o_crear_triggers(self):
@@ -406,4 +413,30 @@ class AssistanceModel:
             print(f"❌ Error al obtener fecha máxima de asistencia: {e}")
             return None
 
+    def marcar_asistencias_como_generadas(self, fecha_inicio: str, fecha_fin: str, fecha_generacion: Optional[str] = None) -> dict:
+        """
+        Marca las asistencias en el rango como utilizadas para generar pagos, asignando la fecha de generación.
+        """
+        try:
+            fecha_generacion = fecha_generacion or datetime.today().strftime("%Y-%m-%d")
+            query = """
+                UPDATE asistencias
+                SET fecha_generada = %s
+                WHERE fecha BETWEEN %s AND %s
+            """
+            self.db.run_query(query, (fecha_generacion, fecha_inicio, fecha_fin))
+            return {"status": "success"}
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
 
+    def get_fechas_generadas(self) -> list:
+        """
+        Retorna todas las fechas de asistencias que ya fueron usadas para generar pagos.
+        """
+        try:
+            query = "SELECT DISTINCT fecha FROM asistencias WHERE fecha_generada IS NOT NULL"
+            resultados = self.db.get_data_list(query, dictionary=True)
+            return [r["fecha"] for r in resultados if r.get("fecha")]
+        except Exception as e:
+            print(f"❌ Error al obtener fechas generadas: {e}")
+            return []

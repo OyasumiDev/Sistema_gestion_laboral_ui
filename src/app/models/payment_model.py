@@ -514,3 +514,44 @@ class PaymentModel:
         except Exception as ex:
             print(f"❌ Error al obtener fecha máxima: {ex}")
             return None
+
+    def get_ultima_fecha_pago_generada(self) -> date | None:
+        """
+        Retorna la fecha de pago más reciente registrada (pagada o no).
+        """
+        try:
+            query = f"SELECT MAX({E_PAYMENT.FECHA_PAGO.value}) AS ultima_fecha FROM {E_PAYMENT.TABLE.value}"
+            result = self.db.get_data(query, dictionary=True)
+            ultima_fecha = result.get("ultima_fecha")
+            if isinstance(ultima_fecha, str):
+                ultima_fecha = datetime.strptime(ultima_fecha, "%Y-%m-%d").date()
+            return ultima_fecha
+        except Exception as ex:
+            print(f"❌ Error al obtener la última fecha de pago: {ex}")
+            return None
+
+    def get_pagos_por_rango(self, fecha_inicio: str, fecha_fin: str):
+        try:
+            query = f"""
+                SELECT p.*, e.nombre_completo AS nombre
+                FROM {E_PAYMENT.TABLE.value} p
+                JOIN empleados e ON p.{E_PAYMENT.NUMERO_NOMINA.value} = e.numero_nomina
+                WHERE p.{E_PAYMENT.FECHA_PAGO.value} BETWEEN %s AND %s
+                ORDER BY p.{E_PAYMENT.FECHA_PAGO.value} ASC
+            """
+            pagos = self.db.get_data_list(query, (fecha_inicio, fecha_fin), dictionary=True)
+
+            return {"status": "success", "data": pagos}
+
+        except Exception as ex:
+            print(f"❌ Error en get_pagos_por_rango: {ex}")
+            return {"status": "error", "message": str(ex)}
+
+    def get_fechas_utilizadas(self) -> list:
+        """
+        Retorna una lista de fechas únicas ya utilizadas en pagos.
+        Asegura que todas sean objetos datetime.date
+        """
+        query = "SELECT DISTINCT fecha_pago FROM pagos"
+        resultados = self.db.get_data_list(query, dictionary=True)
+        return [r["fecha_pago"] for r in resultados if isinstance(r.get("fecha_pago"), (datetime, date))]

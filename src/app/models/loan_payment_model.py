@@ -180,3 +180,18 @@ class LoanPaymentModel:
         result = self.db.get_data(query, dictionary=True)
         max_id = result.get("max_id", 0) if result else 0
         return int(max_id) + 1 if max_id else 1
+
+    def get_prestamo_activo_por_empleado(self, numero_nomina: int):
+        try:
+            query = f"""
+                SELECT {self.P.PRESTAMO_ID.value} AS id_prestamo,
+                    {self.P.PRESTAMO_SALDO.value} AS saldo,
+                    {self.P.PRESTAMO_INTERES.value} AS interes
+                FROM {self.P.TABLE.value}
+                WHERE numero_nomina = %s AND {self.P.PRESTAMO_ESTADO.value} = 'activo'
+                ORDER BY {self.P.PRESTAMO_ID.value} ASC LIMIT 1
+            """
+            return self.db.get_data(query, (numero_nomina,), dictionary=True)
+        except Exception as e:
+            print(f"❌ Error al buscar préstamo activo: {e}")
+            return None

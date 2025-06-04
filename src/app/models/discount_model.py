@@ -1,158 +1,176 @@
+from datetime import date
 from app.core.enums.e_discount_model import E_DISCOUNT
 from app.core.interfaces.database_mysql import DatabaseMysql
 
-VALORES_DESC_POR_DEFECTO = {
-    "retenciones_imss": 50.0,
-    "transporte": 50.0,
-    "comida_completa": 100.0,
-    "comida_media": 50.0,
-}
+VALOR_IMSS_POR_DEFECTO = 50.0
 
 
 class DiscountModel:
     def __init__(self):
         self.db = DatabaseMysql()
+        self.E = E_DISCOUNT
         self._create_table()
 
     def _create_table(self):
         query = f"""
-        CREATE TABLE IF NOT EXISTS {E_DISCOUNT.TABLE.value} (
-            {E_DISCOUNT.ID.value} INT AUTO_INCREMENT PRIMARY KEY,
+        CREATE TABLE IF NOT EXISTS {self.E.TABLE.value} (
+            {self.E.ID.value} INT AUTO_INCREMENT PRIMARY KEY,
             numero_nomina SMALLINT UNSIGNED NOT NULL,
-            {E_DISCOUNT.ID_PAGO.value} INT DEFAULT NULL,
-            {E_DISCOUNT.TIPO.value} VARCHAR(50) NOT NULL,
-            {E_DISCOUNT.DESCRIPCION.value} VARCHAR(100) DEFAULT NULL,
-            {E_DISCOUNT.MONTO.value} DECIMAL(10,2) NOT NULL,
-            {E_DISCOUNT.FECHA_APLICACION.value} DATE NOT NULL DEFAULT (CURRENT_DATE),
-            {E_DISCOUNT.FECHA_CREACION.value} TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            {self.E.ID_PAGO.value} INT DEFAULT NULL,
+            {self.E.TIPO.value} VARCHAR(50) NOT NULL,
+            {self.E.DESCRIPCION.value} VARCHAR(100) DEFAULT NULL,
+            {self.E.MONTO.value} DECIMAL(10,2) NOT NULL,
+            {self.E.FECHA_APLICACION.value} DATE NOT NULL DEFAULT (CURRENT_DATE),
+            {self.E.FECHA_CREACION.value} TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (numero_nomina) REFERENCES empleados(numero_nomina) ON DELETE CASCADE,
-            FOREIGN KEY ({E_DISCOUNT.ID_PAGO.value}) REFERENCES pagos(id_pago) ON DELETE SET NULL
+            FOREIGN KEY ({self.E.ID_PAGO.value}) REFERENCES pagos(id_pago) ON DELETE SET NULL
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
         """
         self.db.run_query(query)
+
+    # --------------------------------------------------------
+    # Inserción
+    # --------------------------------------------------------
 
     def agregar_descuento(self, numero_nomina: int, tipo: str, descripcion: str, monto: float, id_pago: int = None) -> dict:
         try:
             if monto < 0:
                 return {"status": "error", "message": "El monto no puede ser negativo"}
+
             query = f"""
-            INSERT INTO {E_DISCOUNT.TABLE.value} (
-                numero_nomina, {E_DISCOUNT.ID_PAGO.value}, {E_DISCOUNT.TIPO.value},
-                {E_DISCOUNT.DESCRIPCION.value}, {E_DISCOUNT.MONTO.value}
+            INSERT INTO {self.E.TABLE.value} (
+                numero_nomina, {self.E.ID_PAGO.value}, {self.E.TIPO.value},
+                {self.E.DESCRIPCION.value}, {self.E.MONTO.value}
             ) VALUES (%s, %s, %s, %s, %s)
             """
             self.db.run_query(query, (numero_nomina, id_pago, tipo, descripcion, monto))
             return {"status": "success"}
+
         except Exception as e:
             return {"status": "error", "message": str(e)}
 
-    def agregar_descuentos_opcionales(
+    def agregar_descuentos_opcionales(self, id_pago: int, numero_nomina: int) -> dict:
+        """
+        Agrega descuentos por defecto al generar un pago: IMSS (50.0), transporte (0.0), comida (0.0), extra (0.0)
+        """
+        try:
+            return self.guardar_descuentos_editables(
+                id_pago=id_pago,
+                numero_nomina=numero_nomina,
+                aplicar_imss=True,
+                aplicar_transporte=False,
+                monto_transporte=0.0,
+                aplicar_comida=False,
+                estado_comida="No cobro",
+                descuento_extra=0.0,
+                descripcion_extra=""
+            )
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
+
+    def guardar_descuentos_completos(
         self,
+        id_pago: int,
         numero_nomina: int,
-        id_pago: int = None,
-        aplicar_imss=True,
-        aplicar_transporte=True,
-        aplicar_comida=True,
-        estado_comida="media",
-        descuento_extra=None,
-        descripcion_extra=None,
-        montos_personalizados: dict = None
+        aplicar_imss: bool,
+        monto_imss: float,
+        aplicar_transporte: bool,
+        monto_transporte: float,
+        aplicar_comida: bool,
+        monto_comida: float,
+        aplicar_extra: bool,
+        monto_extra: float,
+        descripcion_extra: str
     ) -> dict:
         try:
-            montos = montos_personalizados or {}
-            descuentos = []
+            self.eliminar_por_id_pago(id_pago)
 
-            if aplicar_imss:
-                monto = montos.get("retenciones_imss", VALORES_DESC_POR_DEFECTO["retenciones_imss"])
-                descuentos.append(("retenciones_imss", "Cuota IMSS", monto))
+            if aplicar_imss and monto_imss >= 0:
+                self.agregar_descuento(numero_nomina, "retenciones_imss", "Cuota IMSS", monto_imss or VALOR_IMSS_POR_DEFECTO, id_pago)
 
-            if aplicar_transporte:
-                monto = montos.get("transporte", VALORES_DESC_POR_DEFECTO["transporte"])
-                descuentos.append(("transporte", "Pasaje diario", monto))
+            if aplicar_transporte and monto_transporte >= 0:
+                self.agregar_descuento(numero_nomina, "transporte", "Pasaje diario", monto_transporte, id_pago)
 
-            if aplicar_comida:
-                clave = f"comida_{estado_comida}"
-                monto = montos.get("comida", VALORES_DESC_POR_DEFECTO.get(clave, 50.0))
-                descripcion = f"Comida {estado_comida}"
-                descuentos.append(("comida", descripcion, monto))
+            if aplicar_comida and monto_comida >= 0:
+                self.agregar_descuento(numero_nomina, "comida", "Comida diaria", monto_comida, id_pago)
 
-            if descuento_extra and descripcion_extra:
-                monto = float(montos.get("descuento_extra", descuento_extra))
-                descuentos.append(("descuento_extra", descripcion_extra, monto))
-
-            for tipo, descripcion, monto in descuentos:
-                self.agregar_descuento(numero_nomina, tipo, descripcion, monto, id_pago)
+            if aplicar_extra and monto_extra > 0 and descripcion_extra:
+                self.agregar_descuento(numero_nomina, "descuento_extra", descripcion_extra, monto_extra, id_pago)
 
             return {"status": "success"}
-        except Exception as e:
-            return {"status": "error", "message": str(e)}
 
-    def eliminar_por_id_pago(self, id_pago: int) -> dict:
-        try:
-            query = f"DELETE FROM {E_DISCOUNT.TABLE.value} WHERE {E_DISCOUNT.ID_PAGO.value} = %s"
-            self.db.run_query(query, (id_pago,))
-            return {"status": "success"}
         except Exception as e:
             return {"status": "error", "message": str(e)}
 
     def guardar_descuentos_editables(
         self,
         id_pago: int,
+        numero_nomina: int,
         aplicar_imss: bool,
         aplicar_transporte: bool,
+        monto_transporte: float,
         aplicar_comida: bool,
         estado_comida: str,
-        descuento_extra: float = None,
-        descripcion_extra: str = None,
-        montos_personalizados: dict = None,
-        numero_nomina: int = None
+        descuento_extra: float,
+        descripcion_extra: str
     ) -> dict:
         try:
-            if not numero_nomina:
-                return {"status": "error", "message": "Se requiere el número de nómina"}
+            self.eliminar_por_id_pago(id_pago)
 
-            resultado = self.eliminar_por_id_pago(id_pago)
-            if resultado["status"] != "success":
-                return resultado
+            if aplicar_imss:
+                self.agregar_descuento(numero_nomina, "retenciones_imss", "Cuota IMSS", VALOR_IMSS_POR_DEFECTO, id_pago)
 
-            return self.agregar_descuentos_opcionales(
-                numero_nomina=numero_nomina,
-                id_pago=id_pago,
-                aplicar_imss=aplicar_imss,
-                aplicar_transporte=aplicar_transporte,
-                aplicar_comida=aplicar_comida,
-                estado_comida=estado_comida,
-                descuento_extra=descuento_extra,
-                descripcion_extra=descripcion_extra,
-                montos_personalizados=montos_personalizados
-            )
+            if aplicar_transporte:
+                self.agregar_descuento(numero_nomina, "transporte", "Pasaje diario", monto_transporte, id_pago)
+
+            if aplicar_comida:
+                self.agregar_descuento(numero_nomina, "comida", estado_comida, 50.0 if estado_comida == "50 pesos" else 100.0 if estado_comida == "100 pesos" else 0.0, id_pago)
+
+            if descuento_extra > 0 and descripcion_extra:
+                self.agregar_descuento(numero_nomina, "descuento_extra", descripcion_extra, descuento_extra, id_pago)
+
+            return {"status": "success"}
+
         except Exception as e:
             return {"status": "error", "message": str(e)}
+
+    # --------------------------------------------------------
+    # Eliminación
+    # --------------------------------------------------------
+
+    def eliminar_por_id_pago(self, id_pago: int) -> dict:
+        try:
+            query = f"DELETE FROM {self.E.TABLE.value} WHERE {self.E.ID_PAGO.value} = %s"
+            self.db.run_query(query, (id_pago,))
+            return {"status": "success"}
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
+
+    # --------------------------------------------------------
+    # Consulta
+    # --------------------------------------------------------
 
     def get_descuentos_por_pago(self, id_pago: int) -> list:
         try:
             query = f"""
-            SELECT {E_DISCOUNT.TIPO.value}, {E_DISCOUNT.DESCRIPCION.value}, {E_DISCOUNT.MONTO.value}
-            FROM {E_DISCOUNT.TABLE.value}
-            WHERE {E_DISCOUNT.ID_PAGO.value} = %s
+            SELECT {self.E.TIPO.value}, {self.E.DESCRIPCION.value}, {self.E.MONTO.value}
+            FROM {self.E.TABLE.value}
+            WHERE {self.E.ID_PAGO.value} = %s
             """
             return self.db.get_data_list(query, (id_pago,), dictionary=True)
         except Exception as e:
             print(f"❌ Error al obtener descuentos del pago {id_pago}: {e}")
             return []
 
-    def get_by_pago(self, id_pago: int) -> list:
-        return self.get_descuentos_por_pago(id_pago)
-
     def get_total_descuentos_por_pago(self, id_pago: int) -> float:
         try:
             query = f"""
-            SELECT SUM({E_DISCOUNT.MONTO.value}) AS total
-            FROM {E_DISCOUNT.TABLE.value}
-            WHERE {E_DISCOUNT.ID_PAGO.value} = %s
+            SELECT SUM({self.E.MONTO.value}) AS total
+            FROM {self.E.TABLE.value}
+            WHERE {self.E.ID_PAGO.value} = %s
             """
             result = self.db.get_data(query, (id_pago,), dictionary=True)
-            return float(result["total"]) if result and result["total"] else 0.0
+            return float(result["total"]) if result and result.get("total") else 0.0
         except Exception as e:
             print(f"❌ Error al obtener total de descuentos para el pago {id_pago}: {e}")
             return 0.0
@@ -160,45 +178,11 @@ class DiscountModel:
     def resumen_por_pago(self, id_pago: int) -> dict:
         try:
             descuentos = self.get_descuentos_por_pago(id_pago)
-            total = sum(float(d[E_DISCOUNT.MONTO.value]) for d in descuentos)
+            total = sum(float(d[self.E.MONTO.value]) for d in descuentos)
             return {
                 "status": "success",
                 "descuentos": descuentos,
                 "total": round(total, 2)
             }
-        except Exception as e:
-            return {"status": "error", "message": str(e)}
-
-    def resumen_descuentos_por_empleado(self, numero_nomina: int) -> dict:
-        try:
-            query = f"""
-            SELECT {E_DISCOUNT.TIPO.value}, {E_DISCOUNT.DESCRIPCION.value}, {E_DISCOUNT.MONTO.value}
-            FROM {E_DISCOUNT.TABLE.value}
-            WHERE numero_nomina = %s
-            """
-            descuentos = self.db.get_data_list(query, (numero_nomina,), dictionary=True)
-            if not descuentos:
-                return {"status": "success", "resumen": "No hay descuentos registrados para este empleado"}
-
-            resumen_total = [
-                f"{d[E_DISCOUNT.TIPO.value].replace('_', ' ').capitalize()}: ${d[E_DISCOUNT.MONTO.value]:.2f} ({d[E_DISCOUNT.DESCRIPCION.value]})"
-                for d in descuentos
-            ]
-            total = sum(float(d[E_DISCOUNT.MONTO.value]) for d in descuentos)
-
-            return {"status": "success", "resumen": resumen_total, "total": round(total, 2)}
-        except Exception as e:
-            return {"status": "error", "message": str(e)}
-
-    def resumen_descuentos_global(self) -> dict:
-        try:
-            query = f"""
-            SELECT numero_nomina, {E_DISCOUNT.TIPO.value}, SUM({E_DISCOUNT.MONTO.value}) AS total
-            FROM {E_DISCOUNT.TABLE.value}
-            GROUP BY numero_nomina, {E_DISCOUNT.TIPO.value}
-            ORDER BY numero_nomina
-            """
-            datos = self.db.get_data_list(query, (), dictionary=True)
-            return {"status": "success", "data": datos}
         except Exception as e:
             return {"status": "error", "message": str(e)}

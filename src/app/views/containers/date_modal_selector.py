@@ -1,6 +1,6 @@
 import flet as ft
 import calendar
-from datetime import datetime
+from datetime import datetime, date
 from app.core.app_state import AppState
 from app.views.containers.modal_alert import ModalAlert
 
@@ -11,6 +11,7 @@ month_class = {
     7: "July", 8: "August", 9: "September", 10: "October", 11: "November", 12: "December"
 }
 
+
 class DateModalSelector:
     def __init__(self, on_dates_confirmed):
         self.page = AppState().page
@@ -20,6 +21,11 @@ class DateModalSelector:
         self.year = datetime.now().year
         self.month = datetime.now().month
         self.dialog = ft.AlertDialog(modal=True)
+        self.fechas_bloqueadas = []
+
+    def set_fechas_bloqueadas(self, fechas):
+        """Recibe una lista de objetos date en formato YYYY-MM-DD"""
+        self.fechas_bloqueadas = fechas or []
 
     def abrir_dialogo(self):
         self._construir_contenido()
@@ -33,7 +39,14 @@ class DateModalSelector:
         self.page.update()
 
     def _construir_contenido(self):
-        def seleccionar_fecha(fecha):
+        def seleccionar_fecha(fecha: date):
+            if fecha in self.fechas_bloqueadas:
+                ModalAlert.mostrar_info(
+                    "Fecha bloqueada",
+                    "Esta fecha ya fue utilizada para generar un periodo anterior. Por favor, selecciona un rango diferente."
+                )
+                return
+
             if self.fecha_inicio == fecha:
                 self.fecha_inicio = None
             elif self.fecha_fin == fecha:
@@ -49,11 +62,9 @@ class DateModalSelector:
             else:
                 ModalAlert.mostrar_info("Límite de selección", "Solo puedes seleccionar dos fechas. Cancela o guarda para continuar.")
                 return
+
             self._construir_contenido()
             self.page.update()
-
-        def formato_fecha_mysql(fecha):
-            return datetime.strptime(fecha, "%B %d, %Y").strftime("%Y-%m-%d")
 
         encabezado = ft.Row([
             ft.IconButton("chevron_left", on_click=lambda e: self._cambiar_mes(-1)),
@@ -71,16 +82,23 @@ class DateModalSelector:
                     fila.controls.append(ft.Container(width=30, height=30))
                     continue
 
-                fecha = f"{month_class[self.month]} {dia}, {self.year}"
-                fecha_mysql = formato_fecha_mysql(fecha)
+                fecha_actual = date(self.year, self.month, dia)
                 color = None
-                if self.fecha_inicio and self.fecha_fin:
-                    if fecha_mysql == self.fecha_inicio:
+                text_color = ft.colors.BLACK
+
+                if fecha_actual in self.fechas_bloqueadas:
+                    color = ft.colors.GREY_300
+                    text_color = ft.colors.BLACK45
+                    clickable = False
+                else:
+                    clickable = True
+                    if self.fecha_inicio and self.fecha_fin:
+                        if fecha_actual == self.fecha_inicio:
+                            color = ft.colors.GREEN
+                        elif fecha_actual == self.fecha_fin:
+                            color = ft.colors.RED
+                    elif self.fecha_inicio == fecha_actual:
                         color = ft.colors.GREEN
-                    elif fecha_mysql == self.fecha_fin:
-                        color = ft.colors.RED
-                elif self.fecha_inicio and fecha_mysql == self.fecha_inicio:
-                    color = ft.colors.GREEN
 
                 box = ft.Container(
                     width=30,
@@ -88,8 +106,8 @@ class DateModalSelector:
                     bgcolor=color,
                     border_radius=5,
                     alignment=ft.alignment.center,
-                    content=ft.Text(str(dia)),
-                    on_click=lambda e, f=fecha: seleccionar_fecha(formato_fecha_mysql(f))
+                    content=ft.Text(str(dia), color=text_color),
+                    on_click=(lambda e, f=fecha_actual: seleccionar_fecha(f)) if clickable else None
                 )
                 fila.controls.append(box)
             grid.controls.append(fila)
@@ -111,7 +129,7 @@ class DateModalSelector:
 
     def _guardar_fechas(self):
         if self.fecha_inicio and self.fecha_fin:
-            self.on_dates_confirmed(self.fecha_inicio, self.fecha_fin)  # ✅ NO se cierra aquí
+            self.on_dates_confirmed(self.fecha_inicio, self.fecha_fin)
 
     def _cambiar_mes(self, delta):
         self.month += delta
