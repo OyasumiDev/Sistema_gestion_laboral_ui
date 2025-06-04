@@ -33,6 +33,8 @@ class PagosContainer(ft.Container):
         self.inputs_deposito: dict[int, ft.TextField] = {}
         self.labels_efectivo: dict[int, ft.Text] = {}
         self.monto_base_map: dict[int, float] = {}
+        self.descuentos_map: dict[int, float] = {}
+        self.depositos_temporales: dict[int, Decimal] = {}
 
         # controles
         fechas_bloqueadas = self.assistance_model.get_fechas_generadas()
@@ -159,11 +161,13 @@ class PagosContainer(ft.Container):
                 ft.DataColumn(label=ft.Text("Acciones")),
                 ft.DataColumn(label=ft.Text("Estado")),
             ]
+            self._extender_columnas_pagos()
 
             self.tabla_pagos.rows.clear()
             self.inputs_deposito.clear()
             self.labels_efectivo.clear()
             self.monto_base_map.clear()
+            self.descuentos_map.clear()
             total_pagado = 0.0
 
             query = (
@@ -184,10 +188,14 @@ class PagosContainer(ft.Container):
                     descuentos = self.discount_model.get_total_descuentos_por_pago(p["id_pago"])
                     estado = p["estado"]
                     self.monto_base_map[p["id_pago"]] = float(p["monto_base"])
+                    self.descuentos_map[p["id_pago"]] = float(descuentos)
 
                     if estado == "pendiente":
+                        valor_dep = self.depositos_temporales.get(
+                            p["id_pago"], Decimal(str(p["pago_deposito"]))
+                        )
                         input_dep = ft.TextField(
-                            value=f"{p['pago_deposito']:.2f}",
+                            value=f"{valor_dep:.2f}",
                             width=90,
                             height=28,
                             dense=True,
@@ -197,7 +205,8 @@ class PagosContainer(ft.Container):
                         )
                         self.inputs_deposito[p["id_pago"]] = input_dep
                         deposito_cell = ft.DataCell(input_dep)
-                        efectivo_label = ft.Text(f"${p['pago_efectivo']:.2f}")
+                        efectivo_val = Decimal(str(p["monto_base"])) - Decimal(str(descuentos)) - valor_dep
+                        efectivo_label = ft.Text(f"${efectivo_val:.2f}")
                         self.labels_efectivo[p["id_pago"]] = efectivo_label
                         efectivo_cell = ft.DataCell(efectivo_label)
                     else:
@@ -267,19 +276,9 @@ class PagosContainer(ft.Container):
             self.page.update()
             return
 
-        monto_base = Decimal(str(self.monto_base_map.get(id_pago, 0)))
-        if deposito < 0:
-            campo.error_text = "No negativo"
-        elif deposito > monto_base:
-            campo.error_text = "Mayor al monto base"
-        else:
-            campo.error_text = None
-
-        efectivo = max(Decimal("0"), monto_base - deposito)
-        etiqueta = self.labels_efectivo.get(id_pago)
-        if etiqueta:
-            etiqueta.value = f"${efectivo:.2f}"
-        self.page.update()
+        if self._validar_pago_deposito(id_pago, deposito, campo):
+            self.depositos_temporales[id_pago] = deposito
+        self._actualizar_pago_efectivo_en_tabla(id_pago, deposito)
 
     def _guardar_pago_confirmado(self, id_pago: int):
         def confirmar():
@@ -291,18 +290,24 @@ class PagosContainer(ft.Container):
 
                 try:
                     monto_base = Decimal(str(pago["data"]["monto_base"]))
-                    deposito_field = self.inputs_deposito.get(id_pago)
-                    deposito = Decimal(deposito_field.value) if deposito_field else Decimal(str(pago["data"]["pago_deposito"]))
+                    if id_pago in self.depositos_temporales:
+                        deposito = self.depositos_temporales[id_pago]
+                    else:
+                        deposito_field = self.inputs_deposito.get(id_pago)
+                        deposito = (
+                            Decimal(deposito_field.value)
+                            if deposito_field
+                            else Decimal(str(pago["data"]["pago_deposito"]))
+                        )
                 except (InvalidOperation, ValueError):
                     ModalAlert.mostrar_info("Valor inválido", "Depósito debe ser numérico")
                     return
 
-                if deposito < 0 or deposito > monto_base:
-                    ModalAlert.mostrar_info("Valor inválido", "El depósito no es válido para el monto base")
+                if not self._validar_pago_deposito(id_pago, deposito, self.inputs_deposito.get(id_pago, ft.TextField())):
                     return
 
-                descuentos = Decimal(str(self.discount_model.get_total_descuentos_por_pago(id_pago)))
-                efectivo = monto_base - deposito
+                descuentos = Decimal(str(self.descuentos_map.get(id_pago, self.discount_model.get_total_descuentos_por_pago(id_pago))))
+                efectivo = monto_base - descuentos - deposito
                 monto_total = max(Decimal("0.0"), efectivo + deposito - descuentos)
 
                 campos = {
@@ -314,6 +319,7 @@ class PagosContainer(ft.Container):
                 }
                 result = self.payment_model.update_pago(id_pago, campos)
                 if result["status"] == "success":
+                    self.depositos_temporales.pop(id_pago, None)
                     self._cargar_pagos()
                 else:
                     ModalAlert.mostrar_info("Error", result["message"])
@@ -331,6 +337,7 @@ class PagosContainer(ft.Container):
             try:
                 self.discount_model.eliminar_por_id_pago(id_pago)
                 self.payment_model.db.run_query("DELETE FROM pagos WHERE id_pago = %s", (id_pago,))
+                self.depositos_temporales.pop(id_pago, None)
                 self._cargar_pagos()
             except Exception as ex:
                 ModalAlert.mostrar_info("Error al eliminar", str(ex))
@@ -364,6 +371,36 @@ class PagosContainer(ft.Container):
             self._cargar_pagos()
 
         ModalDescuentos(pago, on_confirmar).mostrar()
+
+    def _validar_pago_deposito(self, id_pago: int, deposito: Decimal, campo: ft.TextField) -> bool:
+        """Valida que el depósito sea numérico y no supere el monto base."""
+        monto_base = Decimal(str(self.monto_base_map.get(id_pago, 0)))
+        es_valido = True
+        if deposito < 0:
+            campo.error_text = "No negativo"
+            campo.border_color = ft.colors.RED
+            es_valido = False
+        elif deposito > monto_base:
+            campo.error_text = "Mayor al monto base"
+            campo.border_color = ft.colors.RED
+            es_valido = False
+        else:
+            campo.error_text = None
+            campo.border_color = None
+        return es_valido
+
+    def _actualizar_pago_efectivo_en_tabla(self, id_pago: int, deposito: Decimal):
+        monto_base = Decimal(str(self.monto_base_map.get(id_pago, 0)))
+        descuentos = Decimal(str(self.descuentos_map.get(id_pago, 0)))
+        efectivo = max(Decimal("0"), monto_base - descuentos - deposito)
+        etiqueta = self.labels_efectivo.get(id_pago)
+        if etiqueta:
+            etiqueta.value = f"${efectivo:.2f}"
+        self.page.update()
+
+    def _extender_columnas_pagos(self):
+        for col in self.tabla_pagos.columns:
+            col.auto_resize = True
 
     # ------------------------------------------------------------------ util
     def _parse_fecha(self, fecha):
