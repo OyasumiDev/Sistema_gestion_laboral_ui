@@ -37,7 +37,7 @@ class PagosContainer(ft.Container):
         self.depositos_temporales: dict[int, Decimal] = {}
 
         # controles
-        fechas_bloqueadas = self.payment_model.get_fechas_utilizadas()
+        fechas_bloqueadas = self.assistance_model.get_fechas_generadas()
         self.date_selector_periodo = DateModalSelector(
             on_dates_confirmed=self._generar_por_periodo,
             fechas_bloqueadas=fechas_bloqueadas,
@@ -108,7 +108,7 @@ class PagosContainer(ft.Container):
         self.date_selector_periodo.fecha_inicio = self.fecha_inicio_periodo
         self.date_selector_periodo.fecha_fin = self.fecha_fin_periodo
         self.date_selector_periodo.set_fechas_bloqueadas(
-            self.payment_model.get_fechas_utilizadas()
+            self.assistance_model.get_fechas_generadas()
         )
         self.date_selector_periodo.abrir_dialogo()
 
@@ -262,7 +262,7 @@ class PagosContainer(ft.Container):
                         total_pagado += float(p["monto_total"])
 
             self.resumen_pagos.value = f"Total pagado: ${total_pagado:.2f}"
-            fechas = self.payment_model.get_fechas_utilizadas()
+            fechas = self.assistance_model.get_fechas_generadas()
             self.date_selector_periodo.set_fechas_bloqueadas(fechas)
             self.page.update()
         except Exception as ex:
