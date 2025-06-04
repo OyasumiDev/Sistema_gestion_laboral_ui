@@ -16,18 +16,18 @@ class DateModalSelector:
     def __init__(self, on_dates_confirmed):
         self.page = AppState().page
         self.on_dates_confirmed = on_dates_confirmed
-        self.fecha_inicio = None
-        self.fecha_fin = None
-        self.year = datetime.now().year
-        self.month = datetime.now().month
         self.dialog = ft.AlertDialog(modal=True)
         self.fechas_bloqueadas = []
+        self._reset_seleccion()
+        self.year = datetime.now().year
+        self.month = datetime.now().month
 
     def set_fechas_bloqueadas(self, fechas):
         """Recibe una lista de objetos date en formato YYYY-MM-DD"""
         self.fechas_bloqueadas = fechas or []
 
     def abrir_dialogo(self):
+        self._reset_seleccion()
         self._construir_contenido()
         if self.dialog not in self.page.overlay:
             self.page.overlay.append(self.dialog)
@@ -37,6 +37,10 @@ class DateModalSelector:
     def cerrar_dialogo(self):
         self.dialog.open = False
         self.page.update()
+
+    def _reset_seleccion(self):
+        self.fecha_inicio = None
+        self.fecha_fin = None
 
     def _construir_contenido(self):
         def seleccionar_fecha(fecha: date):
@@ -97,6 +101,8 @@ class DateModalSelector:
                             color = ft.colors.GREEN
                         elif fecha_actual == self.fecha_fin:
                             color = ft.colors.RED
+                        elif self.fecha_inicio < fecha_actual < self.fecha_fin:
+                            color = ft.colors.GREEN_100
                     elif self.fecha_inicio == fecha_actual:
                         color = ft.colors.GREEN
 
@@ -130,6 +136,7 @@ class DateModalSelector:
     def _guardar_fechas(self):
         if self.fecha_inicio and self.fecha_fin:
             self.on_dates_confirmed(self.fecha_inicio, self.fecha_fin)
+            self.cerrar_dialogo()
 
     def _cambiar_mes(self, delta):
         self.month += delta

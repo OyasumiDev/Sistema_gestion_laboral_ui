@@ -112,15 +112,26 @@ class PagosContainer(ft.Container):
         return ft.GestureDetector(on_tap=handler, content=ft.Row([ft.Icon(icon), ft.Text(text)], spacing=5))
 
     # ------------------------------------------------------------------ actions
+# ... todo el código anterior igual ...
+
     def _abrir_modal_fecha_id(self, e):
-        self.date_selector_id.fecha_inicio = self.fecha_inicio_id
-        self.date_selector_id.fecha_fin = self.fecha_fin_id
+        fechas_bloqueadas = self.assistance_model.get_fechas_generadas()
+        fechas_bloqueadas = [
+            datetime.strptime(f, "%Y-%m-%d").date() if isinstance(f, str) else f
+            for f in fechas_bloqueadas
+        ]
+        self.date_selector_id.set_fechas_bloqueadas(fechas_bloqueadas)
         self.date_selector_id.abrir_dialogo()
 
     def _abrir_modal_fecha_periodo(self, e):
-        self.date_selector_periodo.fecha_inicio = self.fecha_inicio_periodo
-        self.date_selector_periodo.fecha_fin = self.fecha_fin_periodo
+        fechas_bloqueadas = self.assistance_model.get_fechas_generadas()
+        fechas_bloqueadas = [
+            datetime.strptime(f, "%Y-%m-%d").date() if isinstance(f, str) else f
+            for f in fechas_bloqueadas
+        ]
+        self.date_selector_periodo.set_fechas_bloqueadas(fechas_bloqueadas)
         self.date_selector_periodo.abrir_dialogo()
+
 
     def _generar_pago_individual(self, e):
         if not self.fecha_inicio_id or not self.fecha_fin_id:
@@ -183,12 +194,18 @@ class PagosContainer(ft.Container):
         try:
             resultado = self.payment_model.generar_pagos_por_rango(fecha_inicio=inicio, fecha_fin=fin)
             if resultado["status"] == "success":
+                # ✅ Marcar asistencias como generadas en la base de datos
+                self.assistance_model.marcar_asistencias_como_generadas(
+                    fecha_inicio=inicio.strftime("%Y-%m-%d"),
+                    fecha_fin=fin.strftime("%Y-%m-%d")
+                )
                 ModalAlert.mostrar_info("Nómina Generada", resultado["message"])
             else:
                 ModalAlert.mostrar_info("Error", resultado["message"])
             self._cargar_pagos()
         except Exception as ex:
             ModalAlert.mostrar_info("Error al generar pagos", str(ex))
+
 
     # ------------------------------------------------------------------ tabla
     def _cargar_pagos(self):
