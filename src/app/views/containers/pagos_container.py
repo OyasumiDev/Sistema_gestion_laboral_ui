@@ -30,9 +30,6 @@ class PagosContainer(ft.Container):
         self.fecha_inicio_periodo = None
         self.fecha_fin_periodo = None
 
-        # almacenamiento temporal
-        self.depositos_temporales = {}
-
         # controles
         self.input_id = ft.TextField(label="ID Empleado", width=150, height=40,
                                     border_color=ft.colors.OUTLINE,
