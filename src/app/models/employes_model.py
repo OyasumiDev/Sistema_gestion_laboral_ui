@@ -3,16 +3,17 @@ from app.core.interfaces.database_mysql import DatabaseMysql
 
 class EmployesModel:
     """
-    Modelo para el manejo de empleados.
+    Modelo para el manejo de empleados. Crea la tabla 'empleados' si no existe.
     """
 
     def __init__(self):
         self.db = DatabaseMysql()
+        self.E = E_EMPLOYE
         self._exists_table = self.check_table()
 
     def check_table(self) -> bool:
         """
-        Verifica si la tabla de empleados existe y la crea con la estructura correcta si no.
+        Verifica si la tabla de empleados existe y la crea con la estructura adecuada si no existe.
         """
         try:
             query = """
@@ -20,27 +21,30 @@ class EmployesModel:
                 FROM information_schema.tables
                 WHERE table_schema = %s AND table_name = %s
             """
-            result = self.db.get_data(query, (self.db.database, E_EMPLOYE.TABLE.value), dictionary=True)
-            if result.get("c", 0) == 0:
-                print(f"⚠️ La tabla {E_EMPLOYE.TABLE.value} no existe. Creando...")
+            result = self.db.get_data(query, (self.db.database, self.E.TABLE.value), dictionary=True)
+            existe = result.get("c", 0) > 0
+
+            if not existe:
+                print(f"⚠️ La tabla {self.E.TABLE.value} no existe. Creando...")
 
                 create_query = f"""
-                CREATE TABLE IF NOT EXISTS {E_EMPLOYE.TABLE.value} (
-                    {E_EMPLOYE.NUMERO_NOMINA.value} SMALLINT UNSIGNED PRIMARY KEY,
-                    {E_EMPLOYE.NOMBRE_COMPLETO.value} VARCHAR(255) NOT NULL,
-                    {E_EMPLOYE.ESTADO.value} ENUM('activo','inactivo') NOT NULL,
-                    {E_EMPLOYE.TIPO_TRABAJADOR.value} ENUM('taller','externo','no definido') NOT NULL,
-                    {E_EMPLOYE.SUELDO_POR_HORA.value} DECIMAL(8,2) NOT NULL
+                CREATE TABLE IF NOT EXISTS {self.E.TABLE.value} (
+                    {self.E.NUMERO_NOMINA.value} SMALLINT UNSIGNED PRIMARY KEY,
+                    {self.E.NOMBRE_COMPLETO.value} VARCHAR(255) NOT NULL,
+                    {self.E.ESTADO.value} ENUM('activo','inactivo') NOT NULL,
+                    {self.E.TIPO_TRABAJADOR.value} ENUM('taller','externo','no definido') NOT NULL,
+                    {self.E.SUELDO_POR_HORA.value} DECIMAL(8,2) NOT NULL
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
                 """
                 self.db.run_query(create_query)
-                print(f"✅ Tabla {E_EMPLOYE.TABLE.value} creada correctamente.")
+                print(f"✅ Tabla {self.E.TABLE.value} creada correctamente.")
             else:
-                print(f"✔️ La tabla {E_EMPLOYE.TABLE.value} ya existe.")
+                print(f"✔️ La tabla {self.E.TABLE.value} ya existe.")
             return True
         except Exception as ex:
-            print(f"❌ Error al verificar/crear la tabla {E_EMPLOYE.TABLE.value}: {ex}")
+            print(f"❌ Error al verificar/crear la tabla {self.E.TABLE.value}: {ex}")
             return False
+
 
     def add(self, numero_nomina, nombre_completo, estado, tipo_trabajador, sueldo_por_hora):
         """

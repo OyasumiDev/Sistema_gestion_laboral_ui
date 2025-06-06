@@ -2,6 +2,7 @@ from app.core.enums.e_prestamos_model import E_PRESTAMOS
 from app.core.interfaces.database_mysql import DatabaseMysql
 from datetime import datetime
 
+
 class LoanModel:
     """
     Modelo de préstamos: permite registrar múltiples préstamos por empleado
@@ -23,33 +24,37 @@ class LoanModel:
                 FROM information_schema.tables
                 WHERE table_schema = %s AND table_name = %s
             """
-            result = self.db.get_data(query, (self.db.database, self.E.TABLE.value), dictionary=True)
-            count = result.get("c", 0)
-
-            if count == 0:
+            result = self.db.get_data(
+                (query, (self.db.database, self.E.TABLE.value)),
+                dictionary=True
+            )
+            if result.get("c", 0) == 0:
                 print(f"⚠️ La tabla {self.E.TABLE.value} no existe. Creando...")
 
                 create_query = f"""
-                CREATE TABLE {self.E.TABLE.value} (
-                    {self.E.PRESTAMO_ID.value} INT AUTO_INCREMENT PRIMARY KEY,
-                    {self.E.PRESTAMO_NUMERO_NOMINA.value} SMALLINT UNSIGNED NOT NULL,
-                    {self.E.PRESTAMO_MONTO.value} DECIMAL(10,2) NOT NULL,
-                    {self.E.PRESTAMO_SALDO.value} DECIMAL(10,2) NOT NULL,
-                    {self.E.PRESTAMO_ESTADO.value} ENUM('pagando','terminado') NOT NULL,
-                    {self.E.PRESTAMO_FECHA_SOLICITUD.value} DATE NOT NULL,
-                    {self.E.PRESTAMO_FECHA_CREACION.value} TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    {self.E.PRESTAMO_FECHA_MODIFICACION.value} TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-                    FOREIGN KEY ({self.E.PRESTAMO_NUMERO_NOMINA.value}) REFERENCES empleados(numero_nomina) ON DELETE CASCADE
-                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+                    CREATE TABLE {self.E.TABLE.value} (
+                        {self.E.PRESTAMO_ID.value} INT AUTO_INCREMENT PRIMARY KEY,
+                        {self.E.PRESTAMO_NUMERO_NOMINA.value} SMALLINT UNSIGNED NOT NULL,
+                        {self.E.PRESTAMO_MONTO.value} DECIMAL(10,2) NOT NULL,
+                        {self.E.PRESTAMO_SALDO.value} DECIMAL(10,2) NOT NULL,
+                        {self.E.PRESTAMO_ESTADO.value} ENUM('pagando','terminado') NOT NULL,
+                        {self.E.PRESTAMO_FECHA_SOLICITUD.value} DATE NOT NULL,
+                        {self.E.PRESTAMO_FECHA_CREACION.value} TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        {self.E.PRESTAMO_FECHA_MODIFICACION.value} TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                        FOREIGN KEY ({self.E.PRESTAMO_NUMERO_NOMINA.value})
+                            REFERENCES empleados(numero_nomina) ON DELETE CASCADE
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
                 """
                 self.db.run_query(create_query)
                 print(f"✅ Tabla {self.E.TABLE.value} creada correctamente.")
             else:
                 print(f"✔️ La tabla {self.E.TABLE.value} ya existe.")
             return True
+
         except Exception as ex:
             print(f"❌ Error al verificar/crear la tabla {self.E.TABLE.value}: {ex}")
             return False
+
 
     def add(self, numero_nomina, monto, saldo_prestamo=None, estado="pagando", fecha_solicitud=None):
         try:
@@ -147,14 +152,17 @@ class LoanModel:
         result = self.db.get_data(query, (self.db.database,), dictionary=True)
         return result.get("AUTO_INCREMENT", None)
 
-    def incrementar_dias_retraso(self, id_prestamo: int):
+    def get_prestamo_activo_por_empleado(self, numero_nomina: int):
         try:
             query = f"""
-                UPDATE {E_PRESTAMOS.TABLE.value}
-                SET {E_PRESTAMOS.PRESTAMO_DIAS_RETRASO.value} = {E_PRESTAMOS.PRESTAMO_DIAS_RETRASO.value} + 1
-                WHERE {E_PRESTAMOS.PRESTAMO_ID.value} = %s AND {E_PRESTAMOS.PRESTAMO_ESTADO.value} = 'activo'
+                SELECT * FROM {self.E.TABLE.value}
+                WHERE {self.E.PRESTAMO_NUMERO_NOMINA.value} = %s
+                AND {self.E.PRESTAMO_ESTADO.value} = 'pagando'
+                ORDER BY {self.E.PRESTAMO_FECHA_SOLICITUD.value} ASC
+                LIMIT 1
             """
-            self.db.run_query(query, (id_prestamo,))
-            return {"status": "success", "message": f"✅ Día de retraso agregado al préstamo {id_prestamo}"}
+            result = self.db.get_data(query, (numero_nomina,), dictionary=True)
+            return result
         except Exception as ex:
-            return {"status": "error", "message": f"❌ Error al actualizar días de retraso: {ex}"}
+            print(f"❌ Error al obtener préstamo activo: {ex}")
+            return None

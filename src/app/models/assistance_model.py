@@ -2,6 +2,7 @@ from app.core.enums.e_assistance_model import E_ASSISTANCE
 from app.core.interfaces.database_mysql import DatabaseMysql
 from datetime import datetime, timedelta
 from typing import Optional
+from app.core.enums.e_employes_model import E_EMPLOYE
 
 class AssistanceModel:
     def __init__(self):
@@ -10,10 +11,6 @@ class AssistanceModel:
         self.verificar_o_crear_triggers()
 
     def check_table(self) -> bool:
-        """
-        Verifica si la tabla 'asistencias' existe. Si no existe, la crea con la estructura adecuada,
-        incluyendo la columna 'fecha_generada' para marcar asistencias ya utilizadas en generación de pagos.
-        """
         try:
             query = """
                 SELECT COUNT(*) AS c
@@ -25,19 +22,18 @@ class AssistanceModel:
 
             if not existe:
                 print(f"⚠️ La tabla {E_ASSISTANCE.TABLE.value} no existe. Creando...")
-
                 create_query = f"""
                 CREATE TABLE IF NOT EXISTS {E_ASSISTANCE.TABLE.value} (
-                    id_asistencia INT AUTO_INCREMENT PRIMARY KEY,
-                    numero_nomina SMALLINT UNSIGNED NOT NULL,
-                    fecha DATE NOT NULL,
-                    hora_entrada TIME,
-                    hora_salida TIME,
-                    retardo TIME,
-                    estado VARCHAR(20),
-                    tiempo_trabajo TIME,
+                    {E_ASSISTANCE.ID_ASISTENCIA.value} INT AUTO_INCREMENT PRIMARY KEY,
+                    {E_ASSISTANCE.NUMERO_NOMINA.value} SMALLINT UNSIGNED NOT NULL,
+                    {E_ASSISTANCE.FECHA.value} DATE NOT NULL,
+                    {E_ASSISTANCE.HORA_ENTRADA.value} TIME,
+                    {E_ASSISTANCE.HORA_SALIDA.value} TIME,
+                    {E_ASSISTANCE.RETARDO.value} TIME,
+                    {E_ASSISTANCE.ESTADO.value} VARCHAR(20),
+                    {E_ASSISTANCE.TIEMPO_TRABAJO.value} TIME,
                     fecha_generada DATE DEFAULT NULL,
-                    FOREIGN KEY (numero_nomina) REFERENCES empleados(numero_nomina) ON DELETE CASCADE
+                    FOREIGN KEY ({E_ASSISTANCE.NUMERO_NOMINA.value}) REFERENCES {E_EMPLOYE.TABLE.value}({E_EMPLOYE.NUMERO_NOMINA.value}) ON DELETE CASCADE
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
                 """
                 self.db.run_query(create_query)
@@ -46,11 +42,9 @@ class AssistanceModel:
                 print(f"✔️ La tabla {E_ASSISTANCE.TABLE.value} ya existe.")
 
             return True
-
         except Exception as ex:
             print(f"❌ Error al verificar/crear la tabla {E_ASSISTANCE.TABLE.value}: {ex}")
             return False
-
 
     def verificar_o_crear_triggers(self):
         try:
@@ -69,7 +63,6 @@ class AssistanceModel:
         result = self.db.get_data(check_query, (self.db.database, trigger_name), dictionary=True)
         if result.get("c", 0) == 0:
             print(f"⚠️ Trigger '{trigger_name}' no existe. Creando...")
-
             cursor = self.db.connection.cursor()
             cursor.execute(f"DROP TRIGGER IF EXISTS {trigger_name}")
 
@@ -82,10 +75,9 @@ class AssistanceModel:
                 DECLARE salida_ajustada TIME;
                 DECLARE tiempo_final TIME;
 
-                IF NEW.hora_entrada IS NOT NULL AND NEW.hora_entrada NOT IN ('00:00:00', '0:00:00')
-                AND NEW.hora_salida IS NOT NULL AND NEW.hora_salida NOT IN ('00:00:00', '0:00:00') THEN
+                IF NEW.hora_entrada IS NOT NULL AND NEW.hora_entrada != '00:00:00'
+                AND NEW.hora_salida IS NOT NULL AND NEW.hora_salida != '00:00:00' THEN
 
-                    -- Redondear hora de entrada hacia arriba al siguiente bloque de 30 minutos
                     SET entrada_ajustada = MAKETIME(
                         HOUR(NEW.hora_entrada),
                         IF(MINUTE(NEW.hora_entrada) <= 30, 30, 0),
@@ -95,39 +87,28 @@ class AssistanceModel:
                         SET entrada_ajustada = ADDTIME(entrada_ajustada, '01:00:00');
                     END IF;
 
-                    -- Redondear hora de salida hacia abajo al bloque de 30 minutos anterior
                     SET salida_ajustada = MAKETIME(
                         HOUR(NEW.hora_salida),
                         IF(MINUTE(NEW.hora_salida) >= 30, 30, 0),
                         0
                     );
 
-                    -- Si la salida es menor o igual a la entrada, asumimos cruce de día
                     IF salida_ajustada <= entrada_ajustada THEN
                         SET salida_ajustada = ADDTIME(salida_ajustada, '24:00:00');
                     END IF;
 
-                    -- Calcular tiempo trabajado
                     SET tiempo_final = TIMEDIFF(salida_ajustada, entrada_ajustada);
-
-                    -- Asignar valores
                     SET NEW.retardo = entrada_ajustada;
                     SET NEW.tiempo_trabajo = tiempo_final;
                 END IF;
-            END
+            END;
             """
-
             cursor.execute(trigger_sql)
             self.db.connection.commit()
             cursor.close()
-
             print(f"✅ Trigger '{trigger_name}' creado correctamente.")
         else:
             print(f"✔️ Trigger '{trigger_name}' ya existe.")
-
-
-
-
 
     def _crear_trigger_estado(self):
         trigger_name = "trg_verificar_estado_asistencia"
@@ -139,7 +120,6 @@ class AssistanceModel:
         result = self.db.get_data(check_query, (self.db.database, trigger_name), dictionary=True)
         if result.get("c", 0) == 0:
             print(f"⚠️ Trigger '{trigger_name}' no existe. Creando...")
-
             cursor = self.db.connection.cursor()
             cursor.execute(f"DROP TRIGGER IF EXISTS {trigger_name}")
 
@@ -149,22 +129,21 @@ class AssistanceModel:
             FOR EACH ROW
             BEGIN
                 IF NEW.hora_entrada IS NULL OR NEW.hora_salida IS NULL
-                OR NEW.hora_entrada IN ('00:00:00', '0:00:00')
-                OR NEW.hora_salida IN ('00:00:00', '0:00:00') THEN
+                OR NEW.hora_entrada = '00:00:00'
+                OR NEW.hora_salida = '00:00:00' THEN
                     SET NEW.estado = 'incompleto';
                 ELSE
                     SET NEW.estado = 'completo';
                 END IF;
             END;
             """
-
             cursor.execute(trigger_sql)
             self.db.connection.commit()
             cursor.close()
-
             print(f"✅ Trigger '{trigger_name}' creado correctamente.")
         else:
             print(f"✔️ Trigger '{trigger_name}' ya existe.")
+
 
 
     def add(self,
