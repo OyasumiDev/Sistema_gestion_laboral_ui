@@ -5,7 +5,7 @@ class E_PRESTAMOS(Enum):
 
     PRESTAMO_ID = 'id_prestamo'
     PRESTAMO_NUMERO_NOMINA = 'numero_nomina'
-    PRESTAMO_MONTO = 'monto'
+    PRESTAMO_MONTO = 'monto_prestamo'
     PRESTAMO_SALDO = 'saldo_prestamo'
     PRESTAMO_ESTADO = 'estado'
     PRESTAMO_FECHA_SOLICITUD = 'fecha_solicitud'

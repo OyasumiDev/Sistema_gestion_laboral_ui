@@ -19,7 +19,7 @@ class DiscountModel:
             {self.E.ID_PAGO.value} INT DEFAULT NULL,
             {self.E.TIPO.value} VARCHAR(50) NOT NULL,
             {self.E.DESCRIPCION.value} VARCHAR(100) DEFAULT NULL,
-            {self.E.MONTO.value} DECIMAL(10,2) NOT NULL,
+            {self.E.MONTO_DESCUENTO.value} DECIMAL(10,2) NOT NULL,
             {self.E.FECHA_APLICACION.value} DATE NOT NULL DEFAULT (CURRENT_DATE),
             {self.E.FECHA_CREACION.value} TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (numero_nomina) REFERENCES empleados(numero_nomina) ON DELETE CASCADE,
@@ -40,7 +40,7 @@ class DiscountModel:
             query = f"""
             INSERT INTO {self.E.TABLE.value} (
                 numero_nomina, {self.E.ID_PAGO.value}, {self.E.TIPO.value},
-                {self.E.DESCRIPCION.value}, {self.E.MONTO.value}
+                {self.E.DESCRIPCION.value}, {self.E.MONTO_DESCUENTO.value}
             ) VALUES (%s, %s, %s, %s, %s)
             """
             self.db.run_query(query, (numero_nomina, id_pago, tipo, descripcion, monto))
@@ -49,24 +49,40 @@ class DiscountModel:
         except Exception as e:
             return {"status": "error", "message": str(e)}
 
-    def agregar_descuentos_opcionales(self, id_pago: int, numero_nomina: int) -> dict:
-        """
-        Agrega descuentos por defecto al generar un pago: IMSS (50.0), transporte (0.0), comida (0.0), extra (0.0)
-        """
+    def agregar_descuentos_opcionales(
+        self,
+        id_pago: int,
+        numero_nomina: int,
+        aplicar_imss: bool = True,
+        aplicar_transporte: bool = False,
+        monto_transporte: float = 0.0,
+        aplicar_comida: bool = False,
+        estado_comida: str = "No cobro",
+        descuento_extra: float = 0.0,
+        descripcion_extra: str = ""
+    ) -> dict:
+        print(f"🟡 Llamando agregar_descuentos_opcionales con: id_pago={id_pago}, numero_nomina={numero_nomina}")
+        print(f"    aplicar_imss={aplicar_imss}, aplicar_transporte={aplicar_transporte}, monto_transporte={monto_transporte}")
+        print(f"    aplicar_comida={aplicar_comida}, estado_comida={estado_comida}")
+        print(f"    descuento_extra={descuento_extra}, descripcion_extra={descripcion_extra}")
         try:
-            return self.guardar_descuentos_editables(
+            resultado = self.guardar_descuentos_editables(
                 id_pago=id_pago,
                 numero_nomina=numero_nomina,
-                aplicar_imss=True,
-                aplicar_transporte=False,
-                monto_transporte=0.0,
-                aplicar_comida=False,
-                estado_comida="No cobro",
-                descuento_extra=0.0,
-                descripcion_extra=""
+                aplicar_imss=aplicar_imss,
+                aplicar_transporte=aplicar_transporte,
+                monto_transporte=monto_transporte,
+                aplicar_comida=aplicar_comida,
+                estado_comida=estado_comida,
+                descuento_extra=descuento_extra,
+                descripcion_extra=descripcion_extra
             )
+            print(f"✅ Descuentos opcionales agregados correctamente para ID pago: {id_pago}")
+            return resultado
         except Exception as e:
+            print(f"❌ Error en agregar_descuentos_opcionales: {e}")
             return {"status": "error", "message": str(e)}
+
 
     def guardar_descuentos_completos(
         self,
@@ -124,7 +140,12 @@ class DiscountModel:
                 self.agregar_descuento(numero_nomina, "transporte", "Pasaje diario", monto_transporte, id_pago)
 
             if aplicar_comida:
-                self.agregar_descuento(numero_nomina, "comida", estado_comida, 50.0 if estado_comida == "50 pesos" else 100.0 if estado_comida == "100 pesos" else 0.0, id_pago)
+                monto_comida = (
+                    50.0 if estado_comida == "50 pesos"
+                    else 100.0 if estado_comida == "100 pesos"
+                    else 0.0
+                )
+                self.agregar_descuento(numero_nomina, "comida", estado_comida, monto_comida, id_pago)
 
             if descuento_extra > 0 and descripcion_extra:
                 self.agregar_descuento(numero_nomina, "descuento_extra", descripcion_extra, descuento_extra, id_pago)
@@ -153,7 +174,7 @@ class DiscountModel:
     def get_descuentos_por_pago(self, id_pago: int) -> list:
         try:
             query = f"""
-            SELECT {self.E.TIPO.value}, {self.E.DESCRIPCION.value}, {self.E.MONTO.value}
+            SELECT {self.E.TIPO.value}, {self.E.DESCRIPCION.value}, {self.E.MONTO_DESCUENTO.value}
             FROM {self.E.TABLE.value}
             WHERE {self.E.ID_PAGO.value} = %s
             """
@@ -165,7 +186,7 @@ class DiscountModel:
     def get_total_descuentos_por_pago(self, id_pago: int) -> float:
         try:
             query = f"""
-            SELECT SUM({self.E.MONTO.value}) AS total
+            SELECT SUM({self.E.MONTO_DESCUENTO.value}) AS total
             FROM {self.E.TABLE.value}
             WHERE {self.E.ID_PAGO.value} = %s
             """
@@ -178,7 +199,7 @@ class DiscountModel:
     def resumen_por_pago(self, id_pago: int) -> dict:
         try:
             descuentos = self.get_descuentos_por_pago(id_pago)
-            total = sum(float(d[self.E.MONTO.value]) for d in descuentos)
+            total = sum(float(d[self.E.MONTO_DESCUENTO.value]) for d in descuentos)
             return {
                 "status": "success",
                 "descuentos": descuentos,

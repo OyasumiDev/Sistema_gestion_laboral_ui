@@ -66,35 +66,39 @@ class PrestamosContainer(ft.Container):
         self.page.update()
 
     def _cargar_tabla_prestamos(self):
-        self.tabla_prestamos.columns = [
-            ft.DataColumn(label=ft.Text("ID Préstamo")),
-            ft.DataColumn(label=ft.Text("ID Empleado")),
-            ft.DataColumn(label=ft.Text("Monto")),
-            ft.DataColumn(label=ft.Text("Saldo Actual")),
-            ft.DataColumn(label=ft.Text("Dinero Pagado")),
-            ft.DataColumn(label=ft.Text("Estado")),
-            ft.DataColumn(label=ft.Text("Fecha Solicitud")),
-            ft.DataColumn(label=ft.Text("Acciones"))
-        ]
-
         resultado = self.loan_model.get_all()
         if resultado["status"] != "success":
             ModalAlert.mostrar_info("Error", resultado["message"])
             return
 
-        self.tabla_prestamos.rows.clear()
-        for p in resultado["data"]:
-            dinero_pagado = float(p[self.E.PRESTAMO_MONTO.value]) - float(p[self.E.PRESTAMO_SALDO.value])
-            self.tabla_prestamos.rows.append(ft.DataRow(cells=[
-                ft.DataCell(ft.Text(p[self.E.PRESTAMO_ID.value])),
-                ft.DataCell(ft.Text(p[self.E.PRESTAMO_NUMERO_NOMINA.value])),
-                ft.DataCell(ft.Text(f"${p[self.E.PRESTAMO_MONTO.value]:.2f}")),
-                ft.DataCell(ft.Text(f"${p[self.E.PRESTAMO_SALDO.value]:.2f}")),
-                ft.DataCell(ft.Text(f"${dinero_pagado:.2f}")),
+        prestamos = resultado["data"]
+        self.tabla_prestamos.columns = [
+            ft.DataColumn(ft.Text("ID")),
+            ft.DataColumn(ft.Text("Empleado")),
+            ft.DataColumn(ft.Text("Monto")),
+            ft.DataColumn(ft.Text("Saldo")),
+            ft.DataColumn(ft.Text("Dinero Pagado")),      # ✅ NUEVO
+            ft.DataColumn(ft.Text("Estado")),
+            ft.DataColumn(ft.Text("Fecha Solicitud")),
+            ft.DataColumn(ft.Text("Acciones")),           # ✅ NUEVO
+        ]
+
+
+        self.tabla_prestamos.rows = []
+
+        for p in prestamos:
+            dinero_pagado = p[self.E.PRESTAMO_MONTO.value] - p[self.E.PRESTAMO_SALDO.value]
+            fila = ft.DataRow(cells=[
+                ft.DataCell(ft.Text(str(p[self.E.PRESTAMO_ID.value]))),
+                ft.DataCell(ft.Text(str(p[self.E.PRESTAMO_NUMERO_NOMINA.value]))),
+                ft.DataCell(ft.Text(f"${p[self.E.PRESTAMO_MONTO.value]:,.2f}")),
+                ft.DataCell(ft.Text(f"${p[self.E.PRESTAMO_SALDO.value]:,.2f}")),
+                ft.DataCell(ft.Text(f"${dinero_pagado:,.2f}")),
                 ft.DataCell(ft.Text(p[self.E.PRESTAMO_ESTADO.value])),
                 ft.DataCell(ft.Text(p[self.E.PRESTAMO_FECHA_SOLICITUD.value])),
-                ft.DataCell(self._build_acciones_cell(p))
-            ]))
+                ft.DataCell(self._build_acciones_cell(p))  # ✅ Agregado correctamente
+            ])
+            self.tabla_prestamos.rows.append(fila)
 
     def _build_acciones_cell(self, prestamo):
         def on_guardar_edicion(_):
@@ -107,57 +111,87 @@ class PrestamosContainer(ft.Container):
 
             try:
                 nuevo_monto = float(nuevo_monto_str)
+                if nuevo_monto <= 0:
+                    raise ValueError
             except ValueError:
-                ModalAlert("Monto inválido", "Debe ingresar un monto válido.").mostrar()
+                ModalAlert("Monto inválido", "Debe ingresar un monto válido mayor a 0.").mostrar()
                 return
 
-            resultado = self.loan_model.update_by_id_prestamo(prestamo[self.E.PRESTAMO_ID.value], {
-                self.E.PRESTAMO_MONTO: nuevo_monto,
-                self.E.PRESTAMO_ESTADO: nuevo_estado
-            })
+            resultado = self.loan_model.update_by_id_prestamo(
+                prestamo[self.E.PRESTAMO_ID.value],
+                {
+                    self.E.PRESTAMO_MONTO: nuevo_monto,
+                    self.E.PRESTAMO_ESTADO: nuevo_estado
+                }
+            )
 
             if resultado["status"] == "success":
                 ModalAlert.mostrar_info("Éxito", "Préstamo editado correctamente.")
             else:
                 ModalAlert.mostrar_info("Error", resultado["message"])
+
             self._actualizar_vista_prestamos()
 
         def on_cancelar_edicion(_):
             self._actualizar_vista_prestamos()
 
-        monto_input = ft.TextField(value=str(prestamo[self.E.PRESTAMO_MONTO.value]), width=100)
+        # ✅ Ya corregido sin usar ContainerStyle
+        monto_input = ft.TextField(hint_text="Monto", expand=True, width=100)
+
         estado_dropdown = ft.Dropdown(
             value=prestamo[self.E.PRESTAMO_ESTADO.value],
-            options=[ft.dropdown.Option("pagando"), ft.dropdown.Option("terminado")],
+            options=[
+                ft.dropdown.Option("pagando"),
+                ft.dropdown.Option("terminado")
+            ],
             width=120
         )
 
         return ft.Row([
-            ft.IconButton(icon=ft.icons.EDIT, tooltip="Editar préstamo", on_click=lambda _: self._reemplazar_fila_con_edicion(
-                prestamo, monto_input, estado_dropdown, on_guardar_edicion, on_cancelar_edicion)),
-            ft.IconButton(icon=ft.icons.DELETE, tooltip="Eliminar préstamo", on_click=lambda _: ModalAlert(
-                title_text="¿Eliminar préstamo?",
-                message="Esta acción no se puede deshacer.",
-                on_confirm=lambda: self._eliminar_prestamo(prestamo[self.E.PRESTAMO_ID.value]),
-                on_cancel=lambda: self.page.update()
-            ).mostrar()),
-            ft.IconButton(icon=ft.icons.LIST_ALT, tooltip="Ver pagos del préstamo", on_click=lambda _: self.page.go(
-                f"/home/prestamos/pagosprestamos?id_prestamo={prestamo[self.E.PRESTAMO_ID.value]}"))
+            ft.IconButton(
+                icon=ft.icons.EDIT,
+                tooltip="Editar préstamo",
+                on_click=lambda _: self._reemplazar_fila_con_edicion(
+                    prestamo, monto_input, estado_dropdown,
+                    on_guardar_edicion, on_cancelar_edicion
+                )
+            ),
+            ft.IconButton(
+                icon=ft.icons.DELETE,
+                tooltip="Eliminar préstamo",
+                on_click=lambda _: ModalAlert(
+                    title_text="¿Eliminar préstamo?",
+                    message="Esta acción no se puede deshacer.",
+                    on_confirm=lambda: self._eliminar_prestamo(prestamo[self.E.PRESTAMO_ID.value]),
+                    on_cancel=lambda: self.page.update()
+                ).mostrar()
+            ),
+            ft.IconButton(
+                icon=ft.icons.LIST_ALT,
+                tooltip="Ver pagos del préstamo",
+                on_click=lambda _: self.page.go(
+                    f"/home/prestamos/pagosprestamos?id_prestamo={prestamo[self.E.PRESTAMO_ID.value]}"
+                )
+            )
         ], spacing=5)
+
 
     def _reemplazar_fila_con_edicion(self, prestamo, monto_input, estado_dropdown, on_guardar, on_cancelar):
         id_editando = str(prestamo[self.E.PRESTAMO_ID.value])
+        monto_total = prestamo[self.E.PRESTAMO_MONTO.value]
+        saldo_actual = prestamo[self.E.PRESTAMO_SALDO.value]
+        dinero_pagado = monto_total - saldo_actual
 
         for i, row in enumerate(self.tabla_prestamos.rows):
             if str(row.cells[0].content.value).strip() == id_editando:
                 self.tabla_prestamos.rows[i] = ft.DataRow(cells=[
-                    ft.DataCell(ft.Text(id_editando)),
-                    ft.DataCell(ft.Text(str(prestamo[self.E.PRESTAMO_NUMERO_NOMINA.value]))),
-                    ft.DataCell(monto_input),
-                    ft.DataCell(ft.Text(f"${prestamo[self.E.PRESTAMO_SALDO.value]:.2f}")),
-                    ft.DataCell(ft.Text("Auto")),
-                    ft.DataCell(estado_dropdown),
-                    ft.DataCell(ft.Text(prestamo[self.E.PRESTAMO_FECHA_SOLICITUD.value])),
+                    ft.DataCell(ft.Text(id_editando)),  # ID
+                    ft.DataCell(ft.Text(str(prestamo[self.E.PRESTAMO_NUMERO_NOMINA.value]))),  # Empleado
+                    ft.DataCell(monto_input),  # Monto editable
+                    ft.DataCell(ft.Text(f"${saldo_actual:,.2f}")),  # Saldo actual
+                    ft.DataCell(ft.Text(f"${dinero_pagado:,.2f}")),  # Dinero pagado
+                    ft.DataCell(estado_dropdown),  # Estado editable
+                    ft.DataCell(ft.Text(prestamo[self.E.PRESTAMO_FECHA_SOLICITUD.value])),  # Fecha
                     ft.DataCell(ft.Row([
                         ft.IconButton(icon=ft.icons.CHECK, icon_color=ft.colors.GREEN_600, on_click=on_guardar),
                         ft.IconButton(icon=ft.icons.CLOSE, icon_color=ft.colors.RED_600, on_click=on_cancelar)
@@ -168,11 +202,11 @@ class PrestamosContainer(ft.Container):
 
     def _insertar_fila_prestamo(self, e=None):
         numero_input = ft.TextField(hint_text="ID Empleado", width=120)
-        monto_input = ft.TextField(hint_text="Monto", width=120)
+        monto_textfield = ft.TextField(hint_text="Monto", expand=True)
+
         hoy = datetime.today().strftime("%Y-%m-%d")
         nuevo_id = self.loan_model.get_next_id_prestamo() or "?"
 
-        # ✅ Validación en tiempo real: ID Empleado
         def validar_id_empleado(e=None):
             val = numero_input.value.strip()
             numero_input.border_color = None
@@ -187,26 +221,25 @@ class PrestamosContainer(ft.Container):
                     numero_input.border_color = ft.colors.RED
             self.page.update()
 
-        # ✅ Validación en tiempo real: Monto
         def validar_monto(e=None):
-            val = monto_input.value.strip()
-            monto_input.border_color = None
+            val = monto_textfield.value.strip()
+            monto_textfield.border_color = None
             if not val.isdigit():
-                monto_input.border_color = ft.colors.RED
+                monto_textfield.border_color = ft.colors.RED
             else:
                 if int(val) <= 0 or int(val) > 20000:
-                    monto_input.border_color = ft.colors.RED
+                    monto_textfield.border_color = ft.colors.RED
             self.page.update()
 
         numero_input.on_change = validar_id_empleado
-        monto_input.on_change = validar_monto
+        monto_textfield.on_change = validar_monto
 
         def on_guardar(_):
             numero_input.border_color = None
-            monto_input.border_color = None
+            monto_textfield.border_color = None
 
             numero_nomina = numero_input.value.strip()
-            monto_str = monto_input.value.strip()
+            monto_str = monto_textfield.value.strip()
 
             if not numero_nomina.isdigit() or int(numero_nomina) <= 0:
                 numero_input.border_color = ft.colors.RED
@@ -225,21 +258,21 @@ class PrestamosContainer(ft.Container):
                 return
 
             if not monto_str.isdigit():
-                monto_input.border_color = ft.colors.RED
+                monto_textfield.border_color = ft.colors.RED
                 ModalAlert.mostrar_info("Monto inválido", "El monto debe ser un número entero positivo.")
                 self.page.update()
                 return
 
             monto = int(monto_str)
             if monto <= 0 or monto > 20000:
-                monto_input.border_color = ft.colors.RED
+                monto_textfield.border_color = ft.colors.RED
                 ModalAlert.mostrar_info("Monto inválido", "El monto debe ser mayor a 0 y no mayor a $20,000.")
                 self.page.update()
                 return
 
             resultado = self.loan_model.add(
                 numero_nomina=int(numero_nomina),
-                monto=monto,
+                monto_prestamo=monto,
                 saldo_prestamo=monto,
                 estado="pagando",
                 fecha_solicitud=hoy
@@ -256,18 +289,19 @@ class PrestamosContainer(ft.Container):
             self._actualizar_vista_prestamos()
 
         self.tabla_prestamos.rows.append(ft.DataRow(cells=[
-            ft.DataCell(ft.Text(str(nuevo_id))),
-            ft.DataCell(numero_input),
-            ft.DataCell(monto_input),
-            ft.DataCell(ft.Text("Auto")),
-            ft.DataCell(ft.Text("Auto")),
-            ft.DataCell(ft.Text("pagando")),
-            ft.DataCell(ft.Text(hoy)),
+            ft.DataCell(ft.Text(str(nuevo_id))),             # ID Préstamo
+            ft.DataCell(numero_input),                       # ID Empleado
+            ft.DataCell(monto_textfield),                    # Monto
+            ft.DataCell(ft.Text("Auto")),                    # Saldo actual
+            ft.DataCell(ft.Text("Auto")),                    # Dinero pagado
+            ft.DataCell(ft.Text("pagando")),                 # Estado
+            ft.DataCell(ft.Text(hoy)),                       # Fecha solicitud
             ft.DataCell(ft.Row([
                 ft.IconButton(icon=ft.icons.CHECK, icon_color=ft.colors.GREEN_600, on_click=on_guardar),
                 ft.IconButton(icon=ft.icons.CLOSE, icon_color=ft.colors.RED_600, on_click=on_cancelar)
             ]))
         ]))
+
         self.page.update()
 
 
@@ -282,7 +316,6 @@ class PrestamosContainer(ft.Container):
                 monto = float(row["Monto"])
                 fecha = str(row["Fecha Solicitud"])
 
-                # Verificar si ya existe un préstamo con ese empleado y esa fecha
                 existe = self.loan_model.db.get_data(
                     f"SELECT COUNT(*) as c FROM {self.E.TABLE.value} WHERE {self.E.PRESTAMO_NUMERO_NOMINA.value} = %s AND {self.E.PRESTAMO_FECHA_SOLICITUD.value} = %s",
                     (numero, fecha),
@@ -295,7 +328,7 @@ class PrestamosContainer(ft.Container):
 
                 self.loan_model.add(
                     numero_nomina=numero,
-                    monto=monto,
+                    monto_prestamo=monto,  # ✅ corregido aquí
                     saldo_prestamo=monto,
                     estado="pagando",
                     fecha_solicitud=fecha
@@ -311,6 +344,7 @@ class PrestamosContainer(ft.Container):
 
         except Exception as ex:
             ModalAlert.mostrar_info("Error", f"Falló la importación: {ex}")
+
 
 
     def _guardar_exportacion(self, path):

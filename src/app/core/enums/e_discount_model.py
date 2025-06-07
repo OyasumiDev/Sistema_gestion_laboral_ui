@@ -6,6 +6,6 @@ class E_DISCOUNT(Enum):
     ID_PAGO = "id_pago"
     TIPO = "tipo_descuento"            # (comida, imss, transporte, etc.)
     DESCRIPCION = "descripcion"
-    MONTO = "monto"
+    MONTO_DESCUENTO = "monto_descuento"
     FECHA_APLICACION = "fecha_aplicacion"
     FECHA_CREACION = "fecha_creacion"

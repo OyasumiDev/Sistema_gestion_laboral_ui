@@ -51,13 +51,13 @@ class LoanModel:
             print(f"❌ Error al verificar/crear la tabla {self.E.TABLE.value}: {ex}")
             return False
 
-    def add(self, numero_nomina, monto, saldo_prestamo=None, estado="pagando", fecha_solicitud=None):
+    def add(self, numero_nomina, monto_prestamo, saldo_prestamo=None, estado="pagando", fecha_solicitud=None):
         try:
             query_id = f"SELECT MAX({self.E.PRESTAMO_ID.value}) AS max_id FROM {self.E.TABLE.value}"
             result = self.db.get_data(query_id, dictionary=True)
             next_id = (result.get("max_id") or 0) + 1
 
-            saldo = saldo_prestamo if saldo_prestamo is not None else monto
+            saldo = saldo_prestamo if saldo_prestamo is not None else monto_prestamo
             fecha = fecha_solicitud or datetime.today().strftime("%Y-%m-%d")
 
             query = f"""
@@ -73,7 +73,7 @@ class LoanModel:
             self.db.run_query(query, (
                 next_id,
                 numero_nomina,
-                monto,
+                monto_prestamo,
                 saldo,
                 estado,
                 fecha
@@ -81,6 +81,7 @@ class LoanModel:
             return {"status": "success", "message": "Préstamo registrado correctamente", "id": next_id}
         except Exception as ex:
             return {"status": "error", "message": f"Error al registrar el préstamo: {ex}"}
+
 
     def get_all(self):
         try:
@@ -147,19 +148,6 @@ class LoanModel:
         result = self.db.get_data(query, (self.db.database,), dictionary=True)
         return result.get("AUTO_INCREMENT", None)
 
-
-    def incrementar_dias_retraso(self, id_prestamo: int):
-        try:
-            query = f"""
-                UPDATE {E_PRESTAMOS.TABLE.value}
-                SET {E_PRESTAMOS.PRESTAMO_DIAS_RETRASO.value} = {E_PRESTAMOS.PRESTAMO_DIAS_RETRASO.value} + 1
-                WHERE {E_PRESTAMOS.PRESTAMO_ID.value} = %s AND {E_PRESTAMOS.PRESTAMO_ESTADO.value} = 'activo'
-            """
-            self.db.run_query(query, (id_prestamo,))
-            return {"status": "success", "message": f"✅ Día de retraso agregado al préstamo {id_prestamo}"}
-        except Exception as ex:
-            return {"status": "error", "message": f"❌ Error al actualizar días de retraso: {ex}"}
-
     def get_total_prestamos_por_empleado(self, numero_nomina: int, fecha_pago: str) -> float:
         try:
             query = f"""
@@ -192,4 +180,3 @@ class LoanModel:
         except Exception as ex:
             print(f"❌ Error al verificar préstamo activo: {ex}")
             return None
-

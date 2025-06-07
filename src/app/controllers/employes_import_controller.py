@@ -95,11 +95,6 @@ class EmpleadosImportController:
             print(f"❌ Error procesando empleados: {e}")
             return []
 
-
-        except Exception as e:
-            print(f"❌ Error procesando empleados: {e}")
-            return []
-
     def _insertar_empleados(self, empleados: list):
         for emp in empleados:
             try:

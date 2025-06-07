@@ -2,7 +2,7 @@ from app.core.enums.e_assistance_model import E_ASSISTANCE
 from app.core.interfaces.database_mysql import DatabaseMysql
 from datetime import date, datetime, timedelta
 from typing import Optional
-
+import pandas as pd 
 
 class AssistanceModel:
     def __init__(self):
@@ -167,22 +167,43 @@ class AssistanceModel:
         else:
             print(f"✔️ Trigger '{trigger_name}' ya existe.")
 
-
-    def add(self,
-            numero_nomina: int,
-            fecha: str,
-            turno: str = None,
-            entrada_turno: str = None,
-            salida_turno: str = None,
-            hora_entrada: str = None,
-            hora_salida: str = None,
-            tiempo_descanso: str = None,
-            retardo: str = None,
-            tipo_registro: str = "manual"
-        ):
+    def add(
+        self,
+        numero_nomina: int,
+        fecha: str,
+        turno: str = None,
+        entrada_turno: str = None,
+        salida_turno: str = None,
+        hora_entrada: str = None,
+        hora_salida: str = None,
+        tiempo_descanso: str = None,
+        retardo: str = None,
+        tipo_registro: str = "manual"
+    ):
         try:
             if tipo_registro not in ['automático', 'manual']:
                 tipo_registro = 'manual'
+
+            # 🔍 Validación de hora_entrada y hora_salida con depuración visible
+            def limpiar_hora(valor, campo: str):
+                motivo = None
+                if valor is None:
+                    motivo = "valor None"
+                elif isinstance(valor, float) and pd.isna(valor):
+                    motivo = "valor NaN como float"
+                else:
+                    valor_str = str(valor).strip().lower()
+                    if valor_str in ['nan', '', 'none']:
+                        motivo = f"cadena inválida: '{valor_str}'"
+
+                if motivo:
+                    print(f"⚠️ {campo.upper()} inválida para empleado {numero_nomina} en fecha {fecha} ({motivo}). Reemplazada por '00:00:00'")
+                    return "00:00:00"
+
+                return str(valor).strip()
+
+            hora_entrada = limpiar_hora(hora_entrada, "hora_entrada")
+            hora_salida = limpiar_hora(hora_salida, "hora_salida")
 
             query = f"""
             INSERT INTO {E_ASSISTANCE.TABLE.value} (
@@ -190,26 +211,30 @@ class AssistanceModel:
                 {E_ASSISTANCE.FECHA.value},
                 {E_ASSISTANCE.HORA_ENTRADA.value},
                 {E_ASSISTANCE.HORA_SALIDA.value},
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                {E_ASSISTANCE.RETARDO.value},
+                {E_ASSISTANCE.ESTADO.value},
+                {E_ASSISTANCE.TIEMPO_TRABAJO.value},
+                fecha_generada
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
             """
 
             valores = (
                 numero_nomina,
                 fecha,
-                turno,
-                entrada_turno,
-                salida_turno,
                 hora_entrada,
                 hora_salida,
-                tiempo_descanso,
                 retardo,
-                tipo_registro
+                None,  # estado (trigger lo calcula)
+                None,  # tiempo_trabajo (trigger lo calcula)
+                None   # fecha_generada (null por default)
             )
 
             self.db.run_query(query, valores)
             return {"status": "success", "message": "Asistencia agregada correctamente"}
+
         except Exception as ex:
             return {"status": "error", "message": f"Error al agregar asistencia: {ex}"}
+
 
 
     def _formatear_fecha(self, fecha_sql: str) -> str:
