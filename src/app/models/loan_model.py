@@ -148,3 +148,35 @@ class LoanModel:
         result = self.db.get_data(query, (self.db.database,), dictionary=True)
         return result.get("AUTO_INCREMENT", None)
 
+    def get_total_prestamos_por_empleado(self, numero_nomina: int, fecha_pago: str) -> float:
+        try:
+            query = f"""
+                SELECT COALESCE(SUM(pp.monto_pagado), 0) AS total
+                FROM pagos_prestamo pp
+                JOIN prestamos p ON pp.id_prestamo = p.id_prestamo
+                WHERE p.estado = 'pagando'
+                AND p.numero_nomina = %s
+                AND pp.fecha_pago = %s
+            """
+            result = self.db.get_data(query, (numero_nomina, fecha_pago), dictionary=True)
+            return float(result.get("total", 0.0)) if result else 0.0
+        except Exception as ex:
+            print(f"❌ Error al obtener préstamos por empleado: {ex}")
+            return 0.0
+
+    def get_prestamo_activo_por_empleado(self, numero_nomina: int):
+        """
+        Devuelve el préstamo activo (estado = 'pagando') de un empleado si existe.
+        """
+        try:
+            query = f"""
+                SELECT * FROM {self.E.TABLE.value}
+                WHERE {self.E.PRESTAMO_NUMERO_NOMINA.value} = %s
+                AND {self.E.PRESTAMO_ESTADO.value} = 'pagando'
+                LIMIT 1
+            """
+            result = self.db.get_data(query, (numero_nomina,), dictionary=True)
+            return result if result else None
+        except Exception as ex:
+            print(f"❌ Error al verificar préstamo activo: {ex}")
+            return None

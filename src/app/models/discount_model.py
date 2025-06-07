@@ -239,3 +239,14 @@ class DiscountModel:
             return {"status": "success"}
         except Exception as e:
             return {"status": "error", "message": str(e)}
+
+    def delete_by_pago(self, id_pago: int) -> dict:
+        """
+        Elimina todos los descuentos asociados a un ID de pago.
+        """
+        try:
+            query = f"DELETE FROM {self.E.TABLE.value} WHERE {self.E.ID_PAGO.value} = %s"
+            self.db.run_query(query, (id_pago,))
+            return {"status": "success", "message": f"Descuentos del pago {id_pago} eliminados correctamente"}
+        except Exception as ex:
+            return {"status": "error", "message": f"Error al eliminar descuentos del pago: {ex}"}

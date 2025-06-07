@@ -265,69 +265,6 @@ class PagosPrestamoContainer(ft.Container):
             ]))
         ])
 
-
-        def actualizar_interes(e):
-            try:
-                interes = int(interes_selector.value)
-                interes_aplicado = saldo_actual_decimal * Decimal(interes) / 100
-                nuevo_saldo = saldo_actual_decimal + interes_aplicado
-                saldo_con_interes_text.value = f"${nuevo_saldo:.2f}"
-            except:
-                saldo_con_interes_text.value = "-"
-            self.page.update()
-
-        interes_selector.on_change = actualizar_interes
-        actualizar_interes(None)
-
-        def confirmar_pago(e=None):
-            try:
-                monto_str = monto_input.value.strip()
-                if not monto_str:
-                    raise ValueError("Campo de monto vacío")
-                if not monto_str.replace(".", "", 1).isdigit():
-                    raise ValueError("Monto debe ser un número válido")
-                monto = float(monto_str)
-                if monto <= 0:
-                    raise ValueError("Monto inválido")
-
-                observaciones = observaciones_input.value.strip()
-                if len(observaciones) > 100:
-                    raise ValueError("Observaciones demasiado largas (máx. 100 caracteres)")
-
-                interes = int(interes_selector.value)
-
-                resultado = self.pago_model.add_payment(
-                    id_prestamo=int(self.id_prestamo),
-                    monto_pagado=monto,
-                    fecha_pago=hoy,
-                    fecha_generacion=hoy,
-                    interes_porcentaje=interes,
-                    fecha_real_pago=hoy,
-                    observaciones=observaciones
-                )
-
-                ModalAlert.mostrar_info("Resultado", resultado["message"])
-                self._cargar_pagos(int(self.id_prestamo))
-
-            except Exception as ex:
-                ModalAlert.mostrar_info("Error", f"Fallo al registrar pago: {str(ex)}")
-
-        return ft.DataRow(cells=[
-            ft.DataCell(ft.Text(nuevo_id)),
-            ft.DataCell(ft.Text(hoy)),
-            ft.DataCell(ft.Text(hoy)),
-            ft.DataCell(monto_input),
-            ft.DataCell(ft.Text(f"${monto_total:.2f}")),
-            ft.DataCell(ft.Text(f"${saldo_actual:.2f}")),
-            ft.DataCell(saldo_con_interes_text),
-            ft.DataCell(interes_selector),
-            ft.DataCell(observaciones_input),
-            ft.DataCell(ft.Row([
-                ft.IconButton(icon=ft.icons.CHECK, icon_color=ft.colors.GREEN_600, on_click=confirmar_pago),
-                ft.IconButton(icon=ft.icons.CLOSE, icon_color=ft.colors.RED_600, on_click=lambda _: self._cargar_pagos(int(self.id_prestamo)))
-            ]))
-        ])
-
     def _agregar_fila_pago(self, e=None):
         datos_prestamo = self.pago_model.get_saldo_y_monto_prestamo(self.id_prestamo)
         if not datos_prestamo:

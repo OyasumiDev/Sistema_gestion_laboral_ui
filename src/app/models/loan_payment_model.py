@@ -181,17 +181,50 @@ class LoanPaymentModel:
         max_id = result.get("max_id", 0) if result else 0
         return int(max_id) + 1 if max_id else 1
 
-    def get_prestamo_activo_por_empleado(self, numero_nomina: int):
+    def get_prestamo_activo_por_empleado(self, numero_nomina: int) -> dict:
         try:
             query = f"""
-                SELECT {self.P.PRESTAMO_ID.value} AS id_prestamo,
+                SELECT 
+                    {self.P.PRESTAMO_ID.value} AS id_prestamo,
                     {self.P.PRESTAMO_SALDO.value} AS saldo,
-                    {self.P.PRESTAMO_INTERES.value} AS interes
+                    {self.P.PRESTAMO_MONTO.value} AS monto_original,
+                    numero_nomina
                 FROM {self.P.TABLE.value}
                 WHERE numero_nomina = %s AND {self.P.PRESTAMO_ESTADO.value} = 'activo'
-                ORDER BY {self.P.PRESTAMO_ID.value} ASC LIMIT 1
+                ORDER BY {self.P.PRESTAMO_ID.value} ASC
+                LIMIT 1
             """
-            return self.db.get_data(query, (numero_nomina,), dictionary=True)
+            result = self.db.get_data(query, (numero_nomina,), dictionary=True)
+            return result if result else {}
         except Exception as e:
             print(f"❌ Error al buscar préstamo activo: {e}")
-            return None
+            return {}
+
+
+
+    def get_total_prestamos_por_pago(self, id_pago: int) -> float:
+        try:
+            query = f"""
+                SELECT IFNULL(SUM({self.E.PAGO_MONTO_PAGADO.value}), 0) AS total_prestamo
+                FROM {self.E.TABLE.value}
+                WHERE {self.E.PAGO_ID.value} = %s
+            """
+            result = self.db.get_data(query, (id_pago,), dictionary=True)
+            return float(result.get("total_prestamo", 0.0)) if result else 0.0
+        except Exception as ex:
+            print(f"❌ Error en get_total_prestamos_por_pago: {ex}")
+            return 0.0
+
+    def get_total_pagado_por_pago(self, id_pago: int) -> float:
+        try:
+            query = f"""
+                SELECT IFNULL(SUM({self.E.PAGO_MONTO_PAGADO.value}), 0) AS total
+                FROM {self.E.TABLE.value} lp
+                JOIN {self.P.TABLE.value} p ON lp.{self.E.PAGO_ID_PRESTAMO.value} = p.{self.P.PRESTAMO_ID.value}
+                WHERE p.id_pago = %s
+            """
+            result = self.db.get_data(query, (id_pago,), dictionary=True)
+            return float(result.get("total", 0.0)) if result else 0.0
+        except Exception as ex:
+            print(f"❌ Error al obtener total pagado por pago: {ex}")
+            return 0.0
