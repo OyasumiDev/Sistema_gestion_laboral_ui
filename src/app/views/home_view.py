@@ -23,13 +23,31 @@ class HomeView(ft.View):
         self.nav_bar = NavBarView(is_root=self.is_root)
         self.content_area = ft.Container(expand=True)
 
-        layout = ft.Row(
-            expand=True,
-            controls=[self.nav_bar, self.content_area]
-        )
-        self.controls.append(layout)
+        # Detectar modo responsive
+        responsive_mode = AppState().responsive_mode
+        print(f"🧭 HomeView en modo: {responsive_mode}")
 
+        # Adaptar layout según el modo
+        if responsive_mode == "mobile":
+            layout = ft.Column(
+                expand=True,
+                controls=[
+                    self.nav_bar,
+                    self.content_area
+                ]
+            )
+        else:
+            layout = ft.Row(
+                expand=True,
+                controls=[
+                    self.nav_bar,
+                    self.content_area
+                ]
+            )
+
+        self.controls.append(layout)
         self.update_content("overview")
+
 
     def update_content(self, section: str):
         if self.page is None:

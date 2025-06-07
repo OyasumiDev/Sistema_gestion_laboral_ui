@@ -4,8 +4,6 @@ from app.core.app_state import AppState
 from app.views.login_view import LoginView
 from app.views.home_view import HomeView
 from app.views.settings_view import SettingsView
-
-
 from app.helpers.class_singleton import class_singleton
 
 @class_singleton
@@ -26,26 +24,26 @@ class WindowMain:
         self._page.vertical_alignment = ft.MainAxisAlignment.CENTER
         self._page.horizontal_alignment = ft.CrossAxisAlignment.CENTER
 
-        # Estado global
-        state = AppState()
-        state.page = self._page
-        
         self._page.window_full_screen = True
         self._page.window_resizable = True
+
+        # Estado global (ahora sí, con page ya definida)
+        state = AppState()
+        state.set_page(self._page)  # Aquí actualiza dimensiones y modo
 
         # Instancias únicas de vistas principales
         self.home_view = HomeView()
         self.settings_view = SettingsView(self._page)
 
-
         # Asignar handler de rutas
         self._page.on_route_change = self.route_change
 
         # Iniciar en login
-        self._page.go('/login')
+        # self._page.go('/login')
+
         # self._page.go('/home/empleados')
         # self._page.go('/home/asistencias')
-        # self._page.go('/home/pagos')
+        self._page.go('/home/pagos')
         # self._page.go('/settings')
         # self._page.go('/prestamos')
 

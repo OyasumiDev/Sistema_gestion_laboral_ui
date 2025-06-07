@@ -172,29 +172,69 @@ class PrestamosContainer(ft.Container):
         hoy = datetime.today().strftime("%Y-%m-%d")
         nuevo_id = self.loan_model.get_next_id_prestamo() or "?"
 
+        # ✅ Validación en tiempo real: ID Empleado
+        def validar_id_empleado(e=None):
+            val = numero_input.value.strip()
+            numero_input.border_color = None
+            if not val.isdigit() or int(val) <= 0:
+                numero_input.border_color = ft.colors.RED
+            else:
+                existe = self.loan_model.db.get_data(
+                    "SELECT COUNT(*) AS c FROM empleados WHERE numero_nomina = %s",
+                    (val,), dictionary=True
+                )
+                if existe.get("c", 0) == 0:
+                    numero_input.border_color = ft.colors.RED
+            self.page.update()
+
+        # ✅ Validación en tiempo real: Monto
+        def validar_monto(e=None):
+            val = monto_input.value.strip()
+            monto_input.border_color = None
+            if not val.isdigit():
+                monto_input.border_color = ft.colors.RED
+            else:
+                if int(val) <= 0 or int(val) > 20000:
+                    monto_input.border_color = ft.colors.RED
+            self.page.update()
+
+        numero_input.on_change = validar_id_empleado
+        monto_input.on_change = validar_monto
+
         def on_guardar(_):
+            numero_input.border_color = None
+            monto_input.border_color = None
+
             numero_nomina = numero_input.value.strip()
             monto_str = monto_input.value.strip()
 
-            if not numero_nomina.isdigit():
-                ModalAlert("ID inválido", "El número de empleado debe ser un entero.").mostrar()
-                return
-            if not monto_str:
-                ModalAlert("Falta monto", "El campo de monto no puede estar vacío.").mostrar()
-                return
-            try:
-                monto = float(monto_str)
-            except ValueError:
-                ModalAlert("Monto inválido", "Debe ingresar un monto válido.").mostrar()
+            if not numero_nomina.isdigit() or int(numero_nomina) <= 0:
+                numero_input.border_color = ft.colors.RED
+                ModalAlert.mostrar_info("ID inválido", "El número de empleado debe ser un entero positivo.")
+                self.page.update()
                 return
 
-            # Validar que el empleado exista antes de registrar el préstamo
             existe = self.loan_model.db.get_data(
                 "SELECT COUNT(*) AS c FROM empleados WHERE numero_nomina = %s",
                 (numero_nomina,), dictionary=True
             )
             if existe.get("c", 0) == 0:
-                ModalAlert("Empleado no encontrado", f"No existe un empleado con número de nómina {numero_nomina}").mostrar()
+                numero_input.border_color = ft.colors.RED
+                ModalAlert.mostrar_info("Empleado no encontrado", f"No existe un empleado con número de nómina {numero_nomina}")
+                self.page.update()
+                return
+
+            if not monto_str.isdigit():
+                monto_input.border_color = ft.colors.RED
+                ModalAlert.mostrar_info("Monto inválido", "El monto debe ser un número entero positivo.")
+                self.page.update()
+                return
+
+            monto = int(monto_str)
+            if monto <= 0 or monto > 20000:
+                monto_input.border_color = ft.colors.RED
+                ModalAlert.mostrar_info("Monto inválido", "El monto debe ser mayor a 0 y no mayor a $20,000.")
+                self.page.update()
                 return
 
             resultado = self.loan_model.add(
@@ -210,6 +250,7 @@ class PrestamosContainer(ft.Container):
                 self._actualizar_vista_prestamos()
             else:
                 ModalAlert.mostrar_info("Error", resultado["message"])
+            self.page.update()
 
         def on_cancelar(_):
             self._actualizar_vista_prestamos()
@@ -228,6 +269,7 @@ class PrestamosContainer(ft.Container):
             ]))
         ]))
         self.page.update()
+
 
     def _procesar_archivo_importado(self, path):
         try:

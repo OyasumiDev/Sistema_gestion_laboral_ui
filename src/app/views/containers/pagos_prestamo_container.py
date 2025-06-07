@@ -55,7 +55,17 @@ class PagosPrestamoContainer(ft.Container):
         self.boton_agregar = self._boton_estilizado("Agregar", ft.icons.ADD, self._agregar_fila_pago)
 
         self.layout = ft.Column(expand=True, controls=[])
-        self.content = self.layout
+        self.content = ft.Container(
+            expand=True,
+            content=ft.Row([
+                ft.Column(
+                    expand=True,
+                    scroll=ft.ScrollMode.AUTO,
+                    controls=[self.layout]
+                )
+            ], scroll=ft.ScrollMode.AUTO)
+        )
+
         self.did_mount()
 
     def _boton_estilizado(self, texto, icono, evento):
@@ -162,9 +172,99 @@ class PagosPrestamoContainer(ft.Container):
 
         monto_input = ft.TextField(label="Monto a Pagar", value="", width=100)
         observaciones_input = ft.TextField(label="Observaciones", value="", width=160)
+        saldo_con_interes_text = ft.Text(value="-", width=100)
 
         saldo_actual_decimal = Decimal(str(saldo_actual))
-        saldo_con_interes_text = ft.Text(value="-", width=100)
+
+        def actualizar_interes(e):
+            try:
+                interes = int(interes_selector.value)
+                interes_aplicado = saldo_actual_decimal * Decimal(interes) / 100
+                nuevo_saldo = saldo_actual_decimal + interes_aplicado
+                saldo_con_interes_text.value = f"${nuevo_saldo:.2f}"
+            except:
+                saldo_con_interes_text.value = "-"
+            self.page.update()
+
+        interes_selector.on_change = actualizar_interes
+        actualizar_interes(None)
+
+        # ✅ Validación visual tiempo real para MONTO
+        def validar_monto_tiempo_real(e=None):
+            val = monto_input.value.strip()
+            try:
+                if not val or not val.isdigit() or int(val) <= 0:
+                    monto_input.border_color = ft.colors.RED
+                else:
+                    monto_input.border_color = None
+            except:
+                monto_input.border_color = ft.colors.RED
+            self.page.update()
+
+        monto_input.on_change = validar_monto_tiempo_real
+
+        def confirmar_pago(e=None):
+            monto_input.border_color = None
+            observaciones_input.border_color = None
+
+            try:
+                # Validar existencia de préstamo (visual no aplica, ya que no llegaría aquí si no existe)
+                prestamo = self.prestamo_model.get_by_id(self.id_prestamo)
+                if not prestamo:
+                    ModalAlert.mostrar_info("Error", "Este ID de préstamo no existe.")
+                    return
+
+                # Validar monto
+                monto_str = monto_input.value.strip()
+                if not monto_str.isdigit():
+                    monto_input.border_color = ft.colors.RED
+                    raise ValueError("El monto debe ser un número entero positivo.")
+                monto = int(monto_str)
+                if monto <= 0:
+                    monto_input.border_color = ft.colors.RED
+                    raise ValueError("El monto debe ser mayor a cero.")
+
+                # Validar observaciones
+                observaciones = observaciones_input.value.strip()
+                if len(observaciones) > 100:
+                    observaciones_input.border_color = ft.colors.RED
+                    raise ValueError("Observaciones demasiado largas (máx. 100 caracteres).")
+
+                interes = int(interes_selector.value)
+
+                resultado = self.pago_model.add_payment(
+                    id_prestamo=int(self.id_prestamo),
+                    monto_pagado=monto,
+                    fecha_pago=hoy,
+                    fecha_generacion=hoy,
+                    interes_porcentaje=interes,
+                    fecha_real_pago=hoy,
+                    observaciones=observaciones
+                )
+
+                ModalAlert.mostrar_info("Resultado", resultado["message"])
+                self._cargar_pagos(int(self.id_prestamo))
+
+            except Exception as ex:
+                ModalAlert.mostrar_info("Error", str(ex))
+            self.page.update()
+
+        return ft.DataRow(cells=[
+            ft.DataCell(ft.Text(nuevo_id)),
+            ft.DataCell(ft.Text(hoy)),
+            ft.DataCell(ft.Text(hoy)),
+            ft.DataCell(monto_input),
+            ft.DataCell(ft.Text(f"${monto_total:.2f}")),
+            ft.DataCell(ft.Text(f"${saldo_actual:.2f}")),
+            ft.DataCell(saldo_con_interes_text),
+            ft.DataCell(interes_selector),
+            ft.DataCell(observaciones_input),
+            ft.DataCell(ft.Row([
+                ft.IconButton(icon=ft.icons.CHECK, icon_color=ft.colors.GREEN_600, on_click=confirmar_pago),
+                ft.IconButton(icon=ft.icons.CLOSE, icon_color=ft.colors.RED_600, on_click=lambda _: self._cargar_pagos(int(self.id_prestamo)))
+            ]))
+        ])
+
 
         def actualizar_interes(e):
             try:

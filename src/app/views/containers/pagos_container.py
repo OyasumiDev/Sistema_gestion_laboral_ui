@@ -1,251 +1,329 @@
 from datetime import datetime
-import pandas as pd
-import flet as ft
-from urllib.parse import urlparse, parse_qs
 from decimal import Decimal
+import flet as ft
 
 from app.core.app_state import AppState
-from app.views.containers.modal_alert import ModalAlert
 from app.models.payment_model import PaymentModel
 from app.models.discount_model import DiscountModel
+from app.models.assistance_model import AssistanceModel
+from app.views.containers.modal_alert import ModalAlert
 from app.views.containers.date_modal_selector import DateModalSelector
+from app.views.containers.modal_descuentos import ModalDescuentos
+
 
 class PagosContainer(ft.Container):
+    """Contenedor principal para gestionar pagos."""
+
     def __init__(self):
         super().__init__(expand=True, padding=20, alignment=ft.alignment.top_center)
         self.page = AppState().page
-        self.payment_model = PaymentModel()
-        self.discount_model = DiscountModel()
 
+        # modelos
+        self.payment_model = PaymentModel()
+        self.payment_model.crear_sp_horas_trabajadas_para_pagos()
+        self.discount_model = DiscountModel()
+        self.assistance_model = AssistanceModel()
+
+        # rangos de fechas
         self.fecha_inicio_id = None
         self.fecha_fin_id = None
         self.fecha_inicio_periodo = None
         self.fecha_fin_periodo = None
 
-        self.input_id = ft.TextField(label="ID Empleado", width=150, height=40)
+        # almacenamiento temporal
+        self.depositos_temporales = {}
 
-        self.date_selector_id = DateModalSelector(on_dates_confirmed=self._actualizar_fechas_id)
-        self.date_selector_periodo = DateModalSelector(on_dates_confirmed=self._actualizar_fechas_periodo)
+        # controles
+        self.input_id = ft.TextField(label="ID Empleado", width=150, height=40,
+                                    border_color=ft.colors.OUTLINE,
+                                    on_change=self._validar_input_id)
+        self.date_selector_id = DateModalSelector(on_dates_confirmed=self._set_fechas_id)
+        self.date_selector_periodo = DateModalSelector(on_dates_confirmed=self._generar_por_periodo)
 
         self.tabla_pagos = ft.DataTable(columns=[], rows=[], expand=True)
         self.resumen_pagos = ft.Text(value="", weight=ft.FontWeight.BOLD, size=14)
 
         self._build()
-        self._actualizar_tabla_pagos(None, None)
+        self._cargar_pagos()
 
-    def _actualizar_fechas_id(self, inicio, fin):
-        self.fecha_inicio_id = inicio
-        self.fecha_fin_id = fin
+    # ------------------------------------------------------------------ UI
+    def _build(self):
+        self.content = ft.Container(
+            expand=True,
+            padding=20,
+            content=ft.Row(
+                expand=True,
+                scroll=ft.ScrollMode.ALWAYS,
+                controls=[
+                    ft.Column(
+                        expand=True,
+                        scroll=ft.ScrollMode.ALWAYS,
+                        spacing=20,
+                        controls=[
+                            ft.Text("ÁREA DE PAGOS", style=ft.TextThemeStyle.TITLE_MEDIUM),
+                            self._build_buttons_area(),
+                            ft.Divider(),
+                            self.tabla_pagos,
+                            ft.Container(content=self.resumen_pagos, padding=10,
+                                         alignment=ft.alignment.center),
+                        ],
+                    )
+                ],
+            ),
+        )
 
-    def _actualizar_fechas_periodo(self, inicio, fin):
+    def _build_buttons_area(self):
+        return ft.Row(
+            [
+                self._icon_button("Importar", ft.icons.FILE_DOWNLOAD, lambda _: print("Importar")),
+                self._icon_button("Exportar", ft.icons.FILE_UPLOAD, lambda _: print("Exportar")),
+                ft.Container(
+                    content=ft.ElevatedButton(
+                        text="Pagos por Período",
+                        icon=ft.icons.CALENDAR_VIEW_MONTH,
+                        on_click=self._abrir_modal_fecha_periodo,
+                        height=40,
+                        style=ft.ButtonStyle(
+                            bgcolor=ft.colors.WHITE,
+                            shape=ft.RoundedRectangleBorder(radius=4),
+                            side=ft.BorderSide(1, ft.colors.BLACK),
+                        ),
+                    ),
+                    padding=5,
+                    border_radius=10,
+                    border=ft.border.all(1, ft.colors.OUTLINE),
+                ),
+            ],
+            spacing=15,
+        )
+
+    def _icon_button(self, text, icon, handler):
+        return ft.GestureDetector(on_tap=handler, content=ft.Row([ft.Icon(icon), ft.Text(text)], spacing=5))
+
+    # ------------------------------------------------------------------ actions
+# ... todo el código anterior igual ...
+
+
+    def _abrir_modal_fecha_periodo(self, e):
+        fechas_bloqueadas = self.assistance_model.get_fechas_generadas()
+        fechas_bloqueadas = [
+            datetime.strptime(f, "%Y-%m-%d").date() if isinstance(f, str) else f
+            for f in fechas_bloqueadas
+        ]
+        self.date_selector_periodo.set_fechas_bloqueadas(fechas_bloqueadas)
+        self.date_selector_periodo.abrir_dialogo()
+
+
+
+    def _generar_por_periodo(self, inicio, fin):
+        if not inicio or not fin:
+            return
+        inicio = self._parse_fecha(inicio)
+        fin = self._parse_fecha(fin)
+
+        min_fecha = self.assistance_model.get_fecha_minima_asistencia()
+        max_fecha = self.assistance_model.get_fecha_maxima_asistencia()
+        if not min_fecha or not max_fecha:
+            ModalAlert.mostrar_info("Error de datos", "No se pudo obtener el rango válido de asistencias.")
+            return
+
+        if inicio < min_fecha or fin > max_fecha:
+            ModalAlert.mostrar_info(
+                "Fechas fuera de rango",
+                f"Las fechas deben estar entre:\nMínima: {min_fecha}\nMáxima: {max_fecha}",
+            )
+            return
+
         self.fecha_inicio_periodo = inicio
         self.fecha_fin_periodo = fin
-
-    def _generar_pago_individual(self, e):
-        if not self.fecha_inicio_id or not self.fecha_fin_id:
-            ModalAlert.mostrar_info("Fechas no seleccionadas", "Primero selecciona el rango de fechas.")
-            return
-
-        if not self.input_id.value.strip():
-            ModalAlert.mostrar_info("Campo vacío", "Debes escribir un número de nómina.")
-            return
+        self.date_selector_periodo.cerrar_dialogo()
 
         try:
-            numero = int(self.input_id.value.strip())
-            resultado = self.payment_model.generar_pago_por_empleado(numero, self.fecha_inicio_id, self.fecha_fin_id)
+            resultado = self.payment_model.generar_pagos_por_rango(fecha_inicio=inicio, fecha_fin=fin)
             if resultado["status"] == "success":
-                ModalAlert.mostrar_info("Pago generado", resultado["message"])
-                self._actualizar_tabla_pagos(self.fecha_inicio_id, self.fecha_fin_id)
+                # ✅ Marcar asistencias como generadas en la base de datos
+                self.assistance_model.marcar_asistencias_como_generadas(
+                    fecha_inicio=inicio.strftime("%Y-%m-%d"),
+                    fecha_fin=fin.strftime("%Y-%m-%d")
+                )
+                ModalAlert.mostrar_info("Nómina Generada", resultado["message"])
             else:
                 ModalAlert.mostrar_info("Error", resultado["message"])
-        except Exception as ex:
-            ModalAlert.mostrar_info("Error interno", str(ex))
-
-    def _buscar_por_periodo(self, e):
-        if not self.fecha_inicio_periodo or not self.fecha_fin_periodo:
-            ModalAlert.mostrar_info("Fechas no seleccionadas", "Primero selecciona el rango de fechas.")
-            return
-        try:
-            self.payment_model.db.run_query("CALL generar_pagos_por_rango(%s, %s)", (self.fecha_inicio_periodo, self.fecha_fin_periodo))
-            ModalAlert.mostrar_info("Nómina Generada", f"Pagos generados del {self.fecha_inicio_periodo} al {self.fecha_fin_periodo}.")
-            self._actualizar_tabla_pagos(self.fecha_inicio_periodo, self.fecha_fin_periodo)
+            self._cargar_pagos()
         except Exception as ex:
             ModalAlert.mostrar_info("Error al generar pagos", str(ex))
 
-    def _actualizar_tabla_pagos(self, inicio, fin):
+
+    # ------------------------------------------------------------------ tabla
+    def _cargar_pagos(self):
         try:
             self.tabla_pagos.columns = [
+                ft.DataColumn(label=ft.Text("ID Pago")),
                 ft.DataColumn(label=ft.Text("ID Empleado")),
-                ft.DataColumn(label=ft.Text("Nombre Completo")),
-                ft.DataColumn(label=ft.Text("Horas Trabajadas")),
-                ft.DataColumn(label=ft.Text("Sueldo Diario")),
+                ft.DataColumn(label=ft.Text("Nombre")),
+                ft.DataColumn(label=ft.Text("Fecha Pago")),
+                ft.DataColumn(label=ft.Text("Horas")),
+                ft.DataColumn(label=ft.Text("Sueldo/Hora")),
                 ft.DataColumn(label=ft.Text("Monto Base")),
-                ft.DataColumn(label=ft.Text("Total Descuentos")),
-                ft.DataColumn(label=ft.Text("Monto Final")),
-                ft.DataColumn(label=ft.Text("Acciones"))
+                ft.DataColumn(label=ft.Text("Descuentos")),
+                ft.DataColumn(label=ft.Text("Total")),
+                ft.DataColumn(label=ft.Text("Acciones")),
+                ft.DataColumn(label=ft.Text("Estado")),
             ]
 
             self.tabla_pagos.rows.clear()
-            total_pagado = 0
+            total_pagado = 0.0
 
-            if inicio and fin:
-                query = """
-                    SELECT p.numero_nomina, e.nombre_completo,
-                        p.horas_trabajadas, e.sueldo_diario,
-                        p.monto_base, d.total_descuentos, p.monto_total
-                    FROM pagos p
-                    JOIN empleados e ON e.numero_nomina = p.numero_nomina
-                    LEFT JOIN (
-                        SELECT id_pago, SUM(monto) AS total_descuentos
-                        FROM descuentos_pago
-                        GROUP BY id_pago
-                    ) d ON d.id_pago = p.id_pago
-                    WHERE p.fecha_pago BETWEEN %s AND %s
-                """
-                pagos = self.payment_model.db.get_data(query, (inicio, fin), dictionary=True)
+            query = (
+                "SELECT p.id_pago, p.numero_nomina, p.fecha_pago, p.total_horas_trabajadas, "
+                "p.monto_base, p.monto_total, p.estado, e.nombre_completo, e.sueldo_por_hora "
+                "FROM pagos p JOIN empleados e ON p.numero_nomina = e.numero_nomina "
+                "ORDER BY p.fecha_pago DESC"
+            )
+            pagos = self.payment_model.db.get_data_list(query, dictionary=True)
+
+            if not pagos:
+                self.tabla_pagos.rows.append(ft.DataRow(cells=[ft.DataCell(ft.Text("-")) for _ in range(11)]))
+            else:
                 for p in pagos:
-                    self.tabla_pagos.rows.append(ft.DataRow(cells=[
-                        ft.DataCell(ft.Text(str(p["numero_nomina"]))),
-                        ft.DataCell(ft.Text(p["nombre_completo"])),
-                        ft.DataCell(ft.Text(str(p["horas_trabajadas"]))),
-                        ft.DataCell(ft.Text(f"${p['sueldo_diario']:.2f}")),
-                        ft.DataCell(ft.Text(f"${p['monto_base']:.2f}")),
-                        ft.DataCell(ft.Text(f"${p.get('total_descuentos', 0):.2f}")),
-                        ft.DataCell(ft.Text(f"${p['monto_total']:.2f}")),
-                        ft.DataCell(ft.Row([
-                            ft.IconButton(icon=ft.icons.EDIT),
-                            ft.IconButton(icon=ft.icons.DELETE)
-                        ]))
-                    ]))
-                    total_pagado += float(p['monto_total'])
+                    if not p:
+                        continue
+                    descuentos = self.discount_model.get_total_descuentos_por_pago(p["id_pago"])
+                    estado = p["estado"]
 
-            if not self.tabla_pagos.rows:
-                self.tabla_pagos.rows.append(ft.DataRow(cells=[
-                    ft.DataCell(ft.Text("-")) for _ in range(8)
-                ]))
+                    if estado == "pagado":
+                        acciones = ft.DataCell(ft.Text("✔️"))
+                    else:
+                        acciones = ft.DataCell(
+                            ft.Row([
+                                ft.IconButton(icon=ft.icons.CHECK, tooltip="Confirmar pago",
+                                              on_click=lambda e, pid=p["id_pago"]: self._guardar_pago_confirmado(pid)),
+                                ft.IconButton(icon=ft.icons.CANCEL, tooltip="Eliminar pago",
+                                              on_click=lambda e, pid=p["id_pago"]: self._eliminar_pago(pid)),
+                            ])
+                        )
+
+                    self.tabla_pagos.rows.append(
+                        ft.DataRow(
+                            cells=[
+                                ft.DataCell(ft.Text(str(p["id_pago"]))),
+                                ft.DataCell(ft.Text(str(p["numero_nomina"]))),
+                                ft.DataCell(ft.Text(p["nombre_completo"])),
+                                ft.DataCell(ft.Text(str(p["fecha_pago"]))),
+                                ft.DataCell(ft.Text(str(p["total_horas_trabajadas"]))),
+                                ft.DataCell(ft.Text(f"${p['sueldo_por_hora']:.2f}")),
+                                ft.DataCell(ft.Text(f"${p['monto_base']:.2f}")),
+                                ft.DataCell(
+                                    ft.Row(
+                                        [
+                                            ft.Text(f"${descuentos:.2f}"),
+                                            ft.IconButton(icon=ft.icons.EDIT_NOTE, tooltip="Editar descuentos",
+                                                          on_click=lambda e, pago=p: self._abrir_modal_descuentos(pago)),
+                                        ]
+                                    )
+                                ),
+                                ft.DataCell(ft.Text(f"${p['monto_total']:.2f}")),
+                                acciones,
+                                ft.DataCell(ft.Text("Pagado" if estado == "pagado" else "Pendiente")),
+                            ]
+                        )
+                    )
+
+                    if estado == "pagado":
+                        total_pagado += float(p["monto_total"])
 
             self.resumen_pagos.value = f"Total pagado: ${total_pagado:.2f}"
             self.page.update()
         except Exception as ex:
-            ModalAlert.mostrar_info("Error al actualizar tabla", str(ex))
+            ModalAlert.mostrar_info("Error al cargar pagos", str(ex))
 
-    def _abrir_modal_fecha_id(self, e):
-        try:
-            self.date_selector_id.fecha_inicio = self.fecha_inicio_id
-            self.date_selector_id.fecha_fin = self.fecha_fin_id
-            self.date_selector_id.abrir_dialogo()
-        except Exception as ex:
-            ModalAlert.mostrar_info("Error de Fecha", f"No se pudo abrir el calendario: {str(ex)}")
+    def _guardar_pago_confirmado(self, id_pago: int):
+        def confirmar():
+            try:
+                pago = self.payment_model.get_by_id(id_pago)
+                if pago["status"] != "success" or not pago["data"]:
+                    ModalAlert.mostrar_info("Error", f"No se encontró el pago con ID {id_pago}")
+                    return
 
-    def _abrir_modal_fecha_periodo(self, e):
-        try:
-            self.date_selector_periodo.fecha_inicio = self.fecha_inicio_periodo
-            self.date_selector_periodo.fecha_fin = self.fecha_fin_periodo
-            self.date_selector_periodo.abrir_dialogo()
-        except Exception as ex:
-            ModalAlert.mostrar_info("Error de Fecha", f"No se pudo abrir el calendario: {str(ex)}")
-
-    def _build(self):
-        self.content = ft.Column([
-            ft.Text("ÁREA DE PAGOS", style=ft.TextThemeStyle.TITLE_MEDIUM),
-            self._build_buttons_area(),
-            ft.Divider(),
-            self.tabla_pagos,
-            ft.Container(content=self.resumen_pagos, padding=10, alignment=ft.alignment.center)
-        ])
-
-    def _build_buttons_area(self):
-        return ft.Row([
-            self._build_icon_button("Importar", ft.icons.FILE_DOWNLOAD, lambda _: print("📁 Importar presionado")),
-            self._build_icon_button("Exportar", ft.icons.FILE_UPLOAD, lambda _: print("📤 Exportar presionado")),
-            self._build_icon_button("Agregar", ft.icons.ADD, self._agregar_columna_pago),
-
-            ft.Container(
-                content=ft.Row([
-                    ft.Icon(name=ft.icons.PERSON_SEARCH),
-                    self.input_id,
-                    ft.IconButton(icon=ft.icons.CALENDAR_MONTH, on_click=self._abrir_modal_fecha_id, icon_size=20, style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=4))),
-                    ft.IconButton(icon=ft.icons.SEARCH, on_click=self._generar_pago_individual, icon_size=20, style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=4)))
-                ], spacing=10),
-                padding=5,
-                bgcolor=None,
-                border_radius=10,
-                border=ft.border.all(1, ft.colors.OUTLINE)
-            ),
-
-            ft.Container(
-                content=ft.ElevatedButton(
-                    text="Pagos por Período",
-                    icon=ft.icons.CALENDAR_VIEW_MONTH,
-                    on_click=self._abrir_modal_fecha_periodo,
-                    height=40,
-                    style=ft.ButtonStyle(
-                        bgcolor=ft.colors.WHITE,
-                        shape=ft.RoundedRectangleBorder(radius=6),
-                        side=ft.BorderSide(1, ft.colors.BLACK)
-                    )
-                ),
-                padding=5,
-                bgcolor=None,
-                border_radius=10,
-                border=ft.border.all(1, ft.colors.OUTLINE)
-            )
-        ], spacing=15)
-
-    def _build_icon_button(self, text, icon, handler):
-        return ft.GestureDetector(
-            on_tap=handler,
-            content=ft.Row([
-                ft.Icon(name=icon),
-                ft.Text(text)
-            ], spacing=5)
-        )
-
-    def _agregar_columna_pago(self, e):
-        try:
-            id_input = ft.TextField(hint_text="ID Empleado", width=100)
-            nombre_text = ft.Text("Nombre...", width=150)
-            horas_text = ft.Text("00:00:00", width=100)
-            sueldo_input = ft.TextField(hint_text="$0.00", width=100)
-            monto_base_input = ft.TextField(hint_text="$0.00", width=100)
-            descuentos_input = ft.TextField(hint_text="$0.00", width=100)
-            monto_total_input = ft.TextField(hint_text="$0.00", width=100)
-
-            async def actualizar_datos_id(e):
                 try:
-                    numero = int(id_input.value)
-                    if self.fecha_inicio_id and self.fecha_fin_id:
-                        query = "CALL horas_trabajadas(%s, %s, %s)"
-                        result = self.payment_model.db.get_data(query, (numero, self.fecha_inicio_id, self.fecha_fin_id), dictionary=True)
-                        if result:
-                            nombre_text.value = result[0]["nombre_completo"]
-                            horas_text.value = result[0]["total_horas_trabajadas"]
-                            self.page.update()
-                except Exception as ex:
-                    ModalAlert.mostrar_info("Error", str(ex))
+                    monto_base = Decimal(str(pago["data"]["monto_base"]))
+                    total_descuentos = Decimal(str(self.discount_model.get_total_descuentos_por_pago(id_pago)))
+                    monto_total = max(Decimal("0.0"), monto_base - total_descuentos)
+                except (ValueError, TypeError, Decimal.InvalidOperation):
+                    ModalAlert.mostrar_info("Error de datos", "Monto base o descuentos no válidos. Usa un formato numérico como 1250.50")
+                    return
 
-            id_input.on_change = actualizar_datos_id
+                campos = {
+                    "estado": "pagado",
+                    "monto_total": float(monto_total),
+                    "pago_efectivo": float(monto_total),
+                    "fecha_pago": datetime.today().strftime("%Y-%m-%d"),
+                }
+                result = self.payment_model.update_pago(id_pago, campos)
+                if result["status"] == "success":
+                    self._cargar_pagos()
+                else:
+                    ModalAlert.mostrar_info("Error", result["message"])
+            except Exception as ex:
+                ModalAlert.mostrar_info("Error interno", str(ex))
 
-            nueva_fila = ft.DataRow(cells=[
-                ft.DataCell(id_input),
-                ft.DataCell(nombre_text),
-                ft.DataCell(horas_text),
-                ft.DataCell(sueldo_input),
-                ft.DataCell(monto_base_input),
-                ft.DataCell(descuentos_input),
-                ft.DataCell(monto_total_input),
-                ft.DataCell(ft.Row([
-                    ft.IconButton(icon=ft.icons.CHECK, icon_color=ft.colors.GREEN_600),
-                    ft.IconButton(icon=ft.icons.CLOSE, icon_color=ft.colors.RED_600, on_click=lambda _: self._actualizar_tabla_pagos(self.fecha_inicio_id, self.fecha_fin_id))
-                ]))
-            ])
+        ModalAlert(
+            title_text="Confirmar pago",
+            message=f"¿Deseas confirmar el pago con ID {id_pago}?",
+            on_confirm=confirmar,
+        ).mostrar()
 
-            if self.tabla_pagos.rows and self.tabla_pagos.rows[0].cells[0].content.value == "-":
-                self.tabla_pagos.rows[0] = nueva_fila
-            else:
-                self.tabla_pagos.rows.insert(0, nueva_fila)
+    def _eliminar_pago(self, id_pago: int):
+        def eliminar():
+            try:
+                self.discount_model.eliminar_por_id_pago(id_pago)
+                self.payment_model.db.run_query("DELETE FROM pagos WHERE id_pago = %s", (id_pago,))
+                self._cargar_pagos()
+            except Exception as ex:
+                ModalAlert.mostrar_info("Error al eliminar", str(ex))
 
-            self.page.update()
+        ModalAlert(
+            title_text="Eliminar Pago",
+            message=f"¿Estás seguro de eliminar el pago con ID {id_pago}?",
+            on_confirm=eliminar,
+        ).mostrar()
 
-        except Exception as ex:
-            ModalAlert.mostrar_info("Error al agregar fila", str(ex))
+    def _abrir_modal_descuentos(self, pago: dict):
+        print(f"🟢 Llamando ModalDescuentos para pago ID: {pago['id_pago']}")
+        def on_confirmar(_):
+            self._cargar_pagos()
+        ModalDescuentos(pago_data=pago, on_confirmar=on_confirmar).mostrar()
+
+
+
+    # ------------------------------------------------------------------ util
+    def _set_fechas_id(self, inicio, fin):
+        inicio = self._parse_fecha(inicio)
+        fin = self._parse_fecha(fin)
+
+        min_fecha = self.assistance_model.get_fecha_minima_asistencia()
+        max_fecha = self.assistance_model.get_fecha_maxima_asistencia()
+        if not min_fecha or not max_fecha:
+            ModalAlert.mostrar_info("Error de datos", "No se pudo obtener el rango válido de asistencias.")
+            return
+
+        if inicio < min_fecha or fin > max_fecha:
+            ModalAlert.mostrar_info(
+                "Fechas fuera de rango",
+                f"Las fechas deben estar entre:\nMínima: {min_fecha}\nMáxima: {max_fecha}",
+            )
+            return
+
+        self.fecha_inicio_id = inicio
+        self.fecha_fin_id = fin
+        self.date_selector_id.cerrar_dialogo()
+
+    def _parse_fecha(self, fecha):
+        if isinstance(fecha, str):
+            return datetime.strptime(fecha, "%Y-%m-%d").date()
+        return fecha
+
+    def _validar_input_id(self, e):
+        texto = self.input_id.value.strip()
+        self.input_id.border_color = ft.colors.OUTLINE if not texto or texto.isdigit() else ft.colors.RED_400
+        self.page.update()

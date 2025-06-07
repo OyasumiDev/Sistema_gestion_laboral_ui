@@ -68,6 +68,9 @@ class DatabaseMysql:
         try:
             with self.connection.cursor() as cursor:
                 cursor.execute(query, params)
+                # 👇 Consumir todos los resultados si existen (por SP o triggers)
+                while cursor.nextset():
+                    pass
             self.connection.commit()
         except mysql.Error as e:
             print(f"❌ Error ejecutando query: {e}")
@@ -75,22 +78,35 @@ class DatabaseMysql:
 
     def get_data(self, query: str, params: tuple = (), dictionary: bool = False):
         try:
-            conn = self.connection
-            cursor = conn.cursor(dictionary=dictionary)
+            cursor = self.connection.cursor(dictionary=dictionary)
             cursor.execute(query, params)
-            result = cursor.fetchone()
+
+            # Detectar si el resultado es único o múltiple
+            rows = cursor.fetchall()
+            while cursor.nextset():
+                pass
             cursor.close()
-            return result
+
+            if not rows:
+                return None if not dictionary else {}
+
+            # Si se pide diccionario, devolvemos el primer dict
+            if dictionary:
+                return rows[0] if isinstance(rows[0], dict) else {}
+            else:
+                return rows[0] if isinstance(rows[0], tuple) else ()
         except Exception as e:
             print(f"❌ Error ejecutando query: {e}")
-            return {}
+            return {} if dictionary else ()
+
 
     def get_data_list(self, query: str, params: tuple = (), dictionary: bool = False):
         try:
-            conn = self.connection
-            cursor = conn.cursor(dictionary=dictionary)
+            cursor = self.connection.cursor(dictionary=dictionary)
             cursor.execute(query, params)
             result = cursor.fetchall()
+            while cursor.nextset():  # 👈 IMPORTANTE: limpiar resultados extra
+                pass
             cursor.close()
             return result
         except Exception as e:
@@ -194,3 +210,39 @@ class DatabaseMysql:
             if page:
                 mostrar_mensaje(page, "Error de Importación", str(e))
             return False
+
+    def execute_procedure(self, procedure_name: str, params: tuple = ()) -> list:
+        try:
+            cursor = self.connection.cursor(dictionary=True)
+            cursor.callproc(procedure_name, params)
+            results = []
+
+            for result in cursor.stored_results():
+                results = result.fetchall()
+
+            cursor.close()
+            return results
+        except Exception as ex:
+            print(f"❌ Error ejecutando SP '{procedure_name}': {ex}")
+            return []
+
+    def get_last_insert_id(self):
+        try:
+            cursor = self.connection.cursor()
+            cursor.execute("SELECT LAST_INSERT_ID()")
+            result = cursor.fetchone()
+            cursor.close()
+            return result[0] if result else None
+        except Exception as e:
+            print(f"❌ Error al obtener el último ID insertado: {e}")
+            return None
+
+    def call_procedure(self, procedure_name: str, params: tuple = ()):
+        try:
+            cursor = self.connection.cursor(dictionary=True)
+            cursor.callproc(procedure_name, params)
+            for result in cursor.stored_results():
+                return result.fetchall()
+        except Exception as e:
+            print(f"❌ Error al llamar al SP {procedure_name}: {e}")
+            return []

@@ -1,6 +1,7 @@
 from app.core.enums.e_assistance_model import E_ASSISTANCE
 from app.core.interfaces.database_mysql import DatabaseMysql
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
+from typing import Optional
 
 
 class AssistanceModel:
@@ -10,6 +11,10 @@ class AssistanceModel:
         self.verificar_o_crear_triggers()
 
     def check_table(self) -> bool:
+        """
+        Verifica si la tabla 'asistencias' existe. Si no existe, la crea con la estructura adecuada,
+        incluyendo la columna 'fecha_generada' para marcar asistencias ya utilizadas en generación de pagos.
+        """
         try:
             query = """
                 SELECT COUNT(*) AS c
@@ -17,10 +22,13 @@ class AssistanceModel:
                 WHERE table_schema = %s AND table_name = %s
             """
             result = self.db.get_data(query, (self.db.database, E_ASSISTANCE.TABLE.value), dictionary=True)
-            if result.get("c", 0) == 0:
+            existe = result.get("c", 0) > 0
+
+            if not existe:
                 print(f"⚠️ La tabla {E_ASSISTANCE.TABLE.value} no existe. Creando...")
+
                 create_query = f"""
-                CREATE TABLE IF NOT EXISTS asistencias (
+                CREATE TABLE IF NOT EXISTS {E_ASSISTANCE.TABLE.value} (
                     id_asistencia INT AUTO_INCREMENT PRIMARY KEY,
                     numero_nomina SMALLINT UNSIGNED NOT NULL,
                     fecha DATE NOT NULL,
@@ -29,28 +37,26 @@ class AssistanceModel:
                     retardo TIME,
                     estado VARCHAR(20),
                     tiempo_trabajo TIME,
-                    total_horas_trabajadas TIME,  -- ← Campo nuevo
-                    FOREIGN KEY (numero_nomina)
-                        REFERENCES empleados(numero_nomina)
-                        ON DELETE CASCADE
+                    fecha_generada DATE DEFAULT NULL,
+                    FOREIGN KEY (numero_nomina) REFERENCES empleados(numero_nomina) ON DELETE CASCADE
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
                 """
                 self.db.run_query(create_query)
                 print(f"✅ Tabla {E_ASSISTANCE.TABLE.value} creada correctamente.")
             else:
                 print(f"✔️ La tabla {E_ASSISTANCE.TABLE.value} ya existe.")
+
             return True
+
         except Exception as ex:
             print(f"❌ Error al verificar/crear la tabla {E_ASSISTANCE.TABLE.value}: {ex}")
             return False
-
 
 
     def verificar_o_crear_triggers(self):
         try:
             self._crear_trigger_calculo_horas()
             self._crear_trigger_estado()
-            self._crear_sp_total_horas_trabajadas()
         except Exception as ex:
             print(f"❌ Error al verificar/crear triggers: {ex}")
 
@@ -161,62 +167,6 @@ class AssistanceModel:
         else:
             print(f"✔️ Trigger '{trigger_name}' ya existe.")
 
-
-    def _crear_sp_total_horas_trabajadas(self):
-        sp_name = "horas_trabajadas"
-        check_query = """
-            SELECT COUNT(*) AS c
-            FROM information_schema.routines
-            WHERE routine_schema = %s AND routine_name = %s AND routine_type = 'PROCEDURE'
-        """
-        result = self.db.get_data(check_query, (self.db.database, sp_name), dictionary=True)
-        if result.get("c", 0) == 0:
-            print(f"⚠️ Stored Procedure '{sp_name}' no existe. Creando...")
-
-            cursor = self.db.connection.cursor()
-            cursor.execute(f"DROP PROCEDURE IF EXISTS {sp_name}")
-
-            sp_sql = f"""
-            CREATE PROCEDURE {sp_name} (
-                IN p_numero_nomina INT,
-                IN p_fecha_inicio DATE,
-                IN p_fecha_fin DATE
-            )
-            BEGIN
-                IF p_numero_nomina IS NOT NULL THEN
-                    -- Total por un solo empleado
-                    SELECT
-                        a.numero_nomina,
-                        e.nombre_completo,
-                        SEC_TO_TIME(SUM(TIME_TO_SEC(a.tiempo_trabajo))) AS total_horas_trabajadas
-                    FROM asistencias a
-                    JOIN empleados e ON a.numero_nomina = e.numero_nomina
-                    WHERE a.numero_nomina = p_numero_nomina
-                    AND a.fecha BETWEEN p_fecha_inicio AND p_fecha_fin
-                    AND a.estado = 'completo'
-                    GROUP BY a.numero_nomina, e.nombre_completo;
-                ELSE
-                    -- Total de todos los empleados
-                    SELECT
-                        a.numero_nomina,
-                        e.nombre_completo,
-                        SEC_TO_TIME(SUM(TIME_TO_SEC(a.tiempo_trabajo))) AS total_horas_trabajadas
-                    FROM asistencias a
-                    JOIN empleados e ON a.numero_nomina = e.numero_nomina
-                    WHERE a.fecha BETWEEN p_fecha_inicio AND p_fecha_fin
-                    AND a.estado = 'completo'
-                    GROUP BY a.numero_nomina, e.nombre_completo;
-                END IF;
-            END
-            """
-
-            cursor.execute(sp_sql)
-            self.db.connection.commit()
-            cursor.close()
-
-            print(f"✅ Stored Procedure '{sp_name}' creado correctamente.")
-        else:
-            print(f"✔️ Stored Procedure '{sp_name}' ya existe.")
 
     def add(self,
             numero_nomina: int,
@@ -438,19 +388,81 @@ class AssistanceModel:
         except Exception as e:
             return {"status": "error", "message": str(e)}
         
-    def get_total_horas_trabajadas(self, fecha_inicio: str, fecha_fin: str, numero_nomina: int = None) -> dict:
+
+
+
+    def get_fecha_minima_asistencia(self) -> Optional[date]:
+        try:
+            query = f"SELECT MIN({E_ASSISTANCE.FECHA.value}) AS min_fecha FROM {E_ASSISTANCE.TABLE.value}"
+            result = self.db.get_data(query, dictionary=True)
+
+            print(f"🟡 Resultado crudo MIN fecha asistencia: {result}")
+
+            if isinstance(result, list) and result:
+                result = result[0]
+
+            min_fecha = result.get("min_fecha") if result else None
+
+            print(f"🔍 min_fecha recibida de base de datos: {min_fecha}")
+
+            if isinstance(min_fecha, str):
+                min_fecha = datetime.strptime(min_fecha, "%Y-%m-%d").date()
+
+            print(f"✅ min_fecha convertida a datetime.date: {min_fecha}")
+            return min_fecha
+        except Exception as e:
+            print(f"❌ Error al obtener fecha mínima de asistencia: {e}")
+            return None
+
+
+    def get_fecha_maxima_asistencia(self) -> Optional[date]:
+        try:
+            query = f"SELECT MAX({E_ASSISTANCE.FECHA.value}) AS max_fecha FROM {E_ASSISTANCE.TABLE.value}"
+            result = self.db.get_data(query, dictionary=True)
+
+            print(f"🟡 Resultado crudo MAX fecha asistencia: {result}")
+
+            if isinstance(result, list) and result:
+                result = result[0]
+
+            max_fecha = result.get("max_fecha") if result else None
+
+            print(f"🔍 max_fecha recibida de base de datos: {max_fecha}")
+
+            if isinstance(max_fecha, str):
+                max_fecha = datetime.strptime(max_fecha, "%Y-%m-%d").date()
+
+            print(f"✅ max_fecha convertida a datetime.date: {max_fecha}")
+            return max_fecha
+        except Exception as e:
+            print(f"❌ Error al obtener fecha máxima de asistencia: {e}")
+            return None
+
+
+    def marcar_asistencias_como_generadas(self, fecha_inicio: str, fecha_fin: str, fecha_generacion: Optional[str] = None) -> dict:
         """
-        Obtiene el total de horas trabajadas desde la base de datos, usando el stored procedure 'horas_trabajadas'.
-        Si se proporciona un numero_nomina, devuelve solo ese empleado. Si es None, devuelve todos.
+        Marca las asistencias en el rango como utilizadas para generar pagos, asignando la fecha de generación.
         """
         try:
-            resultados = self.db.call_procedure("horas_trabajadas", (numero_nomina, fecha_inicio, fecha_fin))
-            if not resultados:
-                return {"status": "success", "data": [], "message": "No se encontraron registros en ese rango"}
-            return {"status": "success", "data": resultados}
+            fecha_generacion = fecha_generacion or datetime.today().strftime("%Y-%m-%d")
+            query = """
+                UPDATE asistencias
+                SET fecha_generada = %s
+                WHERE fecha BETWEEN %s AND %s
+            """
+            self.db.run_query(query, (fecha_generacion, fecha_inicio, fecha_fin))
+            return {"status": "success"}
         except Exception as e:
             return {"status": "error", "message": str(e)}
 
-
-
-
+    def get_fechas_generadas(self) -> list:
+        """
+        Retorna todas las fechas de asistencias que ya fueron usadas para generar pagos.
+        """
+        try:
+            query = "SELECT DISTINCT fecha FROM asistencias WHERE fecha_generada IS NOT NULL"
+            resultados = self.db.get_data_list(query, dictionary=True)
+            return [r["fecha"] for r in resultados if r.get("fecha")]
+        except Exception as e:
+            print(f"❌ Error al obtener fechas generadas: {e}")
+            return []

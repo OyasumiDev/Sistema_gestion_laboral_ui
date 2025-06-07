@@ -7,5 +7,6 @@ class E_ASSISTANCE(Enum):
     FECHA = "fecha"
     HORA_ENTRADA = "hora_entrada"
     HORA_SALIDA = "hora_salida"
+    RETARDO = "retardo"
     ESTADO = "estado"
     TIEMPO_TRABAJO = "tiempo_trabajo"
