@@ -75,6 +75,7 @@ class ModalPrestamos:
 
         self._set_prestamo(self.id_prestamo)
 
+
     def _set_prestamo(self, id_prestamo: int):
         self.id_prestamo = id_prestamo
         prestamo = next((p for p in self.prestamos_disponibles if p["id_prestamo"] == id_prestamo), None)
@@ -176,9 +177,11 @@ class ModalPrestamos:
             weight=ft.FontWeight.BOLD
         ) if not self.puede_editar else ft.Container()
 
+        self.boton_guardar = ft.ElevatedButton("Guardar Detalle", icon=ft.icons.SAVE, on_click=self._guardar_detalle)
+
         acciones = ft.Row(
             [
-                *( [ft.ElevatedButton("Guardar Detalle", icon=ft.icons.SAVE, on_click=self._guardar_detalle)] if self.puede_editar else [] ),
+                *( [self.boton_guardar] if self.puede_editar else [] ),
                 ft.TextButton("Cancelar", on_click=self._cerrar)
             ],
             alignment=ft.MainAxisAlignment.END,
@@ -207,6 +210,7 @@ class ModalPrestamos:
             )
         )
 
+
     def _recalcular_montos(self, _=None):
         try:
             interes = int(self.interes_dropdown.value or "0")
@@ -216,22 +220,33 @@ class ModalPrestamos:
 
             self.saldo_con_interes.value = f"Saldo + interés: ${saldo_total:.2f}"
 
+            monto_valido = False
             try:
                 monto = Decimal(str(self.monto_input.value)).quantize(Decimal("0.01"))
-                if monto <= 0 or monto > saldo_total:
+                total_por_pagar = saldo_total - monto
+
+                if monto <= 0 or monto > saldo_total or total_por_pagar < 0:
                     self.monto_input.border_color = ft.colors.RED
                 else:
                     self.monto_input.border_color = ft.colors.GREEN
+                    monto_valido = True
+
             except:
                 self.monto_input.border_color = ft.colors.RED
+
+            if self.boton_guardar:
+                self.boton_guardar.disabled = not monto_valido
 
         except Exception as ex:
             print(f"❌ Error al calcular interés: {ex}")
             self.saldo_con_interes.value = "-"
             self.monto_input.border_color = ft.colors.RED
+            if self.boton_guardar:
+                self.boton_guardar.disabled = True
 
         self.resumen_text.value = self._obtener_resumen()
         self.page.update()
+
 
     def _obtener_resumen(self):
         try:
@@ -258,6 +273,7 @@ class ModalPrestamos:
             interes_aplicado = (saldo_decimal * Decimal(interes) / 100).quantize(Decimal("0.01"))
             saldo_total = (saldo_decimal + interes_aplicado).quantize(Decimal("0.01"))
 
+            total_por_pagar = saldo_total - monto
             if monto <= 0:
                 ModalAlert.mostrar_info("Error", "El monto debe ser mayor a 0.")
                 return
@@ -266,7 +282,10 @@ class ModalPrestamos:
                 ModalAlert.mostrar_info("Advertencia", f"El monto no puede ser mayor al saldo con interés (${saldo_total})")
                 return
 
-            # Verificar si cambió algún campo
+            if total_por_pagar < 0:
+                ModalAlert.mostrar_info("Error", "El total por pagar no puede quedar negativo.")
+                return
+
             if self.detalle_guardado:
                 if (float(self.detalle_guardado["monto_guardado"]) == float(monto) and
                     int(self.detalle_guardado["interes_guardado"]) == interes and
