@@ -84,7 +84,6 @@ class AsistenciasImportController:
                 print(f"❌ Error con motor {motor}: {e}")
         return None
 
-
     def _procesar_asistencias(self, df: pd.DataFrame) -> list:
         asistencias = []
 
@@ -92,8 +91,8 @@ class AsistenciasImportController:
             try:
                 numero_nomina_str = str(row.get("ID Checador", "")).strip()
                 fecha_str = str(row.get("Fecha", "")).strip()
-                entrada_str = str(row.get("Entrada", "")).strip()
-                salida_str = str(row.get("Salida", "")).strip()
+                entrada_raw = row.get("Entrada")
+                salida_raw = row.get("Salida")
 
                 if not numero_nomina_str.isdigit():
                     raise ValueError("ID Checador inválido")
@@ -103,8 +102,17 @@ class AsistenciasImportController:
                 if pd.isna(fecha):
                     raise ValueError("Fecha inválida")
 
-                hora_entrada = entrada_str if entrada_str else "00:00:00"
-                hora_salida = salida_str if salida_str else "00:00:00"
+                # Validación robusta de hora
+                def limpiar_hora(hora, campo):
+                    if pd.isna(hora) or str(hora).strip().lower() in ["", "nan", "none"]:
+                        print(f"⚠️ Hora vacía detectada en fila {index + 1} ({campo}). Se asigna '00:00:00'")
+                        return "00:00:00"
+                    return str(hora).strip()
+
+                hora_entrada = limpiar_hora(entrada_raw, "Entrada")
+                hora_salida = limpiar_hora(salida_raw, "Salida")
+
+                estado = "incompleto" if hora_entrada == "00:00:00" or hora_salida == "00:00:00" else "completo"
 
                 asistencia = {
                     "numero_nomina": numero_nomina,
@@ -112,7 +120,7 @@ class AsistenciasImportController:
                     "hora_entrada": hora_entrada,
                     "hora_salida": hora_salida,
                     "retardo": "00:00:00",
-                    "estado": "incompleto" if hora_entrada == "00:00:00" or hora_salida == "00:00:00" else "completo",
+                    "estado": estado,
                     "tiempo_trabajo": "00:00:00",
                     "total_horas_trabajadas": "00:00:00"
                 }
@@ -123,6 +131,7 @@ class AsistenciasImportController:
                 print(f"⚠️ Error procesando fila {index + 1}: {e}")
 
         return asistencias
+
 
     def _insertar_asistencias(self, asistencias: list):
         for asistencia in asistencias:
