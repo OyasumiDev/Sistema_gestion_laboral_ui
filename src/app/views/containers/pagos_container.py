@@ -78,20 +78,6 @@ class PagosContainer(ft.Container):
                 self._icon_button("Importar", ft.icons.FILE_DOWNLOAD, lambda _: print("Importar")),
                 self._icon_button("Exportar", ft.icons.FILE_UPLOAD, lambda _: print("Exportar")),
                 ft.Container(
-                    content=ft.Row(
-                        [
-                            ft.Icon(name=ft.icons.PERSON_SEARCH),
-                            self.input_id,
-                            ft.IconButton(icon=ft.icons.CALENDAR_MONTH, on_click=self._abrir_modal_fecha_id),
-                            ft.IconButton(icon=ft.icons.SEARCH, on_click=self._generar_pago_individual),
-                        ],
-                        spacing=10,
-                    ),
-                    padding=5,
-                    border_radius=10,
-                    border=ft.border.all(1, ft.colors.OUTLINE),
-                ),
-                ft.Container(
                     content=ft.ElevatedButton(
                         text="Pagos por Período",
                         icon=ft.icons.CALENDAR_VIEW_MONTH,
@@ -117,14 +103,6 @@ class PagosContainer(ft.Container):
     # ------------------------------------------------------------------ actions
 # ... todo el código anterior igual ...
 
-    def _abrir_modal_fecha_id(self, e):
-        fechas_bloqueadas = self.assistance_model.get_fechas_generadas()
-        fechas_bloqueadas = [
-            datetime.strptime(f, "%Y-%m-%d").date() if isinstance(f, str) else f
-            for f in fechas_bloqueadas
-        ]
-        self.date_selector_id.set_fechas_bloqueadas(fechas_bloqueadas)
-        self.date_selector_id.abrir_dialogo()
 
     def _abrir_modal_fecha_periodo(self, e):
         fechas_bloqueadas = self.assistance_model.get_fechas_generadas()
@@ -136,40 +114,6 @@ class PagosContainer(ft.Container):
         self.date_selector_periodo.abrir_dialogo()
 
 
-    def _generar_pago_individual(self, e):
-        if not self.fecha_inicio_id or not self.fecha_fin_id:
-            ModalAlert.mostrar_info("Fechas no seleccionadas", "Primero selecciona el rango de fechas.")
-            return
-
-        id_valor = self.input_id.value.strip()
-        if not id_valor:
-            self.input_id.border_color = ft.colors.RED_400
-            self.page.update()
-            ModalAlert.mostrar_info("Campo vacío", "Debes escribir un número de nómina.")
-            return
-
-        try:
-            numero = int(id_valor)
-            if numero <= 0:
-                raise ValueError
-        except ValueError:
-            self.input_id.border_color = ft.colors.RED_400
-            self.page.update()
-            ModalAlert.mostrar_info("ID inválido", "El ID debe ser un número entero positivo. Ejemplo: 103")
-            return
-
-        self.input_id.border_color = ft.colors.OUTLINE
-        self.page.update()
-
-        try:
-            resultado = self.payment_model.generar_pago_por_empleado(numero, self.fecha_inicio_id, self.fecha_fin_id)
-            if resultado["status"] == "success":
-                ModalAlert.mostrar_info("Pago generado", resultado["message"])
-                self._cargar_pagos()
-            else:
-                ModalAlert.mostrar_info("Error", resultado["message"])
-        except Exception as ex:
-            ModalAlert.mostrar_info("Error interno", str(ex))
 
     def _generar_por_periodo(self, inicio, fin):
         if not inicio or not fin:
@@ -345,28 +289,12 @@ class PagosContainer(ft.Container):
         ).mostrar()
 
     def _abrir_modal_descuentos(self, pago: dict):
-        def on_confirmar(data):
-            try:
-                monto_transporte = float(data["monto_transporte"])
-                descuento_extra = float(data["descuento_extra"])
-            except (ValueError, TypeError):
-                ModalAlert.mostrar_info("Valor inválido", "Los montos deben ser numéricos. Ejemplo: 120.00")
-                return
-
-            self.discount_model.guardar_descuentos_editables(
-                id_pago=pago["id_pago"],
-                aplicar_imss=data["aplicar_imss"],
-                aplicar_transporte=data["aplicar_transporte"],
-                monto_transporte=monto_transporte,
-                aplicar_comida=data["aplicar_comida"],
-                estado_comida=data["estado_comida"],
-                descuento_extra=descuento_extra,
-                descripcion_extra=data["descripcion_extra"],
-                numero_nomina=pago["numero_nomina"],
-            )
+        print(f"🟢 Llamando ModalDescuentos para pago ID: {pago['id_pago']}")
+        def on_confirmar(_):
             self._cargar_pagos()
+        ModalDescuentos(pago_data=pago, on_confirmar=on_confirmar).mostrar()
 
-        ModalDescuentos(pago, on_confirmar).mostrar()
+
 
     # ------------------------------------------------------------------ util
     def _set_fechas_id(self, inicio, fin):

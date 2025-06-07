@@ -186,3 +186,35 @@ class DiscountModel:
             }
         except Exception as e:
             return {"status": "error", "message": str(e)}
+
+    def guardar_o_actualizar_descuentos(
+        self,
+        id_pago: int,
+        numero_nomina: int,
+        monto_imss: float = 0.0,
+        monto_transporte: float = 0.0,
+        monto_comida: float = 0.0,
+        monto_extra: float = 0.0,
+        descripcion_extra: str = ""
+    ) -> dict:
+        try:
+            # Primero eliminamos si ya existía
+            self.eliminar_por_id_pago(id_pago)
+
+            # Insertamos el nuevo registro
+            query = f"""
+            INSERT INTO {self.E.TABLE.value} (
+                numero_nomina, {self.E.ID_PAGO.value},
+                monto_imss, monto_transporte, monto_comida,
+                monto_extra, descripcion_extra
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s)
+            """
+            values = (
+                numero_nomina, id_pago,
+                monto_imss, monto_transporte, monto_comida,
+                monto_extra, descripcion_extra
+            )
+            self.db.run_query(query, values)
+            return {"status": "success"}
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
