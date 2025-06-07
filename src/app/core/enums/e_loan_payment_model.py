@@ -5,11 +5,13 @@ class E_PAGOS_PRESTAMO(Enum):
 
     PAGO_ID = 'id_pago'
     PAGO_ID_PRESTAMO = 'id_prestamo'
+    PAGO_ID_NOMINA = 'id_pago_nomina'              # Nuevo: vínculo al pago de nómina
     PAGO_MONTO_PAGADO = 'monto_pagado'
-    PAGO_FECHA_PAGO = 'fecha_pago'                  # Fecha programada del pago
-    PAGO_FECHA_REAL = 'fecha_real_pago'             # Fecha en que se hizo el pago realmente
-    PAGO_INTERES_PORCENTAJE = 'interes_porcentaje'  # % de interés manual ingresado
-    PAGO_INTERES_APLICADO = 'interes_aplicado'      # Interés en pesos aplicado en este pago
-    PAGO_DIAS_RETRASO = 'dias_retraso'              # Calculado al momento del pago
-    PAGO_SALDO_RESTANTE = 'saldo_restante'          # Después de aplicar el pago
-    PAGO_OBSERVACIONES = 'observaciones'            # Campo opcional para notas
+    PAGO_FECHA_PAGO = 'fecha_pago'                 # Fecha programada del pago
+    PAGO_FECHA_REAL = 'fecha_real_pago'            # Fecha en que se hizo el pago realmente
+    PAGO_APLICADO = 'aplicado'                     # Nuevo: bandera de si ya fue aplicado (True/False)
+    PAGO_INTERES_PORCENTAJE = 'interes_porcentaje' # % de interés manual ingresado
+    PAGO_INTERES_APLICADO = 'interes_aplicado'     # Interés en pesos aplicado en este pago
+    PAGO_DIAS_RETRASO = 'dias_retraso'             # Calculado al momento del pago
+    PAGO_SALDO_RESTANTE = 'saldo_restante'         # Después de aplicar el pago
+    PAGO_OBSERVACIONES = 'observaciones'           # Campo opcional para notas

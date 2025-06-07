@@ -180,3 +180,12 @@ class LoanModel:
         except Exception as ex:
             print(f"❌ Error al verificar préstamo activo: {ex}")
             return None
+
+    def get_prestamos_por_empleado(self, numero_nomina: int) -> list:
+        query = """
+            SELECT id_prestamo, saldo_prestamo, estado
+            FROM prestamos
+            WHERE numero_nomina = %s
+            ORDER BY fecha_solicitud DESC
+        """
+        return self.db.get_data_list(query, (numero_nomina,), dictionary=True)

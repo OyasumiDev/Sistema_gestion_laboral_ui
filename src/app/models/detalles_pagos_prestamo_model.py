@@ -72,6 +72,17 @@ class DetallesPagosPrestamoModel:
             print(f"❌ Error al obtener detalle: {ex}")
             return {}
 
+    def get_todos_por_pago(self, id_pago: int) -> list:
+        try:
+            query = f"""
+                SELECT * FROM {self.E.TABLE.value}
+                WHERE {self.E.ID_PAGO.value} = %s
+            """
+            return self.db.get_data_list(query, (id_pago,), dictionary=True)
+        except Exception as ex:
+            print(f"❌ Error al obtener detalles por pago: {ex}")
+            return []
+
     def delete_detalle(self, id_pago: int, id_prestamo: int):
         try:
             query = f"""
