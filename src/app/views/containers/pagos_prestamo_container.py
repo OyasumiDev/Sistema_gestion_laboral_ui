@@ -57,14 +57,26 @@ class PagosPrestamoContainer(ft.Container):
         self.layout = ft.Column(expand=True, controls=[])
         self.content = ft.Container(
             expand=True,
-            content=ft.Row([
-                ft.Column(
-                    expand=True,
-                    scroll=ft.ScrollMode.AUTO,
-                    controls=[self.layout]
+            alignment=ft.alignment.top_center,
+            content=ft.Column([
+                ft.Container(
+                    alignment=ft.alignment.top_center,
+                    content=ft.Row([
+                        ft.Container(
+                            content=ft.Column(
+                                controls=[self.layout],
+                                alignment=ft.MainAxisAlignment.START,
+                                scroll=ft.ScrollMode.ADAPTIVE
+                            ),
+                            expand=True
+                        )
+                    ], scroll=ft.ScrollMode.ALWAYS, expand=True)
                 )
-            ], scroll=ft.ScrollMode.AUTO)
+            ])
         )
+
+
+
 
         self.did_mount()
 
@@ -84,16 +96,16 @@ class PagosPrestamoContainer(ft.Container):
 
     def _cargar_pagos(self, id_prestamo: int):
         self.tabla_pagos.columns = [
-            ft.DataColumn(label=ft.Text("ID Pago")),
-            ft.DataColumn(label=ft.Text("Fecha Gen.")),
-            ft.DataColumn(label=ft.Text("Fecha Real")),
-            ft.DataColumn(label=ft.Text("Monto Pagado")),
-            ft.DataColumn(label=ft.Text("Monto Original")),
-            ft.DataColumn(label=ft.Text("Saldo Actual")),
-            ft.DataColumn(label=ft.Text("Saldo + Interés")),
-            ft.DataColumn(label=ft.Text("Interés %")),
-            ft.DataColumn(label=ft.Text("Observaciones")),
-            ft.DataColumn(label=ft.Text("Acciones"))
+            ft.DataColumn(label=ft.Container(ft.Text("ID Pago"), width=80)),
+            ft.DataColumn(label=ft.Container(ft.Text("Fecha Gen."), width=100)),
+            ft.DataColumn(label=ft.Container(ft.Text("Fecha Real"), width=100)),
+            ft.DataColumn(label=ft.Container(ft.Text("Monto Pagado"), width=120)),
+            ft.DataColumn(label=ft.Container(ft.Text("Monto Original"), width=120)),
+            ft.DataColumn(label=ft.Container(ft.Text("Saldo Actual"), width=120)),
+            ft.DataColumn(label=ft.Container(ft.Text("Saldo + Interés"), width=130)),
+            ft.DataColumn(label=ft.Container(ft.Text("Interés %"), width=90)),
+            ft.DataColumn(label=ft.Container(ft.Text("Observaciones"), width=300)),
+            ft.DataColumn(label=ft.Container(ft.Text("Acciones"), width=100)),
         ]
 
         datos_prestamo = self.pago_model.get_saldo_y_monto_prestamo(id_prestamo)
@@ -106,15 +118,15 @@ class PagosPrestamoContainer(ft.Container):
             ModalAlert.mostrar_info("Error", resultado["message"])
             return
 
-        total_pagado = 0
+        total_pagado = self.pago_model.get_total_pagado_por_prestamo(id_prestamo)
         saldo_restante = float(datos_prestamo["saldo_prestamo"])
         self.tabla_pagos.rows.clear()
+
         for p in resultado["data"]:
             interes_aplicado = float(p[self.E.PAGO_INTERES_APLICADO.value])
             monto_pagado = float(p[self.E.PAGO_MONTO_PAGADO.value])
             saldo_actual = float(p[self.E.PAGO_SALDO_RESTANTE.value])
             saldo_con_interes = saldo_actual + interes_aplicado
-            total_pagado += monto_pagado
 
             self.tabla_pagos.rows.append(ft.DataRow(cells=[
                 ft.DataCell(ft.Text(p[self.E.PAGO_ID.value])),
@@ -155,6 +167,8 @@ class PagosPrestamoContainer(ft.Container):
         ]
         self.page.update()
 
+
+
     def _crear_fila_nueva(self, monto_total, saldo_actual):
         hoy = datetime.today().strftime("%Y-%m-%d")
         nuevo_id = str(self.pago_model.get_next_id())
@@ -162,59 +176,81 @@ class PagosPrestamoContainer(ft.Container):
         interes_selector = ft.Dropdown(
             label="Interés %",
             value="10",
-            options=[
-                ft.dropdown.Option("5"),
-                ft.dropdown.Option("10"),
-                ft.dropdown.Option("15")
-            ],
+            options=[ft.dropdown.Option("5"), ft.dropdown.Option("10"), ft.dropdown.Option("15")],
             width=80
         )
 
-        monto_input = ft.TextField(label="Monto a Pagar", value="", width=100)
-        observaciones_input = ft.TextField(label="Observaciones", value="", width=160)
+        monto_input = ft.TextField(
+            label="Monto",
+            value="",
+            text_align=ft.TextAlign.RIGHT,
+            max_length=8,
+            width=120,
+            multiline=False
+        )
+
+        observaciones_input = ft.TextField(
+            label="Observaciones",
+            value="",
+            multiline=True,
+            min_lines=3,
+            max_lines=6,
+            width=300,
+            height=100,
+            autofocus=False,
+            expand=False
+        )
+
+        # Declarar botón desactivado inicialmente (será habilitado al validar)
+        boton_guardar = ft.IconButton(
+            icon=ft.icons.CHECK,
+            icon_color=ft.colors.GREEN_600,
+            disabled=True,  # ⛔ Desactivado por defecto
+            on_click=lambda _: confirmar_pago()
+        )
+
+
         saldo_con_interes_text = ft.Text(value="-", width=100)
-
         saldo_actual_decimal = Decimal(str(saldo_actual))
+        total_pagado_base = Decimal(str(self.pago_model.get_total_pagado_por_prestamo(self.id_prestamo)))
 
-        def actualizar_interes(e):
+        def actualizar_interes(e=None):
             try:
                 interes = int(interes_selector.value)
+                monto_ingresado = Decimal(monto_input.value.strip() or "0")
                 interes_aplicado = saldo_actual_decimal * Decimal(interes) / 100
-                nuevo_saldo = saldo_actual_decimal + interes_aplicado
-                saldo_con_interes_text.value = f"${nuevo_saldo:.2f}"
+                saldo_con_interes = saldo_actual_decimal + interes_aplicado
+
+                saldo_con_interes_text.value = f"${saldo_con_interes:.2f}"
+                total_temporal = total_pagado_base + monto_ingresado
+                self.resumen.value = f"💰 Total pagado: ${total_temporal:.2f} | 💸 Saldo restante: ${(saldo_con_interes - monto_ingresado):.2f}"
+
+                if monto_ingresado > saldo_con_interes:
+                    monto_input.border_color = ft.colors.RED
+                    boton_guardar.disabled = True
+                else:
+                    monto_input.border_color = None
+                    boton_guardar.disabled = False
             except:
                 saldo_con_interes_text.value = "-"
+                boton_guardar.disabled = True
             self.page.update()
 
         interes_selector.on_change = actualizar_interes
-        actualizar_interes(None)
 
-        # ✅ Validación visual tiempo real para MONTO
         def validar_monto_tiempo_real(e=None):
-            val = monto_input.value.strip()
-            try:
-                if not val or not val.isdigit() or int(val) <= 0:
-                    monto_input.border_color = ft.colors.RED
-                else:
-                    monto_input.border_color = None
-            except:
-                monto_input.border_color = ft.colors.RED
-            self.page.update()
+            actualizar_interes()
 
         monto_input.on_change = validar_monto_tiempo_real
+        actualizar_interes()
 
-        def confirmar_pago(e=None):
-            monto_input.border_color = None
-            observaciones_input.border_color = None
-
+        def confirmar_pago():
             try:
-                # Validar existencia de préstamo (visual no aplica, ya que no llegaría aquí si no existe)
                 prestamo = self.prestamo_model.get_by_id(self.id_prestamo)
                 if not prestamo:
                     ModalAlert.mostrar_info("Error", "Este ID de préstamo no existe.")
                     return
 
-                # Validar monto
                 monto_str = monto_input.value.strip()
                 if not monto_str.isdigit():
                     monto_input.border_color = ft.colors.RED
@@ -224,7 +260,6 @@ class PagosPrestamoContainer(ft.Container):
                     monto_input.border_color = ft.colors.RED
                     raise ValueError("El monto debe ser mayor a cero.")
 
-                # Validar observaciones
                 observaciones = observaciones_input.value.strip()
                 if len(observaciones) > 100:
                     observaciones_input.border_color = ft.colors.RED
@@ -234,6 +269,7 @@ class PagosPrestamoContainer(ft.Container):
 
                 resultado = self.pago_model.add_payment(
                     id_prestamo=int(self.id_prestamo),
+                    id_pago_nomina=int(self.id_prestamo),  # <-- Asumiendo que id_prestamo también es el id del pago de nómina (ajusta si no es así)
                     monto_pagado=monto,
                     fecha_pago=hoy,
                     fecha_generacion=hoy,
@@ -241,6 +277,7 @@ class PagosPrestamoContainer(ft.Container):
                     fecha_real_pago=hoy,
                     observaciones=observaciones
                 )
+
 
                 ModalAlert.mostrar_info("Resultado", resultado["message"])
                 self._cargar_pagos(int(self.id_prestamo))
@@ -260,10 +297,13 @@ class PagosPrestamoContainer(ft.Container):
             ft.DataCell(interes_selector),
             ft.DataCell(observaciones_input),
             ft.DataCell(ft.Row([
-                ft.IconButton(icon=ft.icons.CHECK, icon_color=ft.colors.GREEN_600, on_click=confirmar_pago),
-                ft.IconButton(icon=ft.icons.CLOSE, icon_color=ft.colors.RED_600, on_click=lambda _: self._cargar_pagos(int(self.id_prestamo)))
+                boton_guardar,
+                ft.IconButton(icon=ft.icons.CLOSE, icon_color=ft.colors.RED_600,
+                            on_click=lambda _: self._cargar_pagos(int(self.id_prestamo)))
             ]))
         ])
+
+
 
     def _agregar_fila_pago(self, e=None):
         datos_prestamo = self.pago_model.get_saldo_y_monto_prestamo(self.id_prestamo)

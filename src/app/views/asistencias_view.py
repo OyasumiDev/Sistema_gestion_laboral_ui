@@ -3,7 +3,7 @@
 import flet as ft
 from app.core.app_state import AppState
 from app.views.containers.asistencias_container import AsistenciasContainer
-from app.views.nvar_view import NavBarView  # Si también quieres incluir barra
+from app.views.nvar_view import NavBarView
 
 class AsistenciasView(ft.View):
     """Vista de Asistencias"""
@@ -11,7 +11,6 @@ class AsistenciasView(ft.View):
         super().__init__(route="/home/asistencias", controls=[])
 
         state = AppState()
-        responsive_mode = state.responsive_mode
         page = state.page
 
         user_data = page.client_storage.get("app.user")
@@ -20,22 +19,17 @@ class AsistenciasView(ft.View):
         nav_bar = NavBarView(is_root=is_root)
         content_area = AsistenciasContainer()
 
-        # Layout responsivo
-        if responsive_mode == "mobile":
-            layout = ft.Column(
-                expand=True,
-                controls=[
-                    nav_bar,
-                    ft.Container(content_area, expand=True)
-                ]
-            )
-        else:
-            layout = ft.Row(
-                expand=True,
-                controls=[
-                    nav_bar,
-                    ft.Container(content_area, expand=True)
-                ]
-            )
+        layout = ft.Row(
+            expand=True,
+            controls=[
+                nav_bar,
+                ft.Container(
+                    content=content_area,
+                    expand=True,
+                    alignment=ft.alignment.top_center,
+                    padding=20
+                )
+            ]
+        )
 
         self.controls.append(layout)

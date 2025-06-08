@@ -2,8 +2,11 @@ import flet as ft
 from datetime import datetime
 import os
 import pandas as pd
+from urllib.parse import urlencode
 from app.core.app_state import AppState
 from app.models.loan_model import LoanModel
+from app.models.payment_model import PaymentModel
+from app.models.descuento_detalles_model import DescuentoDetallesModel
 from app.views.containers.modal_alert import ModalAlert
 from app.core.enums.e_prestamos_model import E_PRESTAMOS
 from app.core.invokers.file_open_invoker import FileOpenInvoker
@@ -15,6 +18,8 @@ class PrestamosContainer(ft.Container):
         super().__init__(expand=True, padding=20)
         self.page = AppState().page
         self.loan_model = LoanModel()
+        self.payment_model = PaymentModel()
+        self.detalles_model = DescuentoDetallesModel()
         self.E = E_PRESTAMOS
         self.tabla_prestamos = ft.DataTable(columns=[], rows=[], expand=True)
 
@@ -77,17 +82,38 @@ class PrestamosContainer(ft.Container):
             ft.DataColumn(ft.Text("Empleado")),
             ft.DataColumn(ft.Text("Monto")),
             ft.DataColumn(ft.Text("Saldo")),
-            ft.DataColumn(ft.Text("Dinero Pagado")),      # ✅ NUEVO
+            ft.DataColumn(ft.Text("Dinero Pagado")),
             ft.DataColumn(ft.Text("Estado")),
             ft.DataColumn(ft.Text("Fecha Solicitud")),
-            ft.DataColumn(ft.Text("Acciones")),           # ✅ NUEVO
+            ft.DataColumn(ft.Text("Acciones")),
         ]
-
 
         self.tabla_prestamos.rows = []
 
         for p in prestamos:
             dinero_pagado = p[self.E.PRESTAMO_MONTO.value] - p[self.E.PRESTAMO_SALDO.value]
+
+            id_pago_nomina = self.payment_model.get_pago_id_por_empleado_y_estado(
+                numero_nomina=p[self.E.PRESTAMO_NUMERO_NOMINA.value],
+                estado="pendiente"
+            )
+
+            # 🔁 Actualización dinámica del préstamo en la tabla de pagos
+            if id_pago_nomina:
+                self.payment_model.update_pago_completo(id_pago_nomina, {})
+                self.detalles_model.guardar_o_actualizar_detalles(
+                    id_pago=id_pago_nomina,
+                    aplicado_imss=False,
+                    monto_imss=0.0,
+                    aplicado_transporte=False,
+                    monto_transporte=0.0,
+                    aplicado_comida=False,
+                    monto_comida=0.0,
+                    aplicado_extra=False,
+                    descripcion_extra="",
+                    monto_extra=0.0
+                )
+
             fila = ft.DataRow(cells=[
                 ft.DataCell(ft.Text(str(p[self.E.PRESTAMO_ID.value]))),
                 ft.DataCell(ft.Text(str(p[self.E.PRESTAMO_NUMERO_NOMINA.value]))),
@@ -96,11 +122,11 @@ class PrestamosContainer(ft.Container):
                 ft.DataCell(ft.Text(f"${dinero_pagado:,.2f}")),
                 ft.DataCell(ft.Text(p[self.E.PRESTAMO_ESTADO.value])),
                 ft.DataCell(ft.Text(p[self.E.PRESTAMO_FECHA_SOLICITUD.value])),
-                ft.DataCell(self._build_acciones_cell(p))  # ✅ Agregado correctamente
+                ft.DataCell(self._build_acciones_cell(p, id_pago_nomina))
             ])
             self.tabla_prestamos.rows.append(fila)
 
-    def _build_acciones_cell(self, prestamo):
+    def _build_acciones_cell(self, prestamo, id_pago_nomina):
         def on_guardar_edicion(_):
             nuevo_monto_str = monto_input.value.strip()
             nuevo_estado = estado_dropdown.value
@@ -135,7 +161,6 @@ class PrestamosContainer(ft.Container):
         def on_cancelar_edicion(_):
             self._actualizar_vista_prestamos()
 
-        # ✅ Ya corregido sin usar ContainerStyle
         monto_input = ft.TextField(hint_text="Monto", expand=True, width=100)
 
         estado_dropdown = ft.Dropdown(
@@ -170,10 +195,13 @@ class PrestamosContainer(ft.Container):
                 icon=ft.icons.LIST_ALT,
                 tooltip="Ver pagos del préstamo",
                 on_click=lambda _: self.page.go(
-                    f"/home/prestamos/pagosprestamos?id_prestamo={prestamo[self.E.PRESTAMO_ID.value]}"
+                    f"/home/prestamos/pagosprestamos?{urlencode({'id_prestamo': prestamo[self.E.PRESTAMO_ID.value], 'id_pago': id_pago_nomina})}"
                 )
             )
         ], spacing=5)
+
+    def recargar_datos(self):
+        self._actualizar_vista_prestamos()
 
 
     def _reemplazar_fila_con_edicion(self, prestamo, monto_input, estado_dropdown, on_guardar, on_cancelar):

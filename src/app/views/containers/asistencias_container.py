@@ -15,7 +15,11 @@ from tabulate import tabulate
 
 class AsistenciasContainer(ft.Container):
     def __init__(self):
-        super().__init__(expand=True, padding=20)
+        super().__init__(
+            expand=True,
+            padding=20,
+            alignment=ft.alignment.top_center
+        )
 
         self.page = AppState().page
         self.asistencia_model = AssistanceModel()
@@ -39,12 +43,13 @@ class AsistenciasContainer(ft.Container):
 
         self.window_snackbar = WindowSnackbar(self.page)
         self.table = None
-        self.tabla_vacia = True  # ✅ inicialización correcta
+        self.tabla_vacia = True
 
         self.scroll_column = ft.Column(
             controls=[],
             scroll=ft.ScrollMode.ALWAYS,
-            expand=True
+            expand=True,
+            alignment=ft.MainAxisAlignment.START
         )
 
         self.import_button = self._build_action_button(
@@ -65,46 +70,11 @@ class AsistenciasContainer(ft.Container):
             on_tap=self._insertar_asistencia_desde_columna
         )
 
-        self.content = ft.Column(
-            controls=[
-                ft.Text("Registro de Asistencias", size=24, weight="bold", text_align=ft.TextAlign.CENTER),
-                ft.Container(
-                    alignment=ft.alignment.center_right,
-                    padding=ft.padding.only(right=60, bottom=10),
-                    content=ft.Row(
-                        spacing=10,
-                        controls=[
-                            self.import_button,
-                            self.export_button,
-                            self.new_column_button
-                        ]
-                    )
-                ),
-                ft.Container(
-                    alignment=ft.alignment.top_center,
-                    expand=True,
-                    padding=ft.padding.only(top=10, left=20, right=20, bottom=30),
-                    content=ft.Row(
-                        expand=True,
-                        controls=[
-                            ft.Column(
-                                expand=True,
-                                scroll=ft.ScrollMode.ALWAYS,
-                                controls=[self.scroll_column]
-                            )
-                        ],
-                        scroll=ft.ScrollMode.ALWAYS
-                    )
-                )
-            ],
-            spacing=20,
-            expand=True
-        )
-
-
-
+        self.content = self._build_content()
         self._actualizar_tabla()
         self.page.update()
+
+
 
     def _get_sort_icon(self, key):
         if self.sort_key == key:
@@ -123,36 +93,16 @@ class AsistenciasContainer(ft.Container):
         datos = self.asistencia_model.get_all()["data"]
         datos.sort(key=lambda x: x.get(self.sort_key, 0), reverse=not self.sort_asc)
 
-        def build_col(label, key, width=140):
-            return ft.DataColumn(
-                ft.Container(
-                    content=ft.Row(
-                        [
-                            ft.Text(label, weight=ft.FontWeight.BOLD),
-                            ft.IconButton(
-                                icon=self._get_sort_icon(key),
-                                icon_size=16,
-                                tooltip=f"Ordenar por {label}",
-                                on_click=lambda e, k=key: self._sort_by(k)
-                            )
-                        ],
-                        alignment=ft.MainAxisAlignment.START
-                    ),
-                    alignment=ft.alignment.center_left,
-                    width=width
-                )
-            )
-
         columnas = [
-            build_col("ID Empleado", "numero_nomina", width=110),
+            self._build_col("ID Empleado", "numero_nomina", width=110),
             ft.DataColumn(ft.Container(ft.Text("Empleado", weight="bold"), width=220)),
-            build_col("Fecha", "fecha", width=130),
+            self._build_col("Fecha", "fecha", width=130),
             ft.DataColumn(ft.Container(ft.Text("Entrada", weight="bold"), width=110)),
             ft.DataColumn(ft.Container(ft.Text("Salida", weight="bold"), width=110)),
             ft.DataColumn(ft.Container(ft.Text("Retardo", weight="bold"), width=110)),
-            build_col("Estado", "estado", width=130),
+            self._build_col("Estado", "estado", width=130),
             ft.DataColumn(ft.Container(ft.Text("Horas Trabajadas", weight="bold"), width=150)),
-            ft.DataColumn(ft.Container(ft.Text("Acciones", weight="bold"), width=120))
+            ft.DataColumn(ft.Container(ft.Text("Acciones", weight="bold"), width=120)),
         ]
 
         filas = []
@@ -190,26 +140,87 @@ class AsistenciasContainer(ft.Container):
                     ft.DataCell(ft.Text(limpiar("retardo"), style=estilo)),
                     ft.DataCell(ft.Text(limpiar("estado"), style=estilo)),
                     ft.DataCell(ft.Text(limpiar("tiempo_trabajo"), style=estilo)),
-                    ft.DataCell(ft.Row([editar_btn, eliminar_btn], spacing=5))
+                    ft.DataCell(ft.Row([editar_btn, eliminar_btn], spacing=5)),
                 ])
                 filas.append(fila)
-
             except Exception as e:
                 print(f"❌ Error al construir fila (Empleado {reg.get('numero_nomina')}, Fecha {reg.get('fecha')}): {e}")
 
-        self.tabla_vacia = len(filas) == 0  # ✅ después de construir todas las filas
-
-        self.table = ft.DataTable(
-            expand=True,
-            columns=columnas,
-            rows=filas,
-            column_spacing=25,
-            horizontal_lines=ft.BorderSide(1)
-        )
-
+        self.tabla_vacia = len(filas) == 0
         self.scroll_column.controls.clear()
-        self.scroll_column.controls.append(self.table)
+
+        if not self.tabla_vacia:
+            self.table = ft.DataTable(
+                expand=True,
+                columns=columnas,
+                rows=filas,
+                column_spacing=25,
+                horizontal_lines=ft.BorderSide(1),
+            )
+            self.scroll_column.controls.append(
+                ft.Container(
+                    alignment=ft.alignment.top_center,
+                    padding=ft.padding.only(top=10),
+                    content=ft.Container(
+                        width=1200,
+                        content=self.table
+                    )
+                )
+            )
+        else:
+            self.scroll_column.controls.append(
+                ft.Container(
+                    alignment=ft.alignment.top_center,
+                    padding=ft.padding.only(top=20),
+                    content=ft.Text("No hay asistencias registradas.", size=16, color=ft.colors.GREY),
+                )
+            )
+
         self.page.update()
+
+
+
+    def _build_content(self):
+        return ft.Column(
+            expand=True,
+            alignment=ft.MainAxisAlignment.START,
+            horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+            spacing=20,
+            controls=[
+                ft.Text(
+                    "Registro de Asistencias",
+                    size=24,
+                    weight="bold",
+                    text_align=ft.TextAlign.CENTER
+                ),
+                ft.Container(
+                    alignment=ft.alignment.center_right,
+                    padding=ft.padding.only(right=60, bottom=10),
+                    content=ft.Row(
+                        spacing=10,
+                        controls=[
+                            self.import_button,
+                            self.export_button,
+                            self.new_column_button
+                        ]
+                    )
+                ),
+                ft.Container(
+                    alignment=ft.alignment.top_center,
+                    padding=ft.padding.symmetric(horizontal=20),
+                    content=ft.Column(
+                        expand=True,
+                        horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                        controls=[
+                            ft.Container(
+                                width=1200,  # Ancho fijo
+                                content=self.scroll_column,
+                            )
+                        ]
+                    )
+                )
+            ]
+        )
 
 
     def _confirmar_eliminacion(self, numero, fecha, e=None):
@@ -584,3 +595,23 @@ class AsistenciasContainer(ft.Container):
 
         self.table.update()
         self.page.update()
+
+    def _build_col(self, label, key, width=140):
+        return ft.DataColumn(
+            ft.Container(
+                content=ft.Row(
+                    [
+                        ft.Text(label, weight=ft.FontWeight.BOLD),
+                        ft.IconButton(
+                            icon=self._get_sort_icon(key),
+                            icon_size=16,
+                            tooltip=f"Ordenar por {label}",
+                            on_click=lambda e, k=key: self._sort_by(k)
+                        )
+                    ],
+                    alignment=ft.MainAxisAlignment.START
+                ),
+                alignment=ft.alignment.center_left,
+                width=width
+            )
+        )

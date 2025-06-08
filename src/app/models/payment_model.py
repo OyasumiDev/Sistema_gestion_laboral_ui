@@ -534,3 +534,20 @@ class PaymentModel:
             return {"status": "error", "message": str(ex)}
 
 
+    def get_pago_id_por_empleado_y_estado(self, numero_nomina: int, estado: str) -> int | None:
+        """
+        Devuelve el ID del pago de nómina asociado a un número de empleado y estado específico (ej. 'pendiente').
+        """
+        try:
+            query = f"""
+                SELECT {E_PAYMENT.ID.value} AS id_pago
+                FROM {E_PAYMENT.TABLE.value}
+                WHERE {E_PAYMENT.NUMERO_NOMINA.value} = %s AND {E_PAYMENT.ESTADO.value} = %s
+                ORDER BY {E_PAYMENT.FECHA_PAGO.value} DESC
+                LIMIT 1
+            """
+            result = self.db.get_data(query, (numero_nomina, estado), dictionary=True)
+            return result["id_pago"] if result else None
+        except Exception as ex:
+            print(f"❌ Error en get_pago_id_por_empleado_y_estado: {ex}")
+            return None

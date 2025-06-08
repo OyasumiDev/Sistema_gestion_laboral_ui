@@ -272,3 +272,16 @@ class LoanPaymentModel:
         """
         resultado = self.db.get_data(query, (id_pago_nomina, id_prestamo), dictionary=True)
         return resultado.get("cantidad", 0) > 0
+
+    def get_total_pagado_por_prestamo(self, id_prestamo: int) -> float:
+        try:
+            query = f"""
+                SELECT IFNULL(SUM(monto_pagado), 0) AS total
+                FROM pagos_prestamo
+                WHERE id_prestamo = %s AND aplicado = 1
+            """
+            result = self.db.get_data(query, (id_prestamo,), dictionary=True)
+            return float(result.get("total", 0.0)) if result else 0.0
+        except Exception as ex:
+            print(f"❌ Error al obtener total pagado por préstamo: {ex}")
+            return 0.0
