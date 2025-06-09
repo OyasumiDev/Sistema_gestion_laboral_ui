@@ -9,6 +9,7 @@ from app.models.assistance_model import AssistanceModel
 from app.models.loan_model import LoanModel
 from app.models.loan_payment_model import LoanPaymentModel
 from app.models.descuento_detalles_model import DescuentoDetallesModel
+from app.models.detalles_pagos_prestamo_model import DetallesPagosPrestamoModel
 from app.views.containers.modal_alert import ModalAlert
 from app.views.containers.date_modal_selector import DateModalSelector
 from app.views.containers.modal_descuentos import ModalDescuentos
@@ -32,8 +33,8 @@ class PagosContainer(ft.Container):
         self.loan_model = LoanModel()
         self.loan_payment_model = LoanPaymentModel()
         self.detalles_model = DescuentoDetallesModel()
+        self.detalles_prestamo_model = DetallesPagosPrestamoModel()  # ✅ Nuevo: para préstamos pendientes
 
-        
         # rangos de fechas
         self.fecha_inicio_id = None
         self.fecha_fin_id = None
@@ -52,11 +53,14 @@ class PagosContainer(ft.Container):
         self.date_selector_id = DateModalSelector(on_dates_confirmed=self._set_fechas_id)
         self.date_selector_periodo = DateModalSelector(on_dates_confirmed=self._generar_por_periodo)
 
+        # UI tabla y resumen
         self.tabla_pagos = ft.DataTable(columns=[], rows=[], expand=True)
         self.resumen_pagos = ft.Text(value="", weight=ft.FontWeight.BOLD, size=14)
 
+        # construir interfaz
         self._build()
         self._cargar_pagos()
+
 
     # ------------------------------------------------------------------ UI
     def _build(self):
@@ -75,7 +79,10 @@ class PagosContainer(ft.Container):
                             ft.Text("ÁREA DE PAGOS", style=ft.TextThemeStyle.TITLE_MEDIUM),
                             self._build_buttons_area(),
                             ft.Divider(),
-                            self.tabla_pagos,
+                            ft.Container(  # ✅ fuerza scroll visible cuando la tabla crece
+                                expand=True,
+                                content=self.tabla_pagos
+                            ),
                             ft.Container(
                                 content=self.resumen_pagos,
                                 padding=10,
@@ -86,6 +93,8 @@ class PagosContainer(ft.Container):
                 ],
             ),
         )
+
+
 
     def _build_buttons_area(self):
         return ft.Row(
@@ -211,15 +220,25 @@ class PagosContainer(ft.Container):
                 self.tabla_pagos.rows.append(ft.DataRow(cells=[ft.DataCell(ft.Text("-")) for _ in range(15)]))
             else:
                 for p in pagos:
-                    if not p:
-                        continue
-
                     id_pago = p["id_pago"]
                     numero_nomina = p["numero_nomina"]
                     estado = p["estado"]
 
-                    descuentos = self._sumar_descuentos_totales(id_pago)
-                    prestamos = self.loan_payment_model.get_total_prestamos_por_pago(id_pago)
+                    descuentos = float(self._sumar_descuentos_totales(id_pago))
+                    prestamos_confirmados = self.loan_payment_model.get_total_prestamos_por_pago(id_pago)
+                    prestamos_temporales = self.detalles_prestamo_model.calcular_total_pendiente_por_pago(id_pago)
+                    prestamos = float(prestamos_confirmados) + float(prestamos_temporales)
+
+                    monto_total = float(p["monto_total"])
+                    deposito_valor = float(self.depositos_temporales.get(id_pago, p["pago_deposito"]))
+                    pago_efectivo, ajuste_saldo = self._recalcular_fila_pago(p, descuentos, prestamos, deposito_valor)
+                    saldo = ajuste_saldo
+
+                    color_borde = (
+                        ft.colors.RED if saldo < -25 else
+                        ft.colors.GREY if estado == "pagado" else
+                        ft.colors.BLUE
+                    )
 
                     acciones = (
                         ft.DataCell(ft.Text("✔️")) if estado == "pagado" else
@@ -239,7 +258,7 @@ class PagosContainer(ft.Container):
                         )
                     )
 
-                    prestamo_activo = self.loan_model.get_prestamo_activo_por_empleado(numero_nomina)  # ✅ corregido
+                    prestamo_activo = self.loan_model.get_prestamo_activo_por_empleado(numero_nomina)
                     boton_prestamo = ft.IconButton(
                         icon=ft.icons.EDIT_NOTE,
                         tooltip="Editar préstamos" if prestamo_activo else "Sin préstamo activo",
@@ -248,8 +267,21 @@ class PagosContainer(ft.Container):
                         on_click=lambda e, pago=p: self._abrir_modal_prestamos(pago, e)
                     )
 
-
-
+                    if estado == "pagado":
+                        campo_deposito = ft.Text(f"${deposito_valor:.2f}")
+                    else:
+                        campo_deposito = ft.Container(
+                            width=100,
+                            content=ft.TextField(
+                                value="0.0" if deposito_valor == 0 else str(deposito_valor),
+                                hint_text="0.0",
+                                height=36,
+                                text_align=ft.TextAlign.RIGHT,
+                                border_color=color_borde,
+                                on_focus=lambda e: setattr(e.control, "value", ""),
+                                on_change=lambda e, pid=id_pago: self._validar_y_actualizar_deposito(pid, e)
+                            )
+                        )
 
                     self.tabla_pagos.rows.append(
                         ft.DataRow(
@@ -277,10 +309,10 @@ class PagosContainer(ft.Container):
                                         boton_prestamo
                                     ])
                                 ),
-                                ft.DataCell(ft.Text(f"${p['saldo']:.2f}")),
-                                ft.DataCell(ft.Text(f"${p['pago_deposito']:.2f}")),
-                                ft.DataCell(ft.Text(f"${p['pago_efectivo']:.2f}")),
-                                ft.DataCell(ft.Text(f"${p['monto_total']:.2f}")),
+                                ft.DataCell(ft.Text(f"${saldo:.2f}")),
+                                ft.DataCell(campo_deposito),
+                                ft.DataCell(ft.Text(f"${pago_efectivo:.2f}")),
+                                ft.DataCell(ft.Text(f"${monto_total:.2f}")),
                                 acciones,
                                 ft.DataCell(ft.Text("Pagado" if estado == "pagado" else "Pendiente")),
                             ]
@@ -297,15 +329,85 @@ class PagosContainer(ft.Container):
             ModalAlert.mostrar_info("Error al cargar pagos", str(ex))
 
 
+    def _actualizar_deposito(self, id_pago: int, nuevo_valor: str):
+        try:
+            nuevo_valor = nuevo_valor.strip()
+            monto = float(nuevo_valor)
+            if monto <= 0:
+                raise ValueError("Monto no permitido")
+            self.depositos_temporales[id_pago] = monto
+        except:
+            self.depositos_temporales[id_pago] = 0.0
+
+        self._actualizar_fila_pago(id_pago)
+
+    def _actualizar_fila_pago(self, id_pago: int):
+        try:
+            for i, row in enumerate(self.tabla_pagos.rows):
+                celdas = row.cells
+                if int(celdas[0].content.value) == id_pago:
+                    # Recalcular datos dinámicos
+                    descuentos = float(self._sumar_descuentos_totales(id_pago))
+                    prestamos_confirmados = self.loan_payment_model.get_total_prestamos_por_pago(id_pago)
+                    prestamos_temporales = self.detalles_prestamo_model.calcular_total_pendiente_por_pago(id_pago)
+                    prestamos = float(prestamos_confirmados) + float(prestamos_temporales)
+
+                    pago_actual = next((p for p in self.payment_model.db.get_data_list("SELECT * FROM pagos", (), True) if p["id_pago"] == id_pago), None)
+                    if not pago_actual:
+                        return
+
+                    monto_total = float(pago_actual["monto_total"])
+                    deposito_valor = float(self.depositos_temporales.get(id_pago, pago_actual["pago_deposito"]))
+                    pago_efectivo, saldo = self._recalcular_fila_pago(pago_actual, descuentos, prestamos, deposito_valor)
+
+                    # Actualizar celdas necesarias
+                    celdas[7].content.controls[0].value = f"${descuentos:.2f}"
+                    celdas[8].content.controls[0].value = f"${prestamos:.2f}"
+                    celdas[9].content.value = f"${saldo:.2f}"
+                    celdas[11].content.value = f"${pago_efectivo:.2f}"
+
+                    self.page.update()
+                    return
+        except Exception as ex:
+            print(f"❌ Error al actualizar fila en tiempo real: {ex}")
+
+            
+            
+    def redondear_a_50(self, valor: float) -> tuple[float, float]:
+        sobrante = valor % 50
+        if sobrante == 0:
+            return valor, 0.0
+        if sobrante >= 25:
+            ajuste = 50 - sobrante
+            return valor + ajuste, -ajuste
+        else:
+            ajuste = sobrante
+            return valor - ajuste, ajuste
+
+    def _recalcular_fila_pago(self, p: dict, descuentos: float, prestamos: float, deposito: float) -> tuple[float, float]:
+        monto_total = float(p["monto_total"])
+        base_efectivo = monto_total - descuentos - prestamos - deposito
+        if base_efectivo < 0:
+            return 0.0, monto_total - descuentos - prestamos - deposito
+        efectivo_redondeado, ajuste = self.redondear_a_50(base_efectivo)
+        return efectivo_redondeado, ajuste
 
     def _sumar_descuentos_totales(self, id_pago):
         detalles = self.detalles_model.obtener_por_id_pago(id_pago)
+
+        def to_float(value):
+            try:
+                return float(value)
+            except:
+                return 0.0
+
         return (
-            Decimal(detalles.get("monto_imss", 0)) +
-            Decimal(detalles.get("monto_transporte", 0)) +
-            Decimal(detalles.get("monto_comida", 0)) +
-            Decimal(detalles.get("monto_extra", 0))
+            to_float(detalles.get("monto_imss")) +
+            to_float(detalles.get("monto_transporte")) +
+            to_float(detalles.get("monto_comida")) +
+            to_float(detalles.get("monto_extra"))
         )
+
 
     def _sumar_prestamos_totales(self, id_pago: int) -> Decimal:
         try:
@@ -349,6 +451,7 @@ class PagosContainer(ft.Container):
             )
 
             if confirmacion["status"] == "success":
+                # ✅ también podrías aplicar aquí la lógica de mover los detalles temporales como definitivos si lo deseas
                 ModalAlert.mostrar_info("Éxito", confirmacion["message"])
                 self._cargar_pagos()
             else:
@@ -437,3 +540,41 @@ class PagosContainer(ft.Container):
         self.input_id.border_color = ft.colors.OUTLINE if not texto or texto.isdigit() else ft.colors.RED_400
         self.page.update()
 
+    def _validar_y_actualizar_deposito(self, id_pago: int, e: ft.ControlEvent):
+        try:
+            texto = e.control.value.strip()
+            monto = float(texto)
+
+            if monto <= 0:
+                raise ValueError("Monto debe ser positivo")
+
+            self.depositos_temporales[id_pago] = monto
+
+            # Ajuste de ancho entre 120 y 240 px según la longitud
+            longitud = len(texto)
+            e.control.width = max(120, min(240, 12 * longitud))
+
+            # Validar que el saldo no sea menor a -25
+            descuentos = float(self._sumar_descuentos_totales(id_pago))
+            prestamos_confirmados = self.loan_payment_model.get_total_prestamos_por_pago(id_pago)
+            prestamos_temporales = self.detalles_prestamo_model.calcular_total_pendiente_por_pago(id_pago)
+            prestamos = float(prestamos_confirmados) + float(prestamos_temporales)
+
+            pago_actual = next(
+                (p for p in self.payment_model.db.get_data_list("SELECT * FROM pagos", (), True) if p["id_pago"] == id_pago),
+                None
+            )
+            if not pago_actual:
+                return
+
+            monto_total = float(pago_actual["monto_total"])
+            _, saldo = self._recalcular_fila_pago(pago_actual, descuentos, prestamos, monto)
+
+            e.control.border_color = ft.colors.RED if saldo < -25 else ft.colors.BLUE
+
+        except:
+            e.control.border_color = ft.colors.RED
+            e.control.width = 120  # ancho por defecto si hay error
+
+        self.page.update()
+        self._actualizar_fila_pago(id_pago)

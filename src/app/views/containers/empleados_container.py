@@ -39,40 +39,48 @@ class EmpleadosContainer(ft.Container):
         self.table_container = ft.Container(
             expand=True,
             alignment=ft.alignment.top_center,
-            content=ft.Row(
+            content=ft.Column(
                 controls=[],
-                expand=True,
-                alignment=ft.MainAxisAlignment.CENTER
+                alignment=ft.MainAxisAlignment.START,  # Alinea hacia arriba
+                horizontal_alignment=ft.CrossAxisAlignment.CENTER,  # Centra horizontalmente
+                expand=True
             )
         )
 
         self.content = ft.Container(
             expand=True,
             padding=20,
-            content=ft.Row(
+            content=ft.Column(
                 expand=True,
-                scroll=ft.ScrollMode.ALWAYS,  # Scroll horizontal
+                alignment=ft.MainAxisAlignment.START,
+                spacing=10,
                 controls=[
-                    ft.Column(
-                        expand=True,
-                        scroll=ft.ScrollMode.ALWAYS,  # Scroll vertical
+                    ft.Row(
                         spacing=10,
+                        alignment=ft.MainAxisAlignment.START,
                         controls=[
-                            ft.Row(
-                                spacing=10,
-                                controls=[
-                                    self._build_import_button(),
-                                    self._build_export_button(),
-                                    self._build_add_button()
-                                ]
-                            ),
-                            ft.Divider(height=10),
-                            self.table_container
+                            self._build_import_button(),
+                            self._build_export_button(),
+                            self._build_add_button()
                         ]
+                    ),
+                    ft.Divider(height=1),
+                    ft.Container(
+                        alignment=ft.alignment.top_center,
+                        padding=ft.padding.only(top=10),
+                        expand=True,
+                        content=ft.Column(
+                            alignment=ft.MainAxisAlignment.START,
+                            horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                            scroll=ft.ScrollMode.ALWAYS,
+                            controls=[self.table_container]
+                        )
                     )
                 ]
             )
         )
+
+
 
 
         self._actualizar_tabla("")
@@ -105,6 +113,7 @@ class EmpleadosContainer(ft.Container):
         self.table_container.content.controls.clear()
         self.table_container.content.controls.append(self.table)
         self.page.update()
+
 
     def _actualizar_tabla(self, path: str = "", fila_en_edicion=None):
         empleados_result = self.empleado_model.get_all()

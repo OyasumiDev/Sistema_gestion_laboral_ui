@@ -98,22 +98,6 @@ class PrestamosContainer(ft.Container):
                 estado="pendiente"
             )
 
-            # 🔁 Actualización dinámica del préstamo en la tabla de pagos
-            if id_pago_nomina:
-                self.payment_model.update_pago_completo(id_pago_nomina, {})
-                self.detalles_model.guardar_o_actualizar_detalles(
-                    id_pago=id_pago_nomina,
-                    aplicado_imss=False,
-                    monto_imss=0.0,
-                    aplicado_transporte=False,
-                    monto_transporte=0.0,
-                    aplicado_comida=False,
-                    monto_comida=0.0,
-                    aplicado_extra=False,
-                    descripcion_extra="",
-                    monto_extra=0.0
-                )
-
             fila = ft.DataRow(cells=[
                 ft.DataCell(ft.Text(str(p[self.E.PRESTAMO_ID.value]))),
                 ft.DataCell(ft.Text(str(p[self.E.PRESTAMO_NUMERO_NOMINA.value]))),
@@ -125,6 +109,7 @@ class PrestamosContainer(ft.Container):
                 ft.DataCell(self._build_acciones_cell(p, id_pago_nomina))
             ])
             self.tabla_prestamos.rows.append(fila)
+
 
     def _build_acciones_cell(self, prestamo, id_pago_nomina):
         def on_guardar_edicion(_):

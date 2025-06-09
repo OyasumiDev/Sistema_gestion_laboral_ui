@@ -76,10 +76,11 @@ class AsistenciasContainer(ft.Container):
 
 
 
-    def _get_sort_icon(self, key):
-        if self.sort_key == key:
-            return ft.icons.ARROW_UPWARD if self.sort_asc else ft.icons.ARROW_DOWNWARD
-        return ft.icons.UNFOLD_MORE
+    def _icono_orden(self, columna):
+        if self.sort_key == columna:
+            return "▲" if self.sort_asc else "▼"
+        return "⇅"
+
 
     def _sort_by(self, key):
         if self.sort_key == key:
@@ -89,26 +90,26 @@ class AsistenciasContainer(ft.Container):
             self.sort_asc = True
         self._actualizar_tabla()
 
+
     def _actualizar_tabla(self, _=None):
         datos = self.asistencia_model.get_all()["data"]
         datos.sort(key=lambda x: x.get(self.sort_key, 0), reverse=not self.sort_asc)
 
         columnas = [
             self._build_col("ID Empleado", "numero_nomina", width=110),
-            ft.DataColumn(ft.Container(ft.Text("Empleado", weight="bold"), width=220)),
+            ft.DataColumn(ft.Container(ft.Text("Empleado"), width=220)),
             self._build_col("Fecha", "fecha", width=130),
-            ft.DataColumn(ft.Container(ft.Text("Entrada", weight="bold"), width=110)),
-            ft.DataColumn(ft.Container(ft.Text("Salida", weight="bold"), width=110)),
-            ft.DataColumn(ft.Container(ft.Text("Retardo", weight="bold"), width=110)),
+            ft.DataColumn(ft.Container(ft.Text("Entrada"), width=110)),
+            ft.DataColumn(ft.Container(ft.Text("Salida"), width=110)),
+            ft.DataColumn(ft.Container(ft.Text("Retardo"), width=110)),
             self._build_col("Estado", "estado", width=130),
-            ft.DataColumn(ft.Container(ft.Text("Horas Trabajadas", weight="bold"), width=150)),
-            ft.DataColumn(ft.Container(ft.Text("Acciones", weight="bold"), width=120)),
+            ft.DataColumn(ft.Container(ft.Text("Horas Trabajadas"), width=150)),
+            ft.DataColumn(ft.Container(ft.Text("Acciones"), width=120)),
         ]
 
         filas = []
         for reg in datos:
             try:
-                estilo = ft.TextStyle(color=ft.colors.RED) if reg.get("estado") == "incompleto" else None
                 numero = reg.get("numero_nomina")
                 fecha = reg.get("fecha")
 
@@ -117,110 +118,116 @@ class AsistenciasContainer(ft.Container):
                     icon_size=20,
                     icon_color=ft.colors.RED_600,
                     tooltip="Eliminar registro",
-                    on_click=functools.partial(self._confirmar_eliminacion, numero, fecha)
+                    on_click=lambda e, n=numero, f=fecha: self._confirmar_eliminacion(n, f)
                 )
 
                 editar_btn = ft.IconButton(
                     icon=ft.icons.EDIT,
                     icon_size=20,
-                    icon_color=ft.colors.BLUE,
+                    icon_color=ft.colors.BLUE_600,
                     tooltip="Editar asistencia",
-                    on_click=functools.partial(self._editar_asistencia, numero, fecha)
+                    on_click=lambda e, n=numero, f=fecha: self._editar_asistencia(n, f)
                 )
+
 
                 def limpiar(campo):
                     return str(reg.get(campo)) if reg.get(campo) not in [None, ""] else "-"
 
                 fila = ft.DataRow(cells=[
-                    ft.DataCell(ft.Text(limpiar("numero_nomina"), style=estilo)),
-                    ft.DataCell(ft.Text(limpiar("nombre"), style=estilo)),
-                    ft.DataCell(ft.Text(limpiar("fecha"), style=estilo)),
-                    ft.DataCell(ft.Text(limpiar("hora_entrada"), style=estilo)),
-                    ft.DataCell(ft.Text(limpiar("hora_salida"), style=estilo)),
-                    ft.DataCell(ft.Text(limpiar("retardo"), style=estilo)),
-                    ft.DataCell(ft.Text(limpiar("estado"), style=estilo)),
-                    ft.DataCell(ft.Text(limpiar("tiempo_trabajo"), style=estilo)),
+                    ft.DataCell(ft.Text(limpiar("numero_nomina"))),
+                    ft.DataCell(ft.Text(limpiar("nombre"))),
+                    ft.DataCell(ft.Text(limpiar("fecha"))),
+                    ft.DataCell(ft.Text(limpiar("hora_entrada"))),
+                    ft.DataCell(ft.Text(limpiar("hora_salida"))),
+                    ft.DataCell(ft.Text(limpiar("retardo"))),
+                    ft.DataCell(ft.Text(limpiar("estado"))),
+                    ft.DataCell(ft.Text(limpiar("tiempo_trabajo"))),
                     ft.DataCell(ft.Row([editar_btn, eliminar_btn], spacing=5)),
                 ])
                 filas.append(fila)
             except Exception as e:
                 print(f"❌ Error al construir fila (Empleado {reg.get('numero_nomina')}, Fecha {reg.get('fecha')}): {e}")
 
-        self.tabla_vacia = len(filas) == 0
         self.scroll_column.controls.clear()
 
-        if not self.tabla_vacia:
-            self.table = ft.DataTable(
-                expand=True,
-                columns=columnas,
-                rows=filas,
-                column_spacing=25,
-                horizontal_lines=ft.BorderSide(1),
-            )
-            self.scroll_column.controls.append(
-                ft.Container(
-                    alignment=ft.alignment.top_center,
-                    padding=ft.padding.only(top=10),
-                    content=ft.Container(
-                        width=1200,
-                        content=self.table
-                    )
+        self.table = ft.DataTable(
+            expand=True,
+            columns=columnas,
+            rows=filas if filas else [
+                ft.DataRow(
+                    cells=[ft.DataCell(ft.Text("-", color=ft.colors.GREY_500)) for _ in columnas]
                 )
+            ],
+            column_spacing=25,
+            horizontal_lines=None,
+        )
+
+        self.scroll_column.controls.append(
+            ft.Container(
+                alignment=ft.alignment.center,
+                expand=True,
+                content=self.table
             )
-        else:
+        )
+
+        if not filas:
             self.scroll_column.controls.append(
                 ft.Container(
                     alignment=ft.alignment.top_center,
                     padding=ft.padding.only(top=20),
-                    content=ft.Text("No hay asistencias registradas.", size=16, color=ft.colors.GREY),
+                    content=ft.Text(
+                        "No hay asistencias registradas.",
+                        size=16,
+                        color=ft.colors.GREY
+                    ),
                 )
             )
 
         self.page.update()
 
 
-
     def _build_content(self):
-        return ft.Column(
+        return ft.Container(
             expand=True,
-            alignment=ft.MainAxisAlignment.START,
-            horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-            spacing=20,
-            controls=[
-                ft.Text(
-                    "Registro de Asistencias",
-                    size=24,
-                    weight="bold",
-                    text_align=ft.TextAlign.CENTER
-                ),
-                ft.Container(
-                    alignment=ft.alignment.center_right,
-                    padding=ft.padding.only(right=60, bottom=10),
-                    content=ft.Row(
-                        spacing=10,
-                        controls=[
-                            self.import_button,
-                            self.export_button,
-                            self.new_column_button
-                        ]
+            content=ft.Column(
+                scroll=ft.ScrollMode.ALWAYS,  # ✅ Scroll vertical siempre visible
+                alignment=ft.MainAxisAlignment.START,
+                horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                spacing=20,
+                controls=[
+                    ft.Text(
+                        "Registro de Asistencias",
+                        size=24,
+                        weight="bold",
+                        text_align=ft.TextAlign.CENTER
+                    ),
+                    ft.Container(
+                        alignment=ft.alignment.center_left,
+                        padding=ft.padding.only(left=60),
+                        content=ft.Row(
+                            spacing=10,
+                            alignment=ft.MainAxisAlignment.START,
+                            controls=[
+                                self.import_button,
+                                self.export_button,
+                                self.new_column_button
+                            ]
+                        )
+                    ),
+                    ft.Container(
+                        alignment=ft.alignment.center,
+                        padding=ft.padding.symmetric(horizontal=20),
+                        content=ft.Container(
+                            content=self.scroll_column,
+                            alignment=ft.alignment.center,
+                            margin=ft.margin.symmetric(horizontal="auto"),
+                        )
                     )
-                ),
-                ft.Container(
-                    alignment=ft.alignment.top_center,
-                    padding=ft.padding.symmetric(horizontal=20),
-                    content=ft.Column(
-                        expand=True,
-                        horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-                        controls=[
-                            ft.Container(
-                                width=1200,  # Ancho fijo
-                                content=self.scroll_column,
-                            )
-                        ]
-                    )
-                )
-            ]
+                ]
+            )
         )
+
+
 
 
     def _confirmar_eliminacion(self, numero, fecha, e=None):
@@ -601,11 +608,15 @@ class AsistenciasContainer(ft.Container):
             ft.Container(
                 content=ft.Row(
                     [
-                        ft.Text(label, weight=ft.FontWeight.BOLD),
-                        ft.IconButton(
-                            icon=self._get_sort_icon(key),
-                            icon_size=16,
-                            tooltip=f"Ordenar por {label}",
+                        ft.Text(label),
+                        ft.TextButton(
+                            content=ft.Text(self._icono_orden(key), size=12),
+                            style=ft.ButtonStyle(
+                                padding=0,
+                                overlay_color=ft.colors.TRANSPARENT,
+                                shape=ft.RoundedRectangleBorder(radius=0),
+                                color=ft.colors.GREY_600
+                            ),
                             on_click=lambda e, k=key: self._sort_by(k)
                         )
                     ],
@@ -615,3 +626,5 @@ class AsistenciasContainer(ft.Container):
                 width=width
             )
         )
+
+

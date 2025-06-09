@@ -93,3 +93,20 @@ class DetallesPagosPrestamoModel:
             return {"status": "success", "message": "Detalle eliminado correctamente"}
         except Exception as ex:
             return {"status": "error", "message": f"Error al eliminar: {ex}"}
+
+    def calcular_total_pendiente_por_pago(self, id_pago: int) -> float:
+        try:
+            query = f"""
+                SELECT 
+                    COALESCE(SUM({self.E.MONTO_GUARDADO.value} + {self.E.INTERES_GUARDADO.value}), 0) AS total
+                FROM {self.E.TABLE.value}
+                WHERE {self.E.ID_PAGO.value} = %s
+            """
+            resultado = self.db.get_data(query, (id_pago,), dictionary=True)
+            total = resultado.get("total", 0)
+            return float(total)  # 👈 aseguramos que nunca retorne Decimal
+        except Exception as ex:
+            print(f"❌ Error al calcular total pendiente: {ex}")
+            return 0.0
+
+
