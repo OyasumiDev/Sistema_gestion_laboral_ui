@@ -21,11 +21,6 @@ class EmpleadosContainer(ft.Container):
             "sueldo_por_hora": None
         }
 
-        self.controller = EmpleadosImportController(
-            page=self.page,
-            on_success=self._actualizar_tabla
-        )
-
         self.save_invoker = FileSaveInvoker(
             page=self.page,
             file_name="empleados.xlsx",
@@ -41,8 +36,8 @@ class EmpleadosContainer(ft.Container):
             alignment=ft.alignment.top_center,
             content=ft.Column(
                 controls=[],
-                alignment=ft.MainAxisAlignment.START,  # Alinea hacia arriba
-                horizontal_alignment=ft.CrossAxisAlignment.CENTER,  # Centra horizontalmente
+                alignment=ft.MainAxisAlignment.START,
+                horizontal_alignment=ft.CrossAxisAlignment.CENTER,
                 expand=True
             )
         )
@@ -59,8 +54,6 @@ class EmpleadosContainer(ft.Container):
                         spacing=10,
                         alignment=ft.MainAxisAlignment.START,
                         controls=[
-                            self._build_import_button(),
-                            self._build_export_button(),
                             self._build_add_button()
                         ]
                     ),
@@ -79,9 +72,6 @@ class EmpleadosContainer(ft.Container):
                 ]
             )
         )
-
-
-
 
         self._actualizar_tabla("")
 
@@ -114,7 +104,6 @@ class EmpleadosContainer(ft.Container):
         self.table_container.content.controls.append(self.table)
         self.page.update()
 
-
     def _actualizar_tabla(self, path: str = "", fila_en_edicion=None):
         empleados_result = self.empleado_model.get_all()
         empleados = empleados_result.get("data", [])
@@ -132,14 +121,6 @@ class EmpleadosContainer(ft.Container):
                     ft.dropdown.Option("activo"),
                     ft.dropdown.Option("inactivo")
                 ]) if en_edicion else ft.Text(e["estado"])
-            )
-
-            tipo_cell = (
-                ft.Dropdown(value=e["tipo_trabajador"], options=[
-                    ft.dropdown.Option("taller"),
-                    ft.dropdown.Option("externo"),
-                    ft.dropdown.Option("no definido")
-                ]) if en_edicion else ft.Text(e["tipo_trabajador"])
             )
 
             if en_edicion:
@@ -163,7 +144,7 @@ class EmpleadosContainer(ft.Container):
             else:
                 sueldo_cell = ft.Text(str(e["sueldo_por_hora"]))
 
-            def guardar_cambios(ev, id=numero, estado_cell=estado_cell, tipo_cell=tipo_cell, sueldo_cell=sueldo_cell):
+            def guardar_cambios(ev, id=numero, estado_cell=estado_cell, sueldo_cell=sueldo_cell):
                 try:
                     sueldo = float(sueldo_cell.value)
                     if sueldo < 0:
@@ -176,28 +157,20 @@ class EmpleadosContainer(ft.Container):
                     ModalAlert.mostrar_info("Error", "El sueldo debe ser un número positivo.")
                     return
 
-                def confirmar_guardado():
-                    resultado = self.empleado_model.update(
-                        id,
-                        estado=estado_cell.value,
-                        tipo_trabajador=tipo_cell.value,
-                        sueldo_por_hora=sueldo
-                    )
-                    if resultado["status"] == "success":
-                        ModalAlert.mostrar_info("Éxito", "Cambios guardados correctamente")
-                        self._actualizar_tabla()
-                    else:
-                        ModalAlert.mostrar_info("Error", f"No se pudo guardar: {resultado['message']}")
+                resultado = self.empleado_model.update(
+                    id,
+                    estado=estado_cell.value,
+                    sueldo_por_hora=sueldo
+                )
+                if resultado["status"] == "success":
+                    ModalAlert.mostrar_info("Éxito", "Cambios guardados correctamente")
+                    self._actualizar_tabla()
+                else:
+                    ModalAlert.mostrar_info("Error", f"No se pudo guardar: {resultado['message']}")
 
                 self.fila_editando = None
-                ModalAlert(
-                    title_text="¿Guardar cambios?",
-                    message=f"¿Deseas aplicar los cambios al empleado {id}?",
-                    on_confirm=confirmar_guardado
-                ).mostrar()
 
             def activar_edicion(ev, id=numero):
-                print(f"✏️ Editando fila {id}")
                 self._actualizar_tabla(fila_en_edicion=id)
 
             def confirmar_eliminar(ev, id=numero):
@@ -242,7 +215,6 @@ class EmpleadosContainer(ft.Container):
                 ft.DataCell(ft.Text(str(numero))),
                 ft.DataCell(ft.Text(e["nombre_completo"])),
                 ft.DataCell(estado_cell),
-                ft.DataCell(tipo_cell),
                 ft.DataCell(sueldo_cell),
                 ft.DataCell(acciones)
             ]))
@@ -253,40 +225,10 @@ class EmpleadosContainer(ft.Container):
                 ft.DataColumn(ft.Text(f"Nómina {self._icono_orden('numero_nomina')}"), on_sort=lambda _: self._ordenar_por_columna("numero_nomina")),
                 ft.DataColumn(ft.Text("Nombre")),
                 ft.DataColumn(ft.Text(f"Estado {self._icono_orden('estado')}"), on_sort=lambda _: self._ordenar_por_columna("estado")),
-                ft.DataColumn(ft.Text("Tipo Trabajador")),
                 ft.DataColumn(ft.Text(f"Sueldo por Hora {self._icono_orden('sueldo_por_hora')}"), on_sort=lambda _: self._ordenar_por_columna("sueldo_por_hora")),
                 ft.DataColumn(ft.Text("Eliminar-Editar"))
             ],
             rows=rows
-        )
-
-
-    def _build_import_button(self):
-        return ft.GestureDetector(
-            on_tap=lambda _: self.controller.file_invoker.open(),
-            content=ft.Container(
-                padding=8,
-                border_radius=12,
-                bgcolor=ft.colors.SURFACE_VARIANT,
-                content=ft.Row([
-                    ft.Image(src="assets/buttons/import-button.png", width=20, height=20),
-                    ft.Text("Importar", size=11, weight="bold")
-                ], alignment=ft.MainAxisAlignment.CENTER, spacing=5)
-            )
-        )
-
-    def _build_export_button(self):
-        return ft.GestureDetector(
-            on_tap=lambda _: self.save_invoker.open_save(),
-            content=ft.Container(
-                padding=8,
-                border_radius=12,
-                bgcolor=ft.colors.SURFACE_VARIANT,
-                content=ft.Row([
-                    ft.Image(src="assets/buttons/export-button.png", width=20, height=20),
-                    ft.Text("Exportar", size=11, weight="bold")
-                ], alignment=ft.MainAxisAlignment.CENTER, spacing=5)
-            )
         )
 
     def _build_add_button(self):
@@ -306,7 +248,6 @@ class EmpleadosContainer(ft.Container):
     def _insertar_fila_editable(self, e=None):
         nombre_input = ft.TextField(hint_text="Nombre completo")
         estado_dropdown = ft.Dropdown(options=[ft.dropdown.Option("activo"), ft.dropdown.Option("inactivo")])
-        tipo_dropdown = ft.Dropdown(options=[ft.dropdown.Option("taller"), ft.dropdown.Option("externo"), ft.dropdown.Option("no definido")])
         sueldo_input = ft.TextField(hint_text="Sueldo diario", keyboard_type=ft.KeyboardType.NUMBER)
 
         nuevo_id = self.empleado_model.get_ultimo_numero_nomina() + 1
@@ -324,7 +265,8 @@ class EmpleadosContainer(ft.Container):
                 valor = float(sueldo_input.value)
                 if valor < 0:
                     raise ValueError
-                sueldo_input.border_color = None
+                sueldo_input.border_color = ft.colors.RED
+                self.page.update()
             except:
                 sueldo_input.border_color = ft.colors.RED
             self.page.update()
@@ -334,7 +276,7 @@ class EmpleadosContainer(ft.Container):
 
         def on_guardar(_):
             try:
-                if not nombre_input.value or not estado_dropdown.value or not tipo_dropdown.value or not sueldo_input.value:
+                if not nombre_input.value or not estado_dropdown.value or not sueldo_input.value:
                     raise ValueError("Todos los campos son obligatorios")
 
                 nombre = nombre_input.value.strip()
@@ -353,7 +295,6 @@ class EmpleadosContainer(ft.Container):
                     numero_nomina=nuevo_id,
                     nombre_completo=nombre,
                     estado=estado_dropdown.value,
-                    tipo_trabajador=tipo_dropdown.value,
                     sueldo_por_hora=sueldo
                 )
 
@@ -374,7 +315,6 @@ class EmpleadosContainer(ft.Container):
             ft.DataCell(ft.Text(str(nuevo_id))),
             ft.DataCell(nombre_input),
             ft.DataCell(estado_dropdown),
-            ft.DataCell(tipo_dropdown),
             ft.DataCell(sueldo_input),
             ft.DataCell(ft.Row([
                 ft.IconButton(icon=ft.icons.CHECK, icon_color=ft.colors.GREEN_600, on_click=on_guardar),
@@ -384,7 +324,6 @@ class EmpleadosContainer(ft.Container):
 
         self.table.rows.append(nueva_fila)
         self.page.update()
-
 
     def _guardar_empleados_en_excel(self, path: str):
         try:
@@ -400,7 +339,6 @@ class EmpleadosContainer(ft.Container):
                 "numero_nomina",
                 "nombre_completo",
                 "estado",
-                "tipo_trabajador",
                 "sueldo_por_hora"
             ]
             df = df[columnas_ordenadas]

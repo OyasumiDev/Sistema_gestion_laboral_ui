@@ -22,7 +22,7 @@ class WindowMain:
         self._page.theme_mode = ft.ThemeMode.LIGHT
         self._page.theme = ft.Theme(color_scheme_seed=ft.Colors.BLUE_ACCENT_100)
         self._page.vertical_alignment = ft.MainAxisAlignment.CENTER
-        self._page.horizontal_alignment = ft.CrossAxisAlignment.CENTER
+        self._page.horizontal_alignment = ft.CrossAxisAlignment.CENTER  
 
         self._page.window_full_screen = True
         self._page.window_resizable = True
@@ -39,9 +39,9 @@ class WindowMain:
         self._page.on_route_change = self.route_change
 
         # Iniciar en login
-        # self._page.go('/login')
+        self._page.go('/login')
 
-        self._page.go('/home/empleados')
+        # self._page.go('/home/empleados')
         # self._page.go('/home/asistencias')
         # self._page.go('/home/pagos')
         # self._page.go('/settings')

@@ -10,7 +10,6 @@ from app.models.employes_model import EmployesModel
 from app.views.containers.modal_alert import ModalAlert
 from app.core.enums.e_loan_payment_model import E_PAGOS_PRESTAMO
 
-
 class ModalPrestamos:
     def __init__(self, pago_data: dict, on_confirmar):
         self.page = AppState().page
