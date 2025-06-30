@@ -20,7 +20,7 @@ class WindowMain:
         self._page.window.center()
         self._page.padding = 0
         self._page.theme_mode = ft.ThemeMode.LIGHT
-        self._page.theme = ft.Theme(color_scheme_seed=ft.Colors.BLUE_ACCENT_100)
+        self._page.theme = ft.Theme(color_scheme_seed=ft.colors.BLUE_ACCENT_100)
         self._page.vertical_alignment = ft.MainAxisAlignment.CENTER
         self._page.horizontal_alignment = ft.CrossAxisAlignment.CENTER
 
