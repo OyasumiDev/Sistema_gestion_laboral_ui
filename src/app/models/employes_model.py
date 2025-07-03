@@ -29,7 +29,6 @@ class EmployesModel:
                 CREATE TABLE IF NOT EXISTS {E_EMPLOYE.TABLE.value} (
                     {E_EMPLOYE.NUMERO_NOMINA.value} SMALLINT UNSIGNED PRIMARY KEY,
                     {E_EMPLOYE.NOMBRE_COMPLETO.value} VARCHAR(255) NOT NULL,
-                    {E_EMPLOYE.ESTADO.value} ENUM('activo','inactivo') NOT NULL,
                     {E_EMPLOYE.SUELDO_POR_HORA.value} DECIMAL(8,2) NOT NULL
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
                 """
@@ -42,7 +41,7 @@ class EmployesModel:
             print(f"❌ Error al verificar/crear la tabla {E_EMPLOYE.TABLE.value}: {ex}")
             return False
 
-    def add(self, numero_nomina, nombre_completo, estado, sueldo_por_hora):
+    def add(self, numero_nomina, nombre_completo, sueldo_por_hora):
         """
         Agrega un nuevo empleado.
         """
@@ -51,14 +50,12 @@ class EmployesModel:
             INSERT INTO {E_EMPLOYE.TABLE.value} (
                 {E_EMPLOYE.NUMERO_NOMINA.value},
                 {E_EMPLOYE.NOMBRE_COMPLETO.value},
-                {E_EMPLOYE.ESTADO.value},
                 {E_EMPLOYE.SUELDO_POR_HORA.value}
-            ) VALUES (%s, %s, %s, %s)
+            ) VALUES (%s, %s, %s)
             """
             self.db.run_query(query, (
                 numero_nomina,
                 nombre_completo,
-                estado,
                 sueldo_por_hora
             ))
             return {"status": "success", "message": "Empleado registrado correctamente"}
@@ -89,7 +86,7 @@ class EmployesModel:
         except Exception as ex:
             print(f"❌ Error al obtener el empleado: {ex}")
             return {}
-        
+
     def delete_by_numero_nomina(self, numero_nomina: int):
         """
         Elimina un empleado por su número de nómina.
@@ -109,23 +106,21 @@ class EmployesModel:
         except Exception:
             return 0
 
-    def update(self, numero_nomina, estado, sueldo_por_hora):
+    def update(self, numero_nomina, sueldo_por_hora):
         """
-        Actualiza un empleado por su número de nómina.
+        Actualiza el sueldo por hora de un empleado.
         """
         try:
             query = f"""
                 UPDATE {E_EMPLOYE.TABLE.value}
                 SET
-                    {E_EMPLOYE.ESTADO.value} = %s,
                     {E_EMPLOYE.SUELDO_POR_HORA.value} = %s
                 WHERE {E_EMPLOYE.NUMERO_NOMINA.value} = %s
             """
             self.db.run_query(query, (
-                estado,
                 sueldo_por_hora,
                 numero_nomina
             ))
-            return { "status": "success", "message": "Empleado actualizado correctamente" }
+            return {"status": "success", "message": "Empleado actualizado correctamente"}
         except Exception as ex:
-            return { "status": "error", "message": f"Error al actualizar el empleado: {ex}" }
+            return {"status": "error", "message": f"Error al actualizar el empleado: {ex}"}

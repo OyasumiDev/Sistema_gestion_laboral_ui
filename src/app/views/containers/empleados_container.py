@@ -17,7 +17,6 @@ class EmpleadosContainer(ft.Container):
 
         self.orden_actual = {
             "numero_nomina": None,
-            "estado": None,
             "sueldo_por_hora": None
         }
 
@@ -36,16 +35,40 @@ class EmpleadosContainer(ft.Container):
         self.table = None
         self.expand = True
 
+        # Contenedor que mantiene la tabla centrada y expandida
         self.table_container = ft.Container(
             expand=True,
             alignment=ft.alignment.top_center,
             content=ft.Column(
                 controls=[],
-                alignment=ft.MainAxisAlignment.START,  # Alinea hacia arriba
-                horizontal_alignment=ft.CrossAxisAlignment.CENTER,  # Centra horizontalmente
+                alignment=ft.MainAxisAlignment.START,
+                horizontal_alignment=ft.CrossAxisAlignment.CENTER,
                 expand=True
             )
         )
+
+        # Referencia al scroll de columna, útil para saber la posición
+        self.scroll_column_ref = ft.Ref[ft.Column]()
+
+        # Ancla invisible que nos ayuda a hacer scroll al fondo
+        self.scroll_anchor = ft.Container(height=1, key="bottom-anchor")
+
+        # Clave para scroll programático (opcional si usas solo key)
+        self.scroll_key = ft.Ref[ft.Control]()
+
+        # Columna principal con scroll vertical
+        self.scroll_column = ft.Column(
+            ref=self.scroll_column_ref,
+            alignment=ft.MainAxisAlignment.START,
+            horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+            scroll=ft.ScrollMode.ALWAYS,
+            controls=[
+                self.table_container,
+                self.scroll_anchor  # ← Punto final para hacer scroll
+            ]
+        )
+
+
 
         self.content = ft.Container(
             expand=True,
@@ -69,22 +92,24 @@ class EmpleadosContainer(ft.Container):
                         alignment=ft.alignment.top_center,
                         padding=ft.padding.only(top=10),
                         expand=True,
-                        content=ft.Column(
-                            alignment=ft.MainAxisAlignment.START,
-                            horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-                            scroll=ft.ScrollMode.ALWAYS,
-                            controls=[self.table_container]
-                        )
+                        content=self.scroll_column  # 👈 aquí insertamos la columna con scroll
                     )
                 ]
             )
         )
 
-
-
-
         self._actualizar_tabla("")
 
+    def _esta_cerca_del_final(self):
+        try:
+            scroll_col = self.scroll_column_ref.current
+            if not scroll_col:
+                return False
+            return scroll_col.offset >= (scroll_col.scroll_height - scroll_col.height - 100)
+        except:
+            return False
+        
+        
     def _icono_orden(self, columna):
         if self.orden_actual.get(columna) == "asc":
             return "▲"
@@ -127,21 +152,6 @@ class EmpleadosContainer(ft.Container):
             numero = e["numero_nomina"]
             en_edicion = self.fila_editando == numero
 
-            estado_cell = (
-                ft.Dropdown(value=e["estado"], options=[
-                    ft.dropdown.Option("activo"),
-                    ft.dropdown.Option("inactivo")
-                ]) if en_edicion else ft.Text(e["estado"])
-            )
-
-            tipo_cell = (
-                ft.Dropdown(value=e["tipo_trabajador"], options=[
-                    ft.dropdown.Option("taller"),
-                    ft.dropdown.Option("externo"),
-                    ft.dropdown.Option("no definido")
-                ]) if en_edicion else ft.Text(e["tipo_trabajador"])
-            )
-
             if en_edicion:
                 def crear_sueldo_cell(valor_inicial):
                     sueldo = ft.TextField(value=str(valor_inicial), keyboard_type=ft.KeyboardType.NUMBER)
@@ -163,7 +173,7 @@ class EmpleadosContainer(ft.Container):
             else:
                 sueldo_cell = ft.Text(str(e["sueldo_por_hora"]))
 
-            def guardar_cambios(ev, id=numero, estado_cell=estado_cell, tipo_cell=tipo_cell, sueldo_cell=sueldo_cell):
+            def guardar_cambios(ev, id=numero, sueldo_cell=sueldo_cell):
                 try:
                     sueldo = float(sueldo_cell.value)
                     if sueldo < 0:
@@ -178,9 +188,7 @@ class EmpleadosContainer(ft.Container):
 
                 def confirmar_guardado():
                     resultado = self.empleado_model.update(
-                        id,
-                        estado=estado_cell.value,
-                        tipo_trabajador=tipo_cell.value,
+                        numero_nomina=id,
                         sueldo_por_hora=sueldo
                     )
                     if resultado["status"] == "success":
@@ -241,8 +249,6 @@ class EmpleadosContainer(ft.Container):
             rows.append(ft.DataRow(cells=[
                 ft.DataCell(ft.Text(str(numero))),
                 ft.DataCell(ft.Text(e["nombre_completo"])),
-                ft.DataCell(estado_cell),
-                ft.DataCell(tipo_cell),
                 ft.DataCell(sueldo_cell),
                 ft.DataCell(acciones)
             ]))
@@ -252,8 +258,6 @@ class EmpleadosContainer(ft.Container):
             columns=[
                 ft.DataColumn(ft.Text(f"Nómina {self._icono_orden('numero_nomina')}"), on_sort=lambda _: self._ordenar_por_columna("numero_nomina")),
                 ft.DataColumn(ft.Text("Nombre")),
-                ft.DataColumn(ft.Text(f"Estado {self._icono_orden('estado')}"), on_sort=lambda _: self._ordenar_por_columna("estado")),
-                ft.DataColumn(ft.Text("Tipo Trabajador")),
                 ft.DataColumn(ft.Text(f"Sueldo por Hora {self._icono_orden('sueldo_por_hora')}"), on_sort=lambda _: self._ordenar_por_columna("sueldo_por_hora")),
                 ft.DataColumn(ft.Text("Eliminar-Editar"))
             ],
@@ -291,7 +295,7 @@ class EmpleadosContainer(ft.Container):
 
     def _build_add_button(self):
         return ft.GestureDetector(
-            on_tap=self._insertar_fila_editable,
+            on_tap=lambda _: self.page.run_async(self._insertar_fila_editable()),
             content=ft.Container(
                 padding=8,
                 border_radius=12,
@@ -303,11 +307,9 @@ class EmpleadosContainer(ft.Container):
             )
         )
 
-    def _insertar_fila_editable(self, e=None):
+    async def _insertar_fila_editable(self, e=None):
         nombre_input = ft.TextField(hint_text="Nombre completo")
-        estado_dropdown = ft.Dropdown(options=[ft.dropdown.Option("activo"), ft.dropdown.Option("inactivo")])
-        tipo_dropdown = ft.Dropdown(options=[ft.dropdown.Option("taller"), ft.dropdown.Option("externo"), ft.dropdown.Option("no definido")])
-        sueldo_input = ft.TextField(hint_text="Sueldo diario", keyboard_type=ft.KeyboardType.NUMBER)
+        sueldo_input = ft.TextField(hint_text="Sueldo por hora", keyboard_type=ft.KeyboardType.NUMBER)
 
         nuevo_id = self.empleado_model.get_ultimo_numero_nomina() + 1
 
@@ -334,7 +336,7 @@ class EmpleadosContainer(ft.Container):
 
         def on_guardar(_):
             try:
-                if not nombre_input.value or not estado_dropdown.value or not tipo_dropdown.value or not sueldo_input.value:
+                if not nombre_input.value or not sueldo_input.value:
                     raise ValueError("Todos los campos son obligatorios")
 
                 nombre = nombre_input.value.strip()
@@ -352,8 +354,6 @@ class EmpleadosContainer(ft.Container):
                 resultado = self.empleado_model.add(
                     numero_nomina=nuevo_id,
                     nombre_completo=nombre,
-                    estado=estado_dropdown.value,
-                    tipo_trabajador=tipo_dropdown.value,
                     sueldo_por_hora=sueldo
                 )
 
@@ -373,8 +373,6 @@ class EmpleadosContainer(ft.Container):
         nueva_fila = ft.DataRow(cells=[
             ft.DataCell(ft.Text(str(nuevo_id))),
             ft.DataCell(nombre_input),
-            ft.DataCell(estado_dropdown),
-            ft.DataCell(tipo_dropdown),
             ft.DataCell(sueldo_input),
             ft.DataCell(ft.Row([
                 ft.IconButton(icon=ft.icons.CHECK, icon_color=ft.colors.GREEN_600, on_click=on_guardar),
@@ -383,7 +381,14 @@ class EmpleadosContainer(ft.Container):
         ])
 
         self.table.rows.append(nueva_fila)
-        self.page.update()
+        await self.page.update_async()
+
+        # Scroll inteligente: solo si no estás ya al fondo
+        if not self._esta_cerca_del_final():
+            await self.page.scroll_to(key="bottom-anchor", duration=300)
+
+        await nombre_input.focus_async()
+
 
 
     def _guardar_empleados_en_excel(self, path: str):
@@ -399,8 +404,6 @@ class EmpleadosContainer(ft.Container):
             columnas_ordenadas = [
                 "numero_nomina",
                 "nombre_completo",
-                "estado",
-                "tipo_trabajador",
                 "sueldo_por_hora"
             ]
             df = df[columnas_ordenadas]
@@ -409,3 +412,4 @@ class EmpleadosContainer(ft.Container):
             ModalAlert.mostrar_info("Exportación", f"Archivo guardado en: {path}")
         except Exception as ex:
             ModalAlert.mostrar_info("Error de exportación", f"No se pudo guardar el archivo: {ex}")
+
