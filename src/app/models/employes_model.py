@@ -1,6 +1,7 @@
 from app.core.enums.e_employes_model import E_EMPLOYE
 from app.core.interfaces.database_mysql import DatabaseMysql
 
+
 class EmployesModel:
     """
     Modelo para el manejo de empleados.
@@ -29,7 +30,6 @@ class EmployesModel:
                     {E_EMPLOYE.NUMERO_NOMINA.value} SMALLINT UNSIGNED PRIMARY KEY,
                     {E_EMPLOYE.NOMBRE_COMPLETO.value} VARCHAR(255) NOT NULL,
                     {E_EMPLOYE.ESTADO.value} ENUM('activo','inactivo') NOT NULL,
-                    {E_EMPLOYE.TIPO_TRABAJADOR.value} ENUM('taller','externo','no definido') NOT NULL,
                     {E_EMPLOYE.SUELDO_POR_HORA.value} DECIMAL(8,2) NOT NULL
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
                 """
@@ -42,7 +42,7 @@ class EmployesModel:
             print(f"❌ Error al verificar/crear la tabla {E_EMPLOYE.TABLE.value}: {ex}")
             return False
 
-    def add(self, numero_nomina, nombre_completo, estado, tipo_trabajador, sueldo_por_hora):
+    def add(self, numero_nomina, nombre_completo, estado, sueldo_por_hora):
         """
         Agrega un nuevo empleado.
         """
@@ -52,15 +52,13 @@ class EmployesModel:
                 {E_EMPLOYE.NUMERO_NOMINA.value},
                 {E_EMPLOYE.NOMBRE_COMPLETO.value},
                 {E_EMPLOYE.ESTADO.value},
-                {E_EMPLOYE.TIPO_TRABAJADOR.value},
                 {E_EMPLOYE.SUELDO_POR_HORA.value}
-            ) VALUES (%s, %s, %s, %s, %s)
+            ) VALUES (%s, %s, %s, %s)
             """
             self.db.run_query(query, (
                 numero_nomina,
                 nombre_completo,
                 estado,
-                tipo_trabajador,
                 sueldo_por_hora
             ))
             return {"status": "success", "message": "Empleado registrado correctamente"}
@@ -111,7 +109,7 @@ class EmployesModel:
         except Exception:
             return 0
 
-    def update(self, numero_nomina, estado, tipo_trabajador, sueldo_por_hora):
+    def update(self, numero_nomina, estado, sueldo_por_hora):
         """
         Actualiza un empleado por su número de nómina.
         """
@@ -120,13 +118,11 @@ class EmployesModel:
                 UPDATE {E_EMPLOYE.TABLE.value}
                 SET
                     {E_EMPLOYE.ESTADO.value} = %s,
-                    {E_EMPLOYE.TIPO_TRABAJADOR.value} = %s,
                     {E_EMPLOYE.SUELDO_POR_HORA.value} = %s
                 WHERE {E_EMPLOYE.NUMERO_NOMINA.value} = %s
             """
             self.db.run_query(query, (
                 estado,
-                tipo_trabajador,
                 sueldo_por_hora,
                 numero_nomina
             ))
