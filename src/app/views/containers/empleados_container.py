@@ -5,6 +5,8 @@ from app.controllers.employes_import_controller import EmpleadosImportController
 from app.models.employes_model import EmployesModel
 from app.views.containers.modal_alert import ModalAlert
 from app.core.invokers.file_save_invoker import FileSaveInvoker
+from threading import Timer
+from app.core.invokers.safe_scroll_invoker import SafeScrollInvoker
 
 
 class EmpleadosContainer(ft.Container):
@@ -14,6 +16,7 @@ class EmpleadosContainer(ft.Container):
         self.page = AppState().page
         self.empleado_model = EmployesModel()
         self.fila_editando = None
+        self.fila_nueva_en_proceso = False
 
         self.orden_actual = {
             "numero_nomina": None,
@@ -35,7 +38,6 @@ class EmpleadosContainer(ft.Container):
         self.table = None
         self.expand = True
 
-        # Contenedor que mantiene la tabla centrada y expandida
         self.table_container = ft.Container(
             expand=True,
             alignment=ft.alignment.top_center,
@@ -47,28 +49,20 @@ class EmpleadosContainer(ft.Container):
             )
         )
 
-        # Referencia al scroll de columna, útil para saber la posición
         self.scroll_column_ref = ft.Ref[ft.Column]()
-
-        # Ancla invisible que nos ayuda a hacer scroll al fondo
         self.scroll_anchor = ft.Container(height=1, key="bottom-anchor")
 
-        # Clave para scroll programático (opcional si usas solo key)
-        self.scroll_key = ft.Ref[ft.Control]()
-
-        # Columna principal con scroll vertical
         self.scroll_column = ft.Column(
             ref=self.scroll_column_ref,
             alignment=ft.MainAxisAlignment.START,
             horizontal_alignment=ft.CrossAxisAlignment.CENTER,
             scroll=ft.ScrollMode.ALWAYS,
+            expand=True,
             controls=[
                 self.table_container,
-                self.scroll_anchor  # ← Punto final para hacer scroll
+                self.scroll_anchor
             ]
         )
-
-
 
         self.content = ft.Container(
             expand=True,
@@ -84,7 +78,7 @@ class EmpleadosContainer(ft.Container):
                         controls=[
                             self._build_import_button(),
                             self._build_export_button(),
-                            self._build_add_button()
+                            self._build_add_button()  # ← ya está vinculado
                         ]
                     ),
                     ft.Divider(height=1),
@@ -92,13 +86,14 @@ class EmpleadosContainer(ft.Container):
                         alignment=ft.alignment.top_center,
                         padding=ft.padding.only(top=10),
                         expand=True,
-                        content=self.scroll_column  # 👈 aquí insertamos la columna con scroll
+                        content=self.scroll_column
                     )
                 ]
             )
         )
 
-        self._actualizar_tabla("")
+        self._actualizar_tabla()
+
 
     def _esta_cerca_del_final(self):
         try:
@@ -259,7 +254,7 @@ class EmpleadosContainer(ft.Container):
                 ft.DataColumn(ft.Text(f"Nómina {self._icono_orden('numero_nomina')}"), on_sort=lambda _: self._ordenar_por_columna("numero_nomina")),
                 ft.DataColumn(ft.Text("Nombre")),
                 ft.DataColumn(ft.Text(f"Sueldo por Hora {self._icono_orden('sueldo_por_hora')}"), on_sort=lambda _: self._ordenar_por_columna("sueldo_por_hora")),
-                ft.DataColumn(ft.Text("Eliminar-Editar"))
+                ft.DataColumn(ft.Text("Editar - Eliminar"))
             ],
             rows=rows
         )
@@ -295,7 +290,7 @@ class EmpleadosContainer(ft.Container):
 
     def _build_add_button(self):
         return ft.GestureDetector(
-            on_tap=lambda _: self.page.run_async(self._insertar_fila_editable()),
+            on_tap=lambda _: self._insertar_fila_editable(),
             content=ft.Container(
                 padding=8,
                 border_radius=12,
@@ -307,26 +302,27 @@ class EmpleadosContainer(ft.Container):
             )
         )
 
-    async def _insertar_fila_editable(self, e=None):
+
+    def _insertar_fila_editable(self, e=None):
+        if self.fila_nueva_en_proceso:
+            ModalAlert.mostrar_info("Atención", "Ya hay un registro nuevo en proceso.")
+            return
+
+        self.fila_nueva_en_proceso = True
+
         nombre_input = ft.TextField(hint_text="Nombre completo")
         sueldo_input = ft.TextField(hint_text="Sueldo por hora", keyboard_type=ft.KeyboardType.NUMBER)
-
         nuevo_id = self.empleado_model.get_ultimo_numero_nomina() + 1
 
         def validar_nombre_input(_):
             valor = nombre_input.value.strip()
-            if len(valor) < 3 or not all(char.isalpha() or char.isspace() for char in valor):
-                nombre_input.border_color = ft.colors.RED
-            else:
-                nombre_input.border_color = None
+            nombre_input.border_color = None if len(valor) >= 3 and all(char.isalpha() or char.isspace() for char in valor) else ft.colors.RED
             self.page.update()
 
         def validar_sueldo_input(_):
             try:
                 valor = float(sueldo_input.value)
-                if valor < 0:
-                    raise ValueError
-                sueldo_input.border_color = None
+                sueldo_input.border_color = None if valor >= 0 else ft.colors.RED
             except:
                 sueldo_input.border_color = ft.colors.RED
             self.page.update()
@@ -357,9 +353,11 @@ class EmpleadosContainer(ft.Container):
                     sueldo_por_hora=sueldo
                 )
 
+                self.fila_nueva_en_proceso = False
+
                 if resultado["status"] == "success":
                     ModalAlert.mostrar_info("Éxito", f"Empleado agregado con ID {nuevo_id}")
-                    self._actualizar_tabla("")
+                    self._actualizar_tabla()
                 else:
                     ModalAlert.mostrar_info("Error", resultado["message"])
 
@@ -367,6 +365,7 @@ class EmpleadosContainer(ft.Container):
                 ModalAlert.mostrar_info("Error", f"No se pudo agregar el empleado: {ex}")
 
         def on_cancelar(_):
+            self.fila_nueva_en_proceso = False
             self.table.rows.pop()
             self.page.update()
 
@@ -381,14 +380,12 @@ class EmpleadosContainer(ft.Container):
         ])
 
         self.table.rows.append(nueva_fila)
-        await self.page.update_async()
+        self.page.update()
 
-        # Scroll inteligente: solo si no estás ya al fondo
-        if not self._esta_cerca_del_final():
-            await self.page.scroll_to(key="bottom-anchor", duration=300)
+        # Usar scroll seguro
+        SafeScrollInvoker.scroll_to_bottom(self.page)
 
-        await nombre_input.focus_async()
-
+        nombre_input.focus()
 
 
     def _guardar_empleados_en_excel(self, path: str):
