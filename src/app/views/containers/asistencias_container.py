@@ -1,6 +1,6 @@
 import flet as ft
 import pandas as pd
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 import functools
 from app.models.assistance_model import AssistanceModel
 from app.core.enums.e_assistance_model import E_ASSISTANCE
@@ -11,6 +11,7 @@ from app.views.containers.theme_controller import ThemeController
 from app.views.containers.modal_alert import ModalAlert
 from app.views.containers.window_snackbar import WindowSnackbar
 from tabulate import tabulate
+from app.utils.table_action_buttons import crear_boton_editar, crear_boton_eliminar
 
 
 class AsistenciasContainer(ft.Container):
@@ -28,9 +29,14 @@ class AsistenciasContainer(ft.Container):
         self.sort_key = "numero_nomina"
         self.sort_asc = True
 
+        # NUEVAS estructuras
+        self.editando = {}  # Clave: (numero_nomina, fecha)
+        self.datos_por_periodo = {}  # Agrupaciones por periodos de fechas
+        self.periodos_expandido = {}  # Controla expansión de cada periodo
+
         self.import_controller = AsistenciasImportController(
             page=self.page,
-            on_success=self._actualizar_tabla
+            on_success=self._actualizar_tabla  # Este método debe llamarse igual que el nuevo `actualizar_tabla`
         )
 
         self.save_invoker = FileSaveInvoker(
@@ -42,11 +48,15 @@ class AsistenciasContainer(ft.Container):
         )
 
         self.window_snackbar = WindowSnackbar(self.page)
-        self.table = None
-        self.tabla_vacia = True
+
+        # TABLA con columnas personalizadas y sin filas iniciales
+        self.table = ft.DataTable(
+            columns=self.crear_columnas(),
+            rows=[]
+        )
 
         self.scroll_column = ft.Column(
-            controls=[],
+            controls=[self.table],
             scroll=ft.ScrollMode.ALWAYS,
             expand=True,
             alignment=ft.MainAxisAlignment.START
@@ -75,6 +85,42 @@ class AsistenciasContainer(ft.Container):
         self.page.update()
 
 
+    def _build_content(self):
+        contenido = ft.Container(
+            expand=True,
+            content=ft.Column(
+                scroll=ft.ScrollMode.ALWAYS,
+                alignment=ft.MainAxisAlignment.START,
+                horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                spacing=20,
+                controls=[
+                    ft.Text("Registro de Asistencias", size=24, weight="bold", text_align=ft.TextAlign.CENTER),
+                    ft.Container(
+                        alignment=ft.alignment.center_left,
+                        padding=ft.padding.only(left=60),
+                        content=ft.Row(
+                            spacing=10,
+                            alignment=ft.MainAxisAlignment.START,
+                            controls=[self.import_button, self.export_button, self.new_column_button]
+                        )
+                    ),
+                    ft.Container(
+                        alignment=ft.alignment.center,
+                        padding=ft.padding.symmetric(horizontal=20),
+                        content=ft.Container(
+                            content=self.scroll_column,
+                            alignment=ft.alignment.center,
+                            margin=ft.margin.symmetric(horizontal="auto"),
+                        )
+                    )
+                ]
+            )
+        )
+
+        # ⚠️ Asegúrate que la tabla ya esté agregada al layout antes de actualizar
+        self.page.add(self)
+        self._actualizar_tabla()
+        return contenido
 
     def _icono_orden(self, columna):
         if self.sort_key == columna:
@@ -91,143 +137,169 @@ class AsistenciasContainer(ft.Container):
         self._actualizar_tabla()
 
 
-    def _actualizar_tabla(self, _=None):
-        datos = self.asistencia_model.get_all()["data"]
-        datos.sort(key=lambda x: x.get(self.sort_key, 0), reverse=not self.sort_asc)
+    def _actualizar_tabla(self):
+        resultado = self.asistencia_model.get_all()
+        if resultado["status"] != "success":
+            self.window_snackbar.show_error("❌ No se pudieron cargar asistencias.")
+            return
 
-        columnas = [
-            self._build_col("ID Empleado", "numero_nomina", width=110),
-            ft.DataColumn(ft.Container(ft.Text("Empleado"), width=220)),
-            self._build_col("Fecha", "fecha", width=130),
-            ft.DataColumn(ft.Container(ft.Text("Entrada"), width=110)),
-            ft.DataColumn(ft.Container(ft.Text("Salida"), width=110)),
-            ft.DataColumn(ft.Container(ft.Text("Retardo"), width=110)),
-            self._build_col("Estado", "estado", width=130),
-            ft.DataColumn(ft.Container(ft.Text("Horas Trabajadas"), width=150)),
-            ft.DataColumn(ft.Container(ft.Text("Acciones"), width=120)),
-        ]
+        datos = resultado["data"]
+        self.datos_por_periodo = self._agrupar_por_periodo(datos)
 
-        filas = []
-        for reg in datos:
-            try:
-                numero = reg.get("numero_nomina")
-                fecha = reg.get("fecha")
-
-                eliminar_btn = ft.IconButton(
-                    icon=ft.icons.DELETE_OUTLINE,
-                    icon_size=20,
-                    icon_color=ft.colors.RED_600,
-                    tooltip="Eliminar registro",
-                    on_click=lambda e, n=numero, f=fecha: self._confirmar_eliminacion(n, f)
-                )
-
-                editar_btn = ft.IconButton(
-                    icon=ft.icons.EDIT,
-                    icon_size=20,
-                    icon_color=ft.colors.BLUE_600,
-                    tooltip="Editar asistencia",
-                    on_click=lambda e, n=numero, f=fecha: self._editar_asistencia(n, f)
-                )
-
-
-                def limpiar(campo):
-                    return str(reg.get(campo)) if reg.get(campo) not in [None, ""] else "-"
-
-                fila = ft.DataRow(cells=[
-                    ft.DataCell(ft.Text(limpiar("numero_nomina"))),
-                    ft.DataCell(ft.Text(limpiar("nombre"))),
-                    ft.DataCell(ft.Text(limpiar("fecha"))),
-                    ft.DataCell(ft.Text(limpiar("hora_entrada"))),
-                    ft.DataCell(ft.Text(limpiar("hora_salida"))),
-                    ft.DataCell(ft.Text(limpiar("retardo"))),
-                    ft.DataCell(ft.Text(limpiar("estado"))),
-                    ft.DataCell(ft.Text(limpiar("tiempo_trabajo"))),
-                    ft.DataCell(ft.Row([editar_btn, eliminar_btn], spacing=5)),
-                ])
-                filas.append(fila)
-            except Exception as e:
-                print(f"❌ Error al construir fila (Empleado {reg.get('numero_nomina')}, Fecha {reg.get('fecha')}): {e}")
-
-        self.scroll_column.controls.clear()
-
-        self.table = ft.DataTable(
-            expand=True,
-            columns=columnas,
-            rows=filas if filas else [
+        self.table.rows.clear()
+        for periodo, registros in self.datos_por_periodo.items():
+            expandido = self.periodos_expandido.get(periodo, True)
+            self.table.rows.append(
                 ft.DataRow(
-                    cells=[ft.DataCell(ft.Text("-", color=ft.colors.GREY_500)) for _ in columnas]
-                )
-            ],
-            column_spacing=25,
-            horizontal_lines=None,
-        )
-
-        self.scroll_column.controls.append(
-            ft.Container(
-                alignment=ft.alignment.center,
-                expand=True,
-                content=self.table
-            )
-        )
-
-        if not filas:
-            self.scroll_column.controls.append(
-                ft.Container(
-                    alignment=ft.alignment.top_center,
-                    padding=ft.padding.only(top=20),
-                    content=ft.Text(
-                        "No hay asistencias registradas.",
-                        size=16,
-                        color=ft.colors.GREY
-                    ),
+                    cells=[ft.DataCell(ft.Text(f"📆 {periodo}"))],
+                    selected=expandido,
+                    on_select_changed=lambda e, p=periodo: self.toggle_periodo(p),
+                    color=ft.colors.SURFACE_VARIANT,
                 )
             )
+            if expandido:
+                for reg in registros:
+                    self.table.rows.append(self._crear_fila(reg))
 
+        self.table.update()
         self.page.update()
 
 
-    def _build_content(self):
-        return ft.Container(
-            expand=True,
-            content=ft.Column(
-                scroll=ft.ScrollMode.ALWAYS,  # ✅ Scroll vertical siempre visible
-                alignment=ft.MainAxisAlignment.START,
-                horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-                spacing=20,
-                controls=[
-                    ft.Text(
-                        "Registro de Asistencias",
-                        size=24,
-                        weight="bold",
-                        text_align=ft.TextAlign.CENTER
-                    ),
-                    ft.Container(
-                        alignment=ft.alignment.center_left,
-                        padding=ft.padding.only(left=60),
-                        content=ft.Row(
-                            spacing=10,
-                            alignment=ft.MainAxisAlignment.START,
-                            controls=[
-                                self.import_button,
-                                self.export_button,
-                                self.new_column_button
-                            ]
-                        )
-                    ),
-                    ft.Container(
-                        alignment=ft.alignment.center,
-                        padding=ft.padding.symmetric(horizontal=20),
-                        content=ft.Container(
-                            content=self.scroll_column,
-                            alignment=ft.alignment.center,
-                            margin=ft.margin.symmetric(horizontal="auto"),
-                        )
-                    )
-                ]
-            )
+    def _agrupar_por_periodo(self, datos: list) -> dict:
+        agrupado = {}
+
+        for reg in datos:
+            fecha = reg.get("fecha")
+            if not fecha:
+                continue
+
+            if isinstance(fecha, str):
+                try:
+                    if "/" in fecha:
+                        fecha = datetime.strptime(fecha, "%d/%m/%Y").date()
+                    else:
+                        fecha = datetime.strptime(fecha, "%Y-%m-%d").date()
+                except Exception as e:
+                    print(f"❌ Error parseando fecha: {fecha} -> {e}")
+                    continue
+            elif isinstance(fecha, datetime):
+                fecha = fecha.date()
+
+            inicio_semana = fecha - timedelta(days=fecha.weekday())
+            fin_semana = inicio_semana + timedelta(days=6)
+            periodo_str = f"{inicio_semana.strftime('%d/%m/%Y')} - {fin_semana.strftime('%d/%m/%Y')}"
+
+            if periodo_str not in agrupado:
+                agrupado[periodo_str] = []
+
+            agrupado[periodo_str].append(reg)
+
+        return agrupado
+
+
+    def crear_columnas(self):
+        return [
+            ft.DataColumn(ft.Text("Nómina")),
+            ft.DataColumn(ft.Text("Nombre")),
+            ft.DataColumn(ft.Text("Fecha")),
+            ft.DataColumn(ft.Text("Hora Entrada")),
+            ft.DataColumn(ft.Text("Hora Salida")),
+            ft.DataColumn(ft.Text("Descanso")),
+            ft.DataColumn(ft.Text("Horas Trabajadas")),
+            ft.DataColumn(ft.Text("Estado")),
+            ft.DataColumn(ft.Text("Acciones")),
+        ]
+
+    def activar_edicion(self, numero_nomina, fecha):
+        self.editando.clear()  # Solo una fila editable a la vez
+        self.editando[(numero_nomina, fecha)] = True
+        self._actualizar_tabla()
+
+    def _descanso_a_minutos(self, tipo):
+        if tipo == "MD":
+            return 30
+        elif tipo == "CMP":
+            return 60
+        return 0
+
+
+
+    def _crear_fila(self, registro):
+        numero_nomina = registro["numero_nomina"]
+        fecha = registro["fecha"]
+        editable = self.editando.get((numero_nomina, fecha), False)
+
+        def actualizar_horas(_):
+            entrada = self._parse_time(campo_entrada.value)
+            salida = self._parse_time(campo_salida.value)
+            descanso = self._descanso_a_minutos()
+            if entrada and salida:
+                total = (datetime.combine(date.min, salida) - datetime.combine(date.min, entrada)).total_seconds() / 3600
+                total -= descanso / 60
+                campo_horas.value = f"{total:.2f}"
+                self.update()
+
+        def seleccionar_descanso(tipo):
+            for clave, boton in botones_descanso.items():
+                boton.style = ft.ButtonStyle(shape=ft.BoxShape.RECTANGLE, bgcolor=ft.colors.SURFACE_VARIANT if clave == tipo else ft.colors.TRANSPARENT)
+            campo_descanso.value = tipo
+            actualizar_horas()
+
+        campo_entrada = ft.TextField(
+            value=registro.get("hora_entrada", ""),
+            on_change=actualizar_horas,
+            read_only=not editable,
+            width=100,
+        )
+        campo_salida = ft.TextField(
+            value=registro.get("hora_salida", ""),
+            on_change=actualizar_horas,
+            read_only=not editable,
+            width=100,
+        )
+
+        campo_descanso = ft.TextField(value=registro.get("descanso", ""), visible=False)
+
+        botones_descanso = {
+            "SN": ft.OutlinedButton("SN", on_click=lambda _: seleccionar_descanso("SN")),
+            "MD": ft.OutlinedButton("MD", on_click=lambda _: seleccionar_descanso("MD")),
+            "CMP": ft.OutlinedButton("CMP", on_click=lambda _: seleccionar_descanso("CMP")),
+        }
+
+        descanso_widget = ft.Row([*botones_descanso.values()], spacing=5)
+
+        campo_horas = ft.TextField(
+            value=str(registro.get("tiempo_trabajo", "0.00")),
+            read_only=True,
+            width=80,
+        )
+
+        acciones = crear_boton_editar(lambda: self.activar_edicion(numero_nomina, fecha))
+
+        return ft.DataRow(
+            cells=[
+                ft.DataCell(ft.Text(str(numero_nomina))),
+                ft.DataCell(ft.Text(registro.get("nombre_completo", ""))),
+                ft.DataCell(ft.Text(str(fecha))),
+                ft.DataCell(campo_entrada),
+                ft.DataCell(campo_salida),
+                ft.DataCell(descanso_widget),
+                ft.DataCell(campo_horas),
+                ft.DataCell(ft.Text(registro.get("estado", ""))),
+                ft.DataCell(acciones),
+            ]
         )
 
 
+    def toggle_periodo(self, periodo):
+        self.periodos_expandido[periodo] = not self.periodos_expandido.get(periodo, True)
+        self.actualizar_tabla()
+
+    def _parse_time(self, value: str):
+        try:
+            return datetime.strptime(value, "%H:%M").time()
+        except Exception:
+            return None
 
 
     def _confirmar_eliminacion(self, numero, fecha, e=None):
@@ -477,154 +549,5 @@ class AsistenciasContainer(ft.Container):
             self.table.update()
         self.page.update()
 
-    def _editar_asistencia(self, numero_nomina, fecha, e=None):
-        registro = next((r for r in self.asistencia_model.get_all()["data"]
-                        if r["numero_nomina"] == numero_nomina and r["fecha"] == fecha), None)
-
-        if not registro:
-            self.window_snackbar.show_error("Registro no encontrado.")
-            return
-
-        entrada_input = ft.TextField(value=registro.get("hora_entrada", ""), width=130)
-        salida_input = ft.TextField(value=registro.get("hora_salida", ""), width=130)
-        estado_dropdown = ft.Dropdown(
-            value=registro.get("estado", "incompleto"),
-            options=[ft.dropdown.Option("completo"), ft.dropdown.Option("incompleto")],
-            width=130
-        )
-
-        def validar_en_tiempo_real(_=None):
-            entrada_input.border_color = None
-            salida_input.border_color = None
-            estado_dropdown.border_color = None
-
-            h_ent = h_sal = None
-
-            try:
-                h_ent = datetime.strptime(entrada_input.value.strip(), "%H:%M:%S")
-            except:
-                entrada_input.border_color = ft.colors.RED
-
-            try:
-                h_sal = datetime.strptime(salida_input.value.strip(), "%H:%M:%S")
-            except:
-                salida_input.border_color = ft.colors.RED
-
-            if h_ent and h_sal:
-                if h_sal <= h_ent:
-                    salida_input.border_color = ft.colors.RED
-                if estado_dropdown.value == "incompleto":
-                    estado_dropdown.border_color = ft.colors.RED
-            self.page.update()
-
-        entrada_input.on_change = validar_en_tiempo_real
-        salida_input.on_change = validar_en_tiempo_real
-        estado_dropdown.on_change = validar_en_tiempo_real
-
-        def on_guardar(_):
-            errores = []
-
-            entrada_input.border_color = None
-            salida_input.border_color = None
-            estado_dropdown.border_color = None
-
-            entrada_str = str(entrada_input.value).strip()
-            salida_str = str(salida_input.value).strip()
-            estado = estado_dropdown.value.strip()
-
-            h_ent = h_sal = None
-
-            try:
-                h_ent = datetime.strptime(entrada_str, "%H:%M:%S")
-            except:
-                entrada_input.border_color = ft.colors.RED
-                errores.append("🟥 Hora de entrada inválida (formato HH:MM:SS)")
-
-            try:
-                h_sal = datetime.strptime(salida_str, "%H:%M:%S")
-            except:
-                salida_input.border_color = ft.colors.RED
-                errores.append("🟥 Hora de salida inválida (formato HH:MM:SS)")
-
-            if h_ent and h_sal:
-                if h_sal <= h_ent:
-                    salida_input.border_color = ft.colors.RED
-                    errores.append("🟥 La hora de salida debe ser mayor que la de entrada")
-                if estado == "incompleto":
-                    estado_dropdown.border_color = ft.colors.RED
-                    errores.append("🟥 El estado no puede ser 'incompleto' si las horas están completas")
-
-            self.page.update()
-
-            if errores:
-                ModalAlert.mostrar_info("Errores al guardar", "\n".join(errores))
-                return
-
-            resultado = self.asistencia_model.actualizar_asistencia_completa(
-                numero_nomina=numero_nomina,
-                fecha=fecha,
-                hora_entrada=h_ent.strftime("%H:%M:%S"),
-                hora_salida=h_sal.strftime("%H:%M:%S"),
-                estado=estado
-            )
-
-            if resultado["status"] == "success":
-                self.window_snackbar.show_success("✅ Asistencia actualizada correctamente.")
-            else:
-                ModalAlert.mostrar_info("Error", f"❌ {resultado['message']}")
-
-            self._actualizar_tabla()
-
-        def on_cancelar(_):
-            self._actualizar_tabla()
-
-        nueva_fila = ft.DataRow(cells=[
-            ft.DataCell(ft.Text(str(numero_nomina))),
-            ft.DataCell(ft.Text(registro.get("nombre", "-"))),
-            ft.DataCell(ft.Text(fecha)),
-            ft.DataCell(entrada_input),
-            ft.DataCell(salida_input),
-            ft.DataCell(ft.Text(registro.get("retardo", "-"))),
-            ft.DataCell(estado_dropdown),
-            ft.DataCell(ft.Text(registro.get("tiempo_trabajo", "-"))),
-            ft.DataCell(ft.Row([
-                ft.IconButton(icon=ft.icons.CHECK, icon_color=ft.colors.GREEN_600, on_click=on_guardar),
-                ft.IconButton(icon=ft.icons.CLOSE, icon_color=ft.colors.RED_600, on_click=on_cancelar)
-            ]))
-        ])
-
-        for i, row in enumerate(self.table.rows):
-            if isinstance(row.cells[0].content, ft.Text) and \
-            row.cells[0].content.value == str(numero_nomina) and \
-            row.cells[2].content.value == fecha:
-                self.table.rows[i] = nueva_fila
-                break
-
-        self.table.update()
-        self.page.update()
-
-    def _build_col(self, label, key, width=140):
-        return ft.DataColumn(
-            ft.Container(
-                content=ft.Row(
-                    [
-                        ft.Text(label),
-                        ft.TextButton(
-                            content=ft.Text(self._icono_orden(key), size=12),
-                            style=ft.ButtonStyle(
-                                padding=0,
-                                overlay_color=ft.colors.TRANSPARENT,
-                                shape=ft.RoundedRectangleBorder(radius=0),
-                                color=ft.colors.GREY_600
-                            ),
-                            on_click=lambda e, k=key: self._sort_by(k)
-                        )
-                    ],
-                    alignment=ft.MainAxisAlignment.START
-                ),
-                alignment=ft.alignment.center_left,
-                width=width
-            )
-        )
 
 

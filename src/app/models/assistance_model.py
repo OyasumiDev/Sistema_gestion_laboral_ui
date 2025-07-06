@@ -10,11 +10,8 @@ class AssistanceModel:
         self._exists_table = self.check_table()
         self.verificar_o_crear_triggers()
 
+
     def check_table(self) -> bool:
-        """
-        Verifica si la tabla 'asistencias' existe. Si no existe, la crea con la estructura adecuada,
-        incluyendo la columna 'fecha_generada' para marcar asistencias ya utilizadas en generación de pagos.
-        """
         try:
             query = """
                 SELECT COUNT(*) AS c
@@ -34,7 +31,7 @@ class AssistanceModel:
                     fecha DATE NOT NULL,
                     hora_entrada TIME,
                     hora_salida TIME,
-                    retardo TIME,
+                    descanso TINYINT DEFAULT 0,  -- 0: sin descanso, 1: media hora, 2: una hora
                     estado VARCHAR(20),
                     tiempo_trabajo TIME,
                     fecha_generada DATE DEFAULT NULL,
@@ -56,9 +53,12 @@ class AssistanceModel:
     def verificar_o_crear_triggers(self):
         try:
             self._crear_trigger_calculo_horas()
+            self._crear_trigger_actualizar_horas()  # <<—— aquí lo agregas
             self._crear_trigger_estado()
         except Exception as ex:
             print(f"❌ Error al verificar/crear triggers: {ex}")
+
+
 
     def _crear_trigger_calculo_horas(self):
         trigger_name = "trg_calcular_horas_trabajadas"
@@ -79,43 +79,37 @@ class AssistanceModel:
             BEFORE INSERT ON asistencias
             FOR EACH ROW
             BEGIN
-                DECLARE entrada_ajustada TIME;
-                DECLARE salida_ajustada TIME;
-                DECLARE tiempo_final TIME;
+                DECLARE entrada TIME;
+                DECLARE salida TIME;
+                DECLARE tiempo_bruto TIME;
+                DECLARE minutos_descanso INT DEFAULT 0;
+                DECLARE minutos_trabajo INT;
 
                 IF NEW.hora_entrada IS NOT NULL AND NEW.hora_entrada NOT IN ('00:00:00', '0:00:00')
                 AND NEW.hora_salida IS NOT NULL AND NEW.hora_salida NOT IN ('00:00:00', '0:00:00') THEN
 
-                    -- Redondear hora de entrada hacia arriba al siguiente bloque de 30 minutos
-                    SET entrada_ajustada = MAKETIME(
-                        HOUR(NEW.hora_entrada),
-                        IF(MINUTE(NEW.hora_entrada) <= 30, 30, 0),
-                        0
-                    );
-                    IF MINUTE(NEW.hora_entrada) > 30 THEN
-                        SET entrada_ajustada = ADDTIME(entrada_ajustada, '01:00:00');
+                    SET entrada = NEW.hora_entrada;
+                    SET salida = NEW.hora_salida;
+
+                    IF salida <= entrada THEN
+                        SET salida = ADDTIME(salida, '24:00:00');
                     END IF;
 
-                    -- Redondear hora de salida hacia abajo al bloque de 30 minutos anterior
-                    SET salida_ajustada = MAKETIME(
-                        HOUR(NEW.hora_salida),
-                        IF(MINUTE(NEW.hora_salida) >= 30, 30, 0),
-                        0
-                    );
+                    SET tiempo_bruto = TIMEDIFF(salida, entrada);
+                    SET minutos_trabajo = TIME_TO_SEC(tiempo_bruto) / 60;
 
-                    -- Si la salida es menor o igual a la entrada, asumimos cruce de día
-                    IF salida_ajustada <= entrada_ajustada THEN
-                        SET salida_ajustada = ADDTIME(salida_ajustada, '24:00:00');
+                    IF NEW.descanso = 1 THEN
+                        SET minutos_descanso = 30;
+                    ELSEIF NEW.descanso = 2 THEN
+                        SET minutos_descanso = 60;
                     END IF;
 
-                    -- Calcular tiempo trabajado
-                    SET tiempo_final = TIMEDIFF(salida_ajustada, entrada_ajustada);
-
-                    -- Asignar valores
-                    SET NEW.retardo = entrada_ajustada;
-                    SET NEW.tiempo_trabajo = tiempo_final;
+                    SET minutos_trabajo = GREATEST(0, minutos_trabajo - minutos_descanso);
+                    SET NEW.tiempo_trabajo = SEC_TO_TIME(minutos_trabajo * 60);
+                ELSE
+                    SET NEW.tiempo_trabajo = '00:00:00';
                 END IF;
-            END
+            END;
             """
 
             cursor.execute(trigger_sql)
@@ -127,7 +121,65 @@ class AssistanceModel:
             print(f"✔️ Trigger '{trigger_name}' ya existe.")
 
 
+    def _crear_trigger_actualizar_horas(self):
+        trigger_name = "trg_actualizar_horas_trabajadas"
+        check_query = """
+            SELECT COUNT(*) AS c
+            FROM information_schema.triggers
+            WHERE trigger_schema = %s AND trigger_name = %s
+        """
+        result = self.db.get_data(check_query, (self.db.database, trigger_name), dictionary=True)
+        if result.get("c", 0) == 0:
+            print(f"⚠️ Trigger '{trigger_name}' no existe. Creando...")
 
+            cursor = self.db.connection.cursor()
+            cursor.execute(f"DROP TRIGGER IF EXISTS {trigger_name}")
+
+            trigger_sql = """
+            CREATE TRIGGER trg_actualizar_horas_trabajadas
+            BEFORE UPDATE ON asistencias
+            FOR EACH ROW
+            BEGIN
+                DECLARE entrada TIME;
+                DECLARE salida TIME;
+                DECLARE tiempo_bruto TIME;
+                DECLARE minutos_descanso INT DEFAULT 0;
+                DECLARE minutos_trabajo INT;
+
+                IF NEW.hora_entrada IS NOT NULL AND NEW.hora_entrada NOT IN ('00:00:00', '0:00:00')
+                AND NEW.hora_salida IS NOT NULL AND NEW.hora_salida NOT IN ('00:00:00', '0:00:00') THEN
+
+                    SET entrada = NEW.hora_entrada;
+                    SET salida = NEW.hora_salida;
+
+                    IF salida <= entrada THEN
+                        SET salida = ADDTIME(salida, '24:00:00');
+                    END IF;
+
+                    SET tiempo_bruto = TIMEDIFF(salida, entrada);
+                    SET minutos_trabajo = TIME_TO_SEC(tiempo_bruto) / 60;
+
+                    IF NEW.descanso = 1 THEN
+                        SET minutos_descanso = 30;
+                    ELSEIF NEW.descanso = 2 THEN
+                        SET minutos_descanso = 60;
+                    END IF;
+
+                    SET minutos_trabajo = GREATEST(0, minutos_trabajo - minutos_descanso);
+                    SET NEW.tiempo_trabajo = SEC_TO_TIME(minutos_trabajo * 60);
+                ELSE
+                    SET NEW.tiempo_trabajo = '00:00:00';
+                END IF;
+            END;
+            """
+
+            cursor.execute(trigger_sql)
+            self.db.connection.commit()
+            cursor.close()
+
+            print(f"✅ Trigger '{trigger_name}' creado correctamente.")
+        else:
+            print(f"✔️ Trigger '{trigger_name}' ya existe.")
 
 
     def _crear_trigger_estado(self):
@@ -167,6 +219,7 @@ class AssistanceModel:
         else:
             print(f"✔️ Trigger '{trigger_name}' ya existe.")
 
+
     def add(
         self,
         numero_nomina: int,
@@ -176,15 +229,13 @@ class AssistanceModel:
         salida_turno: str = None,
         hora_entrada: str = None,
         hora_salida: str = None,
-        tiempo_descanso: str = None,
-        retardo: str = None,
+        descanso: int = 0,
         tipo_registro: str = "manual"
     ):
         try:
             if tipo_registro not in ['automático', 'manual']:
                 tipo_registro = 'manual'
 
-            # 🔍 Validación de hora_entrada y hora_salida con depuración visible
             def limpiar_hora(valor, campo: str):
                 motivo = None
                 if valor is None:
@@ -205,13 +256,18 @@ class AssistanceModel:
             hora_entrada = limpiar_hora(hora_entrada, "hora_entrada")
             hora_salida = limpiar_hora(hora_salida, "hora_salida")
 
+            # Validar descanso
+            if descanso not in (0, 1, 2):
+                print(f"⚠️ Valor de descanso inválido ({descanso}), se asigna 0 por defecto.")
+                descanso = 0
+
             query = f"""
             INSERT INTO {E_ASSISTANCE.TABLE.value} (
                 {E_ASSISTANCE.NUMERO_NOMINA.value},
                 {E_ASSISTANCE.FECHA.value},
                 {E_ASSISTANCE.HORA_ENTRADA.value},
                 {E_ASSISTANCE.HORA_SALIDA.value},
-                {E_ASSISTANCE.RETARDO.value},
+                descanso,
                 {E_ASSISTANCE.ESTADO.value},
                 {E_ASSISTANCE.TIEMPO_TRABAJO.value},
                 fecha_generada
@@ -223,10 +279,10 @@ class AssistanceModel:
                 fecha,
                 hora_entrada,
                 hora_salida,
-                retardo,
+                descanso,
                 None,  # estado (trigger lo calcula)
                 None,  # tiempo_trabajo (trigger lo calcula)
-                None   # fecha_generada (null por default)
+                None   # fecha_generada
             )
 
             self.db.run_query(query, valores)
@@ -236,12 +292,12 @@ class AssistanceModel:
             return {"status": "error", "message": f"Error al agregar asistencia: {ex}"}
 
 
-
     def _formatear_fecha(self, fecha_sql: str) -> str:
         try:
             return datetime.strptime(fecha_sql, "%Y-%m-%d").strftime("%d/%m/%Y")
         except Exception:
             return fecha_sql
+
 
     def get_all(self) -> dict:
         try:
@@ -259,6 +315,7 @@ class AssistanceModel:
         except Exception as ex:
             return {"status": "error", "message": f"Error al obtener asistencias: {ex}"}
 
+
     def get_by_id(self, id_asistencia: int) -> dict:
         try:
             query = f"""
@@ -271,6 +328,7 @@ class AssistanceModel:
             return {"status": "success", "data": result}
         except Exception as ex:
             return {"status": "error", "message": f"Error al obtener asistencia por ID: {ex}"}
+
 
     def get_by_empleado_fecha(self, numero_nomina: int, fecha: str) -> dict | None:
         try:
@@ -290,8 +348,6 @@ class AssistanceModel:
             print(f"Error al obtener asistencia: {ex}")
             return None
 
-        
-
 
     def delete_by_numero_nomina_and_fecha(self, numero_nomina: int, fecha: str) -> dict:
         try:
@@ -306,7 +362,8 @@ class AssistanceModel:
             return {"status": "success"}
         except Exception as e:
             return {"status": "error", "message": str(e)}
-        
+
+
     def get_ultimo_id(self):
         try:
             query = "SELECT MAX(numero_nomina) AS ultimo FROM asistencias"
@@ -315,8 +372,9 @@ class AssistanceModel:
         except Exception as e:
             print(f"❌ Error al obtener último ID: {e}")
             return 0
-            
-    def add_manual_assistance(self, numero_nomina: int, fecha: str, hora_entrada: str, hora_salida: str):
+
+
+    def add_manual_assistance(self, numero_nomina: int, fecha: str, hora_entrada: str, hora_salida: str, descanso: int = 0):
         try:
             if not all(isinstance(h, str) for h in [hora_entrada, hora_salida]):
                 raise ValueError("Las horas deben ser cadenas en formato HH:MM:SS")
@@ -329,6 +387,10 @@ class AssistanceModel:
 
             if h_salida <= h_entrada:
                 raise ValueError("La hora de salida debe ser mayor que la de entrada")
+
+            if descanso not in (0, 1, 2):
+                print(f"⚠️ Descanso inválido ({descanso}), se usará 0.")
+                descanso = 0
 
             # ✅ Ya viene en formato YYYY-MM-DD desde la interfaz
             fecha_formateada = fecha
@@ -344,20 +406,18 @@ class AssistanceModel:
 
             query_insert = """
                 INSERT INTO asistencias (
-                    numero_nomina, fecha, hora_entrada, hora_salida
-                ) VALUES (%s, %s, %s, %s)
+                    numero_nomina, fecha, hora_entrada, hora_salida, descanso
+                ) VALUES (%s, %s, %s, %s, %s)
             """
-            self.db.run_query(query_insert, (numero_nomina, fecha_formateada, hora_entrada, hora_salida))
+            self.db.run_query(query_insert, (numero_nomina, fecha_formateada, hora_entrada, hora_salida, descanso))
             return {"status": "success", "message": "Asistencia agregada correctamente"}
 
         except Exception as e:
             return {"status": "error", "message": str(e)}
 
 
-
     def actualizar_horas_manualmente(self, numero_nomina, fecha, hora_entrada, hora_salida):
         try:
-            # Validar tipos
             if not all(isinstance(h, str) for h in [hora_entrada, hora_salida]):
                 raise ValueError("Las horas deben ser texto en formato HH:MM:SS")
 
@@ -368,15 +428,21 @@ class AssistanceModel:
 
             query = """
                 UPDATE asistencias
-                SET hora_entrada = %s, hora_salida = %s
-                WHERE numero_nomina = %s AND fecha = %s AND estado = 'incompleto'
+                SET hora_entrada = %s,
+                    hora_salida = %s,
+                    estado = CASE
+                        WHEN %s != '00:00:00' AND %s != '00:00:00' THEN 'completo'
+                        ELSE 'incompleto'
+                    END
+                WHERE numero_nomina = %s AND fecha = %s
             """
-            self.db.run_query(query, (hora_entrada, hora_salida, numero_nomina, fecha))
+            self.db.run_query(query, (hora_entrada, hora_salida, hora_entrada, hora_salida, numero_nomina, fecha))
             return {"status": "success"}
 
         except Exception as e:
             return {"status": "error", "message": str(e)}
-        
+
+
     def actualizar_estado_asistencia(self, numero_nomina: int, fecha: str) -> dict:
         try:
             query = """
@@ -393,27 +459,29 @@ class AssistanceModel:
             return {"status": "success"}
         except Exception as e:
             return {"status": "error", "message": str(e)}
-        
 
-    def actualizar_asistencia_completa(self, numero_nomina, fecha, hora_entrada, hora_salida, estado):
+
+    def actualizar_asistencia_completa(self, numero_nomina, fecha, hora_entrada, hora_salida, estado, descanso: int = 0):
         try:
-            # Convertir fecha de DD/MM/YYYY a YYYY-MM-DD
             fecha_sql = datetime.strptime(fecha, "%d/%m/%Y").strftime("%Y-%m-%d")
+
+            if descanso not in (0, 1, 2):
+                print(f"⚠️ Descanso inválido ({descanso}), se usará 0.")
+                descanso = 0
 
             query = """
                 UPDATE asistencias
                 SET hora_entrada = %s,
                     hora_salida = %s,
-                    estado = %s
+                    estado = %s,
+                    descanso = %s
                 WHERE numero_nomina = %s AND fecha = %s
             """
-            params = (hora_entrada, hora_salida, estado, numero_nomina, fecha_sql)
+            params = (hora_entrada, hora_salida, estado, descanso, numero_nomina, fecha_sql)
             self.db.run_query(query, params)
             return {"status": "success", "message": "Asistencia actualizada"}
         except Exception as e:
             return {"status": "error", "message": str(e)}
-        
-
 
 
     def get_fecha_minima_asistencia(self) -> Optional[date]:
@@ -479,6 +547,7 @@ class AssistanceModel:
             return {"status": "success"}
         except Exception as e:
             return {"status": "error", "message": str(e)}
+
 
     def get_fechas_generadas(self) -> list:
         """

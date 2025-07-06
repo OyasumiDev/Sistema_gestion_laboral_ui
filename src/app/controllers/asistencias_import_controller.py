@@ -84,6 +84,7 @@ class AsistenciasImportController:
                 print(f"❌ Error con motor {motor}: {e}")
         return None
 
+
     def _procesar_asistencias(self, df: pd.DataFrame) -> list:
         asistencias = []
 
@@ -119,10 +120,9 @@ class AsistenciasImportController:
                     "fecha": fecha.strftime("%Y-%m-%d"),
                     "hora_entrada": hora_entrada,
                     "hora_salida": hora_salida,
-                    "retardo": "00:00:00",
+                    "descanso": 0,  # Por defecto 0, puedes personalizarlo según reglas de tu archivo Excel si lo deseas
                     "estado": estado,
-                    "tiempo_trabajo": "00:00:00",
-                    "total_horas_trabajadas": "00:00:00"
+                    "tiempo_trabajo": "00:00:00"
                 }
 
                 asistencias.append(asistencia)
@@ -149,20 +149,23 @@ class AsistenciasImportController:
                         numero_nomina,
                         fecha,
                         hora_entrada,
-                        hora_salida
-                    ) VALUES (%s, %s, %s, %s)
+                        hora_salida,
+                        descanso
+                    ) VALUES (%s, %s, %s, %s, %s)
                 """
                 valores = (
                     asistencia["numero_nomina"],
                     asistencia["fecha"],
                     asistencia["hora_entrada"],
-                    asistencia["hora_salida"]
+                    asistencia["hora_salida"],
+                    asistencia["descanso"]
                 )
 
                 self.db.run_query(query, valores)
                 print(f"✅ Asistencia registrada: {valores}")
             except Exception as e:
                 print(f"❌ Error insertando asistencia para {asistencia.get('numero_nomina')} el {asistencia.get('fecha')}: {e}")
+
 
 
     def _existe_empleado(self, numero_nomina: int) -> bool:
