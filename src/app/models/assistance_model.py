@@ -31,23 +31,40 @@ class AssistanceModel:
                     fecha DATE NOT NULL,
                     hora_entrada TIME,
                     hora_salida TIME,
-                    descanso TINYINT DEFAULT 0,  -- 0: sin descanso, 1: media hora, 2: una hora
+                    descanso TINYINT DEFAULT 0,
                     estado VARCHAR(20),
                     tiempo_trabajo TIME,
                     fecha_generada DATE DEFAULT NULL,
+                    grupo_importacion VARCHAR(50) DEFAULT NULL,
                     FOREIGN KEY (numero_nomina) REFERENCES empleados(numero_nomina) ON DELETE CASCADE
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
                 """
                 self.db.run_query(create_query)
                 print(f"✅ Tabla {E_ASSISTANCE.TABLE.value} creada correctamente.")
             else:
-                print(f"✔️ La tabla {E_ASSISTANCE.TABLE.value} ya existe.")
+                # Asegurarse que la columna exista si la tabla ya está creada
+                columna_query = """
+                    SELECT COUNT(*) AS existe
+                    FROM information_schema.columns
+                    WHERE table_schema = %s AND table_name = %s AND column_name = 'grupo_importacion'
+                """
+                col_result = self.db.get_data(columna_query, (self.db.database, E_ASSISTANCE.TABLE.value), dictionary=True)
+                if col_result.get("existe", 0) == 0:
+                    alter_query = f"""
+                        ALTER TABLE {E_ASSISTANCE.TABLE.value}
+                        ADD COLUMN grupo_importacion VARCHAR(50) DEFAULT NULL
+                    """
+                    self.db.run_query(alter_query)
+                    print("🛠️ Columna 'grupo_importacion' agregada a la tabla asistencias.")
+                else:
+                    print("✔️ Columna 'grupo_importacion' ya existe en asistencias.")
 
             return True
 
         except Exception as ex:
             print(f"❌ Error al verificar/crear la tabla {E_ASSISTANCE.TABLE.value}: {ex}")
             return False
+
 
 
     def verificar_o_crear_triggers(self):
@@ -230,7 +247,8 @@ class AssistanceModel:
         hora_entrada: str = None,
         hora_salida: str = None,
         descanso: int = 0,
-        tipo_registro: str = "manual"
+        tipo_registro: str = "manual",
+        grupo_importacion: str = None
     ):
         try:
             if tipo_registro not in ['automático', 'manual']:
@@ -246,17 +264,14 @@ class AssistanceModel:
                     valor_str = str(valor).strip().lower()
                     if valor_str in ['nan', '', 'none']:
                         motivo = f"cadena inválida: '{valor_str}'"
-
                 if motivo:
                     print(f"⚠️ {campo.upper()} inválida para empleado {numero_nomina} en fecha {fecha} ({motivo}). Reemplazada por '00:00:00'")
                     return "00:00:00"
-
                 return str(valor).strip()
 
             hora_entrada = limpiar_hora(hora_entrada, "hora_entrada")
             hora_salida = limpiar_hora(hora_salida, "hora_salida")
 
-            # Validar descanso
             if descanso not in (0, 1, 2):
                 print(f"⚠️ Valor de descanso inválido ({descanso}), se asigna 0 por defecto.")
                 descanso = 0
@@ -267,11 +282,12 @@ class AssistanceModel:
                 {E_ASSISTANCE.FECHA.value},
                 {E_ASSISTANCE.HORA_ENTRADA.value},
                 {E_ASSISTANCE.HORA_SALIDA.value},
-                descanso,
+                {E_ASSISTANCE.DESCANSO.value},
                 {E_ASSISTANCE.ESTADO.value},
                 {E_ASSISTANCE.TIEMPO_TRABAJO.value},
-                fecha_generada
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                {E_ASSISTANCE.FECHA_GENERADA.value},
+                {E_ASSISTANCE.GRUPO_IMPORTACION.value}
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
             """
 
             valores = (
@@ -280,9 +296,10 @@ class AssistanceModel:
                 hora_entrada,
                 hora_salida,
                 descanso,
-                None,  # estado (trigger lo calcula)
-                None,  # tiempo_trabajo (trigger lo calcula)
-                None   # fecha_generada
+                None,
+                None,
+                None,
+                grupo_importacion
             )
 
             self.db.run_query(query, valores)
@@ -290,6 +307,60 @@ class AssistanceModel:
 
         except Exception as ex:
             return {"status": "error", "message": f"Error al agregar asistencia: {ex}"}
+
+
+    def add_manual_assistance(
+        self,
+        numero_nomina: int,
+        fecha: str,
+        hora_entrada: str,
+        hora_salida: str,
+        descanso: int = 0,
+        grupo_importacion: str = None
+    ):
+        try:
+            if not all(isinstance(h, str) for h in [hora_entrada, hora_salida]):
+                raise ValueError("Las horas deben ser cadenas en formato HH:MM:SS")
+
+            try:
+                h_entrada = datetime.strptime(hora_entrada, "%H:%M:%S")
+                h_salida = datetime.strptime(hora_salida, "%H:%M:%S")
+            except ValueError:
+                raise ValueError("Formato de hora inválido. Usa HH:MM:SS")
+
+            if h_salida <= h_entrada:
+                raise ValueError("La hora de salida debe ser mayor que la de entrada")
+
+            if descanso not in (0, 1, 2):
+                print(f"⚠️ Descanso inválido ({descanso}), se usará 0.")
+                descanso = 0
+
+            fecha_formateada = fecha
+
+            query_check = f"""
+                SELECT COUNT(*) AS existe
+                FROM {E_ASSISTANCE.TABLE.value}
+                WHERE {E_ASSISTANCE.NUMERO_NOMINA.value} = %s AND {E_ASSISTANCE.FECHA.value} = %s
+            """
+            resultado = self.db.get_data(query_check, (numero_nomina, fecha_formateada), dictionary=True)
+            if resultado.get("existe", 0) > 0:
+                return {"status": "error", "message": "Ya existe una asistencia registrada para ese empleado en esa fecha"}
+
+            query_insert = f"""
+                INSERT INTO {E_ASSISTANCE.TABLE.value} (
+                    {E_ASSISTANCE.NUMERO_NOMINA.value},
+                    {E_ASSISTANCE.FECHA.value},
+                    {E_ASSISTANCE.HORA_ENTRADA.value},
+                    {E_ASSISTANCE.HORA_SALIDA.value},
+                    {E_ASSISTANCE.DESCANSO.value},
+                    {E_ASSISTANCE.GRUPO_IMPORTACION.value}
+                ) VALUES (%s, %s, %s, %s, %s, %s)
+            """
+            self.db.run_query(query_insert, (numero_nomina, fecha_formateada, hora_entrada, hora_salida, descanso, grupo_importacion))
+            return {"status": "success", "message": "Asistencia agregada correctamente"}
+
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
 
 
     def _formatear_fecha(self, fecha_sql: str) -> str:
@@ -372,48 +443,6 @@ class AssistanceModel:
         except Exception as e:
             print(f"❌ Error al obtener último ID: {e}")
             return 0
-
-
-    def add_manual_assistance(self, numero_nomina: int, fecha: str, hora_entrada: str, hora_salida: str, descanso: int = 0):
-        try:
-            if not all(isinstance(h, str) for h in [hora_entrada, hora_salida]):
-                raise ValueError("Las horas deben ser cadenas en formato HH:MM:SS")
-
-            try:
-                h_entrada = datetime.strptime(hora_entrada, "%H:%M:%S")
-                h_salida = datetime.strptime(hora_salida, "%H:%M:%S")
-            except ValueError:
-                raise ValueError("Formato de hora inválido. Usa HH:MM:SS")
-
-            if h_salida <= h_entrada:
-                raise ValueError("La hora de salida debe ser mayor que la de entrada")
-
-            if descanso not in (0, 1, 2):
-                print(f"⚠️ Descanso inválido ({descanso}), se usará 0.")
-                descanso = 0
-
-            # ✅ Ya viene en formato YYYY-MM-DD desde la interfaz
-            fecha_formateada = fecha
-
-            query_check = """
-                SELECT COUNT(*) AS existe
-                FROM asistencias
-                WHERE numero_nomina = %s AND fecha = %s
-            """
-            resultado = self.db.get_data(query_check, (numero_nomina, fecha_formateada), dictionary=True)
-            if resultado.get("existe", 0) > 0:
-                return {"status": "error", "message": "Ya existe una asistencia registrada para ese empleado en esa fecha"}
-
-            query_insert = """
-                INSERT INTO asistencias (
-                    numero_nomina, fecha, hora_entrada, hora_salida, descanso
-                ) VALUES (%s, %s, %s, %s, %s)
-            """
-            self.db.run_query(query_insert, (numero_nomina, fecha_formateada, hora_entrada, hora_salida, descanso))
-            return {"status": "success", "message": "Asistencia agregada correctamente"}
-
-        except Exception as e:
-            return {"status": "error", "message": str(e)}
 
 
     def actualizar_horas_manualmente(self, numero_nomina, fecha, hora_entrada, hora_salida):

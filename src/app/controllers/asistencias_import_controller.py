@@ -1,8 +1,12 @@
 import flet as ft
 import pandas as pd
 from datetime import datetime
+
 from app.core.invokers.file_open_invoker import FileOpenInvoker
 from app.core.interfaces.database_mysql import DatabaseMysql
+from app.models.assistance_model import AssistanceModel
+from app.core.enums.e_assistance_model import E_ASSISTANCE
+
 
 class AsistenciasImportController:
     COLUMN_MAP = {
@@ -12,11 +16,13 @@ class AsistenciasImportController:
         "Salida": "hora_salida"
     }
 
-
     def __init__(self, page: ft.Page, on_success: callable = None):
         self.page = page
         self.db = DatabaseMysql()
         self.on_success = on_success
+        self.asistencia_model = AssistanceModel()
+        self.e_asistencia_model = E_ASSISTANCE  # ✅ Corrección aquí (sin paréntesis)
+        self.ultimo_grupo_importado = None
 
         self.file_invoker = FileOpenInvoker(
             page=self.page,
@@ -54,7 +60,7 @@ class AsistenciasImportController:
                 self._insertar_asistencias(asistencias)
 
                 if self.on_success:
-                    self.on_success()  # ✅ Sin argumento para evitar error
+                    self.on_success()
 
                 self.page.snack_bar = ft.SnackBar(
                     ft.Text("✅ Asistencias importadas correctamente."),
@@ -67,19 +73,14 @@ class AsistenciasImportController:
         motores = ["openpyxl", "xlrd", "pyxlsb"]
         for motor in motores:
             try:
-                # Prueba con fila 6 como encabezado
                 df = pd.read_excel(path, engine=motor, header=5)
                 columnas = list(df.columns)
-
-                # Validar si se detectó realmente la columna "ID Checador"
                 if "ID Checador" not in columnas:
                     print(f"❌ Encabezados inválidos detectados: {columnas}")
                     continue
-
                 print(f"📥 Archivo cargado con motor '{motor}'")
                 print(f"🧪 Columnas detectadas: {columnas}")
                 return df
-
             except Exception as e:
                 print(f"❌ Error con motor {motor}: {e}")
         return None
@@ -103,7 +104,6 @@ class AsistenciasImportController:
                 if pd.isna(fecha):
                     raise ValueError("Fecha inválida")
 
-                # Validación robusta de hora
                 def limpiar_hora(hora, campo):
                     if pd.isna(hora) or str(hora).strip().lower() in ["", "nan", "none"]:
                         print(f"⚠️ Hora vacía detectada en fila {index + 1} ({campo}). Se asigna '00:00:00'")
@@ -113,16 +113,12 @@ class AsistenciasImportController:
                 hora_entrada = limpiar_hora(entrada_raw, "Entrada")
                 hora_salida = limpiar_hora(salida_raw, "Salida")
 
-                estado = "incompleto" if hora_entrada == "00:00:00" or hora_salida == "00:00:00" else "completo"
-
                 asistencia = {
-                    "numero_nomina": numero_nomina,
-                    "fecha": fecha.strftime("%Y-%m-%d"),
-                    "hora_entrada": hora_entrada,
-                    "hora_salida": hora_salida,
-                    "descanso": 0,  # Por defecto 0, puedes personalizarlo según reglas de tu archivo Excel si lo deseas
-                    "estado": estado,
-                    "tiempo_trabajo": "00:00:00"
+                    E_ASSISTANCE.NUMERO_NOMINA.value: numero_nomina,
+                    E_ASSISTANCE.FECHA.value: fecha.strftime("%Y-%m-%d"),
+                    E_ASSISTANCE.HORA_ENTRADA.value: hora_entrada,
+                    E_ASSISTANCE.HORA_SALIDA.value: hora_salida,
+                    E_ASSISTANCE.DESCANSO.value: 0  # Se calculará luego o en UI
                 }
 
                 asistencias.append(asistencia)
@@ -134,39 +130,43 @@ class AsistenciasImportController:
 
 
     def _insertar_asistencias(self, asistencias: list):
+        grupo_importacion = f"import_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        self.ultimo_grupo_importado = grupo_importacion
+
         for asistencia in asistencias:
             try:
-                if not self._existe_empleado(asistencia["numero_nomina"]):
-                    print(f"⚠️ Empleado {asistencia['numero_nomina']} no existe. Saltando...")
+                if not self._existe_empleado(asistencia[E_ASSISTANCE.NUMERO_NOMINA.value]):
+                    print(f"⚠️ Empleado {asistencia[E_ASSISTANCE.NUMERO_NOMINA.value]} no existe. Saltando...")
                     continue
 
-                if self._asistencia_existente(asistencia["numero_nomina"], asistencia["fecha"]):
-                    print(f"⛔ Ya existe asistencia para {asistencia['numero_nomina']} el {asistencia['fecha']}. Saltando...")
+                if self._asistencia_existente(asistencia[E_ASSISTANCE.NUMERO_NOMINA.value], asistencia[E_ASSISTANCE.FECHA.value]):
+                    print(f"⛔ Ya existe asistencia para {asistencia[E_ASSISTANCE.NUMERO_NOMINA.value]} el {asistencia[E_ASSISTANCE.FECHA.value]}. Saltando...")
                     continue
 
-                query = """
-                    INSERT INTO asistencias (
-                        numero_nomina,
-                        fecha,
-                        hora_entrada,
-                        hora_salida,
-                        descanso
-                    ) VALUES (%s, %s, %s, %s, %s)
+                query = f"""
+                    INSERT INTO {E_ASSISTANCE.TABLE.value} (
+                        {E_ASSISTANCE.NUMERO_NOMINA.value},
+                        {E_ASSISTANCE.FECHA.value},
+                        {E_ASSISTANCE.HORA_ENTRADA.value},
+                        {E_ASSISTANCE.HORA_SALIDA.value},
+                        {E_ASSISTANCE.DESCANSO.value},
+                        {E_ASSISTANCE.GRUPO_IMPORTACION.value}
+                    ) VALUES (%s, %s, %s, %s, %s, %s)
                 """
                 valores = (
-                    asistencia["numero_nomina"],
-                    asistencia["fecha"],
-                    asistencia["hora_entrada"],
-                    asistencia["hora_salida"],
-                    asistencia["descanso"]
+                    asistencia[E_ASSISTANCE.NUMERO_NOMINA.value],
+                    asistencia[E_ASSISTANCE.FECHA.value],
+                    asistencia[E_ASSISTANCE.HORA_ENTRADA.value],
+                    asistencia[E_ASSISTANCE.HORA_SALIDA.value],
+                    asistencia[E_ASSISTANCE.DESCANSO.value],
+                    grupo_importacion
                 )
 
                 self.db.run_query(query, valores)
                 print(f"✅ Asistencia registrada: {valores}")
+
             except Exception as e:
-                print(f"❌ Error insertando asistencia para {asistencia.get('numero_nomina')} el {asistencia.get('fecha')}: {e}")
-
-
+                print(f"❌ Error insertando asistencia para {asistencia.get(E_ASSISTANCE.NUMERO_NOMINA.value)} el {asistencia.get(E_ASSISTANCE.FECHA.value)}: {e}")
 
     def _existe_empleado(self, numero_nomina: int) -> bool:
         try:
@@ -196,5 +196,4 @@ class AsistenciasImportController:
 
         except Exception as e:
             print(f"❌ Error al verificar existencia de asistencia: {e}")
-            return True  # Asumir duplicado si ocurre error
-
+            return True

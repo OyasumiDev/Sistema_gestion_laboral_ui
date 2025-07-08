@@ -1,17 +1,18 @@
 import flet as ft
-import pandas as pd
 from datetime import datetime, timedelta, date
-import functools
+import pandas as pd
+
 from app.models.assistance_model import AssistanceModel
-from app.core.enums.e_assistance_model import E_ASSISTANCE
 from app.controllers.asistencias_import_controller import AsistenciasImportController
 from app.core.app_state import AppState
 from app.core.invokers.file_save_invoker import FileSaveInvoker
 from app.views.containers.theme_controller import ThemeController
-from app.views.containers.modal_alert import ModalAlert
 from app.views.containers.window_snackbar import WindowSnackbar
-from tabulate import tabulate
-from app.utils.table_action_buttons import crear_boton_editar, crear_boton_eliminar
+from app.views.containers.modal_alert import ModalAlert
+
+from app.helpers.sort_helpers import SortHelper
+from app.helpers.table_column_builder import TableColumnBuilder
+from app.utils.table_action_buttons import crear_boton_editar
 
 
 class AsistenciasContainer(ft.Container):
@@ -26,17 +27,31 @@ class AsistenciasContainer(ft.Container):
         self.asistencia_model = AssistanceModel()
         self.theme_ctrl = ThemeController()
 
-        self.sort_key = "numero_nomina"
-        self.sort_asc = True
+        self.sort_helper = SortHelper(default_key="numero_nomina")
+        self.editando = {}
+        self.datos_por_grupo = {}
+        self.grupos_expandido = {}
 
-        # NUEVAS estructuras
-        self.editando = {}  # Clave: (numero_nomina, fecha)
-        self.datos_por_periodo = {}  # Agrupaciones por periodos de fechas
-        self.periodos_expandido = {}  # Controla expansión de cada periodo
+        self.columnas_definidas = [
+            ("Nómina", "numero_nomina"),
+            ("Nombre", "nombre_completo"),
+            ("Fecha", "fecha"),
+            ("Hora Entrada", "hora_entrada"),
+            ("Hora Salida", "hora_salida"),
+            ("Descanso", "descanso"),
+            ("Horas Trabajadas", "tiempo_trabajo"),
+            ("Estado", "estado"),
+        ]
+
+        self.column_builder = TableColumnBuilder(
+            sort_helper=self.sort_helper,
+            on_edit=self.activar_edicion,
+            on_delete=lambda reg: self._confirmar_eliminacion(reg["numero_nomina"], reg["fecha"])
+        )
 
         self.import_controller = AsistenciasImportController(
             page=self.page,
-            on_success=self._actualizar_tabla  # Este método debe llamarse igual que el nuevo `actualizar_tabla`
+            on_success=self._actualizar_tabla
         )
 
         self.save_invoker = FileSaveInvoker(
@@ -49,14 +64,8 @@ class AsistenciasContainer(ft.Container):
 
         self.window_snackbar = WindowSnackbar(self.page)
 
-        # TABLA con columnas personalizadas y sin filas iniciales
-        self.table = ft.DataTable(
-            columns=self.crear_columnas(),
-            rows=[]
-        )
-
         self.scroll_column = ft.Column(
-            controls=[self.table],
+            controls=[],
             scroll=ft.ScrollMode.ALWAYS,
             expand=True,
             alignment=ft.MainAxisAlignment.START
@@ -74,16 +83,15 @@ class AsistenciasContainer(ft.Container):
             on_tap=lambda _: self.save_invoker.open_save()
         )
 
-        self.new_column_button = self._build_action_button(
-            label="Agregar Columna",
-            icon=ft.icons.PERSON_ADD_ALT_1_OUTLINED,
-            on_tap=self._insertar_asistencia_desde_columna
-        )
+        self.new_column_button = None  # Ya no se usa
 
         self.content = self._build_content()
-        self._actualizar_tabla()
-        self.page.update()
 
+        # ⛔ NO LLAMES self._actualizar_tabla() ni self.page.update() aquí
+
+    def on_mount(self):
+        # ✅ Llamado explícito desde HomeView luego de agregar el contenedor a la página
+        self._actualizar_tabla()
 
     def _build_content(self):
         contenido = ft.Container(
@@ -101,7 +109,7 @@ class AsistenciasContainer(ft.Container):
                         content=ft.Row(
                             spacing=10,
                             alignment=ft.MainAxisAlignment.START,
-                            controls=[self.import_button, self.export_button, self.new_column_button]
+                            controls=[self.import_button, self.export_button]
                         )
                     ),
                     ft.Container(
@@ -117,24 +125,23 @@ class AsistenciasContainer(ft.Container):
             )
         )
 
-        # ⚠️ Asegúrate que la tabla ya esté agregada al layout antes de actualizar
+        # ✅ Asegura que el contenedor esté montado antes de intentar actualizar
         self.page.add(self)
-        self._actualizar_tabla()
         return contenido
 
-    def _icono_orden(self, columna):
-        if self.sort_key == columna:
-            return "▲" if self.sort_asc else "▼"
-        return "⇅"
+
+    def crear_columnas(self):
+        return self.column_builder.build_columns(self.columnas_definidas)
 
 
-    def _sort_by(self, key):
-        if self.sort_key == key:
-            self.sort_asc = not self.sort_asc
-        else:
-            self.sort_key = key
-            self.sort_asc = True
-        self._actualizar_tabla()
+    def _agrupar_por_grupo_importacion(self, datos: list) -> dict:
+        agrupado = {}
+        for reg in datos:
+            grupo = reg.get("grupo_importacion", "sin_grupo")
+            if grupo not in agrupado:
+                agrupado[grupo] = []
+            agrupado[grupo].append(reg)
+        return agrupado
 
 
     def _actualizar_tabla(self):
@@ -144,25 +151,53 @@ class AsistenciasContainer(ft.Container):
             return
 
         datos = resultado["data"]
-        self.datos_por_periodo = self._agrupar_por_periodo(datos)
+        self.datos_por_grupo = self._agrupar_por_grupo_importacion(datos)
 
-        self.table.rows.clear()
-        for periodo, registros in self.datos_por_periodo.items():
-            expandido = self.periodos_expandido.get(periodo, True)
-            self.table.rows.append(
-                ft.DataRow(
-                    cells=[ft.DataCell(ft.Text(f"📆 {periodo}"))],
-                    selected=expandido,
-                    on_select_changed=lambda e, p=periodo: self.toggle_periodo(p),
-                    color=ft.colors.SURFACE_VARIANT,
-                )
+        self.scroll_column.controls.clear()
+        paneles = []
+
+        for grupo, registros in self.datos_por_grupo.items():
+            expandido = self.grupos_expandido.get(grupo, True)
+
+            tabla = ft.DataTable(
+                columns=self.crear_columnas(),
+                rows=[self._crear_fila(reg) for reg in registros]
             )
-            if expandido:
-                for reg in registros:
-                    self.table.rows.append(self._crear_fila(reg))
 
-        self.table.update()
+            encabezado = ft.Row([
+                ft.Text(f"🗂 Grupo: {grupo} ({len(registros)} registros)", expand=True),
+                ft.IconButton(
+                    icon=ft.icons.ADD,
+                    tooltip="Agregar asistencia",
+                    on_click=lambda e, g=grupo: self._abrir_modal_agregar(g)
+                )
+            ])
+
+            panel = ft.ExpansionPanel(
+                header=encabezado,
+                content=tabla,
+                can_tap_header=True,
+                expanded=expandido
+            )
+
+            # Manejo de expansión/colapso por grupo
+            def toggle_expansion(e, grupo_local=grupo):
+                self.grupos_expandido[grupo_local] = not self.grupos_expandido.get(grupo_local, True)
+                self._actualizar_tabla()
+
+            panel.on_expansion_changed = toggle_expansion
+
+            paneles.append(panel)
+
+        self.scroll_column.controls.append(
+            ft.ExpansionPanelList(
+                expand=True,
+                controls=paneles
+            )
+        )
+
         self.page.update()
+
 
 
     def _agrupar_por_periodo(self, datos: list) -> dict:
@@ -197,18 +232,6 @@ class AsistenciasContainer(ft.Container):
         return agrupado
 
 
-    def crear_columnas(self):
-        return [
-            ft.DataColumn(ft.Text("Nómina")),
-            ft.DataColumn(ft.Text("Nombre")),
-            ft.DataColumn(ft.Text("Fecha")),
-            ft.DataColumn(ft.Text("Hora Entrada")),
-            ft.DataColumn(ft.Text("Hora Salida")),
-            ft.DataColumn(ft.Text("Descanso")),
-            ft.DataColumn(ft.Text("Horas Trabajadas")),
-            ft.DataColumn(ft.Text("Estado")),
-            ft.DataColumn(ft.Text("Acciones")),
-        ]
 
     def activar_edicion(self, numero_nomina, fecha):
         self.editando.clear()  # Solo una fila editable a la vez
@@ -341,79 +364,7 @@ class AsistenciasContainer(ft.Container):
             )
         )
 
-
-    def _exportar_asistencias(self, path: str):
-        try:
-            resultado = self.asistencia_model.get_all()
-            if resultado["status"] != "success":
-                print("❌ Error al obtener asistencias:", resultado["message"])
-                return
-
-            datos = resultado["data"]
-
-            columnas = [
-                ("numero_nomina", "ID Checador"),
-                ("nombre", "Nombre"),
-                ("fecha", "Fecha"),
-                ("hora_entrada", "Entrada"),
-                ("hora_salida", "Salida"),
-                ("retardo", "Retardo"),
-                ("estado", "Estado"),
-                ("tiempo_trabajo", "Tiempo de trabajo")
-            ]
-
-            encabezado = [
-                ["CONTROL de Mexico"],
-                ["Entradas y Salidas"],
-                [f"Periodo: {datos[0]['fecha']} al {datos[-1]['fecha']}"] if datos else [""],
-                ["Sucursales: Sucursal Matriz,Soriana,Mattel"],
-                []
-            ]
-
-            cuerpo = []
-            for reg in datos:
-                fila = []
-                for clave, _ in columnas:
-                    valor = reg.get(clave)
-                    if isinstance(valor, (datetime, pd.Timestamp)):
-                        fila.append(valor.strftime("%H:%M:%S"))
-                    elif isinstance(valor, str) and ":" in valor:
-                        fila.append(valor)
-                    elif valor in [None, ""]:
-                        fila.append("00:00:00" if "hora" in clave or "tiempo" in clave or clave in ["retardo"] else "")
-                    else:
-                        fila.append(str(valor))
-                cuerpo.append(fila)
-
-            df = pd.DataFrame(cuerpo, columns=[n for _, n in columnas])
-            with pd.ExcelWriter(path, engine="openpyxl") as writer:
-                df.to_excel(writer, startrow=5, index=False, sheet_name="Asistencias")
-                for idx, fila in enumerate(encabezado, 1):
-                    for col_idx, val in enumerate(fila, 1):
-                        writer.sheets["Asistencias"].cell(row=idx, column=col_idx, value=val)
-
-            print(f"✅ Asistencias exportadas a: {path}")
-        except Exception as e:
-            print(f"❌ Error al exportar: {e}")
-
-
-    def depurar_asistencias(self):
-        resultado = self.asistencia_model.get_all()
-        if resultado["status"] != "success":
-            print("❌ Error al obtener asistencias:", resultado["message"])
-            return
-
-        datos = resultado["data"]
-        if not datos:
-            print("⚠️ No hay asistencias registradas.")
-            return
-
-        columnas = [e.value for e in E_ASSISTANCE]
-        tabla = [[registro.get(col) for col in columnas] for registro in datos]
-        print("\n📋 Asistencias registradas en la base de datos:")
-        print(tabulate(tabla, headers=columnas, tablefmt="grid"))
-
-    def _insertar_asistencia_desde_columna(self, _):
+    def _abrir_modal_agregar(self, grupo_importacion):
         numero_input = ft.TextField(hint_text="ID Empleado", width=120, keyboard_type=ft.KeyboardType.NUMBER)
         fecha_input = ft.TextField(hint_text="Fecha (DD/MM/YYYY)", width=160)
         entrada_input = ft.TextField(hint_text="Entrada (HH:MM:SS)", width=140)
@@ -463,15 +414,16 @@ class AsistenciasContainer(ft.Container):
 
         def on_guardar(_):
             errores = []
+
             numero_input.border_color = None
             fecha_input.border_color = None
             entrada_input.border_color = None
             salida_input.border_color = None
 
-            numero_str = str(numero_input.value).strip()
-            fecha_str = str(fecha_input.value).strip()
-            entrada_str = str(entrada_input.value).strip()
-            salida_str = str(salida_input.value).strip()
+            numero_str = numero_input.value.strip()
+            fecha_str = fecha_input.value.strip()
+            entrada_str = entrada_input.value.strip()
+            salida_str = salida_input.value.strip()
 
             try:
                 numero = int(numero_str)
@@ -518,36 +470,47 @@ class AsistenciasContainer(ft.Container):
                 numero_nomina=numero,
                 fecha=fecha_sql,
                 hora_entrada=entrada_str,
-                hora_salida=salida_str
+                hora_salida=salida_str,
+                grupo_importacion=grupo_importacion  # 👈 clave para el requerimiento
             )
 
             if resultado["status"] == "success":
                 self.window_snackbar.show_success("✅ Asistencia registrada correctamente.")
-                self.depurar_asistencias()
+                self._actualizar_tabla()
             else:
                 ModalAlert.mostrar_info("Error", "❌ " + resultado["message"])
 
-            self._actualizar_tabla()
-
-        fila = ft.DataRow(cells=[
-            ft.DataCell(numero_input),
-            ft.DataCell(ft.Text("-")),
-            ft.DataCell(fecha_input),
-            ft.DataCell(entrada_input),
-            ft.DataCell(salida_input),
-            ft.DataCell(ft.Text("00:00:00")),
-            ft.DataCell(ft.Text("completo")),
-            ft.DataCell(ft.Text("00:00:00")),
-            ft.DataCell(ft.Row([
-                ft.IconButton(icon=ft.icons.CHECK, icon_color=ft.colors.GREEN_600, on_click=on_guardar),
-                ft.IconButton(icon=ft.icons.CLOSE, icon_color=ft.colors.RED_600, on_click=self._actualizar_tabla)
-            ]))
+        fila = ft.Row([
+            numero_input,
+            fecha_input,
+            entrada_input,
+            salida_input,
+            ft.IconButton(icon=ft.icons.CHECK, icon_color=ft.colors.GREEN_600, on_click=on_guardar),
+            ft.IconButton(icon=ft.icons.CLOSE, icon_color=ft.colors.RED_600, on_click=lambda _: self._actualizar_tabla())
         ])
 
-        if self.table:
-            self.table.rows.append(fila)
-            self.table.update()
+        self.page.dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Text(f"Agregar asistencia a grupo: {grupo_importacion}"),
+            content=fila,
+            actions=[],
+            actions_alignment=ft.MainAxisAlignment.END
+        )
+        self.page.dialog.open = True
         self.page.update()
 
 
 
+    def _exportar_asistencias(self, ruta_guardado: str):
+        try:
+            resultado = self.asistencia_model.get_all()
+            if resultado["status"] != "success":
+                self.window_snackbar.show_error("❌ No se pudieron obtener los datos para exportar.")
+                return
+
+            df = pd.DataFrame(resultado["data"])
+            df.to_excel(ruta_guardado, index=False)
+            self.window_snackbar.show_success("✅ Asistencias exportadas correctamente.")
+
+        except Exception as e:
+            self.window_snackbar.show_error(f"❌ Error al exportar asistencias: {str(e)}")
