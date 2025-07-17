@@ -26,8 +26,8 @@ class AsistenciasContainer(ft.Container):
         self.page = AppState().page
         self.asistencia_model = AssistanceModel()
         self.theme_ctrl = ThemeController()
-
         self.sort_helper = SortHelper(default_key="numero_nomina")
+
         self.editando = {}
         self.datos_por_grupo = {}
         self.grupos_expandido = {}
@@ -83,15 +83,13 @@ class AsistenciasContainer(ft.Container):
             on_tap=lambda _: self.save_invoker.open_save()
         )
 
-        self.new_column_button = None  # Ya no se usa
+        self.new_column_button = None
 
         self.content = self._build_content()
 
-        # ⛔ NO LLAMES self._actualizar_tabla() ni self.page.update() aquí
-
-    def on_mount(self):
-        # ✅ Llamado explícito desde HomeView luego de agregar el contenedor a la página
+        # ✅ Carga inmediata de asistencias al crear el contenedor
         self._actualizar_tabla()
+
 
     def _build_content(self):
         contenido = ft.Container(
@@ -124,11 +122,8 @@ class AsistenciasContainer(ft.Container):
                 ]
             )
         )
-
-        # ✅ Asegura que el contenedor esté montado antes de intentar actualizar
         self.page.add(self)
         return contenido
-
 
     def crear_columnas(self):
         return self.column_builder.build_columns(self.columnas_definidas)
@@ -137,11 +132,30 @@ class AsistenciasContainer(ft.Container):
     def _agrupar_por_grupo_importacion(self, datos: list) -> dict:
         agrupado = {}
         for reg in datos:
-            grupo = reg.get("grupo_importacion", "sin_grupo")
-            if grupo not in agrupado:
-                agrupado[grupo] = []
-            agrupado[grupo].append(reg)
+            grupo_fecha = reg.get("grupo_importacion")
+            if not grupo_fecha:
+                fecha_registro = reg.get("fecha")
+                if isinstance(fecha_registro, str):
+                    try:
+                        fecha_registro = datetime.strptime(fecha_registro, "%Y-%m-%d").date()
+                    except:
+                        fecha_registro = date.today()
+                grupo_fecha = f"GRUPO:{fecha_registro.strftime('%d/%m/%Y')}"
+                reg["grupo_importacion"] = grupo_fecha  # solo si no existe
+
+            if grupo_fecha not in agrupado:
+                agrupado[grupo_fecha] = []
+            agrupado[grupo_fecha].append(reg)
         return agrupado
+
+
+    def _extraer_fecha_primer_registro(self, registros: list):
+        try:
+            primer_registro = registros[0]
+            fecha_str = primer_registro.get("fecha", "")
+            return datetime.strptime(fecha_str, "%Y-%m-%d").date()
+        except:
+            return date.min
 
 
     def _actualizar_tabla(self):
@@ -152,12 +166,24 @@ class AsistenciasContainer(ft.Container):
 
         datos = resultado["data"]
         self.datos_por_grupo = self._agrupar_por_grupo_importacion(datos)
-
         self.scroll_column.controls.clear()
+
         paneles = []
 
-        for grupo, registros in self.datos_por_grupo.items():
-            expandido = self.grupos_expandido.get(grupo, True)
+        # Ordenar por la fecha del primer registro de cada grupo, más recientes primero
+        grupos_ordenados = sorted(
+            self.datos_por_grupo.items(),
+            key=lambda item: self._extraer_fecha_primer_registro(item[1]),
+            reverse=True
+        )
+
+        # Mantener solo un grupo abierto
+        self.grupos_expandido = {grupo: False for grupo, _ in grupos_ordenados}
+        if grupos_ordenados:
+            self.grupos_expandido[grupos_ordenados[0][0]] = True
+
+        for grupo, registros in grupos_ordenados:
+            expandido = self.grupos_expandido.get(grupo, False)
 
             tabla = ft.DataTable(
                 columns=self.crear_columnas(),
@@ -165,7 +191,7 @@ class AsistenciasContainer(ft.Container):
             )
 
             encabezado = ft.Row([
-                ft.Text(f"🗂 Grupo: {grupo} ({len(registros)} registros)", expand=True),
+                ft.Text(f"🗂 {grupo}", expand=True),
                 ft.IconButton(
                     icon=ft.icons.ADD,
                     tooltip="Agregar asistencia",
@@ -180,13 +206,10 @@ class AsistenciasContainer(ft.Container):
                 expanded=expandido
             )
 
-            # Manejo de expansión/colapso por grupo
-            def toggle_expansion(e, grupo_local=grupo):
-                self.grupos_expandido[grupo_local] = not self.grupos_expandido.get(grupo_local, True)
-                self._actualizar_tabla()
+            def crear_toggle(grupo_local):
+                return lambda e: self._toggle_expansion(grupo_local)
 
-            panel.on_expansion_changed = toggle_expansion
-
+            panel.on_expansion_changed = crear_toggle(grupo)
             paneles.append(panel)
 
         self.scroll_column.controls.append(
@@ -198,6 +221,14 @@ class AsistenciasContainer(ft.Container):
 
         self.page.update()
 
+
+
+
+    def _toggle_expansion(self, grupo):
+        # ✅ Solo este grupo se expande, los demás se cierran
+        self.grupos_expandido = {k: False for k in self.datos_por_grupo.keys()}
+        self.grupos_expandido[grupo] = True
+        self._actualizar_tabla()
 
 
     def _agrupar_por_periodo(self, datos: list) -> dict:

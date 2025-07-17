@@ -130,6 +130,7 @@ class AsistenciasImportController:
 
 
     def _insertar_asistencias(self, asistencias: list):
+        # ✅ Usar un único grupo para todas las asistencias de esta importación
         grupo_importacion = f"import_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
         self.ultimo_grupo_importado = grupo_importacion
 
@@ -167,6 +168,7 @@ class AsistenciasImportController:
 
             except Exception as e:
                 print(f"❌ Error insertando asistencia para {asistencia.get(E_ASSISTANCE.NUMERO_NOMINA.value)} el {asistencia.get(E_ASSISTANCE.FECHA.value)}: {e}")
+
 
     def _existe_empleado(self, numero_nomina: int) -> bool:
         try:
