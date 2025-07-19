@@ -35,7 +35,7 @@ class AssistanceModel:
                     estado VARCHAR(20),
                     tiempo_trabajo TIME,
                     fecha_generada DATE DEFAULT NULL,
-                    grupo_importacion VARCHAR(50) DEFAULT NULL,
+                    grupo_importacion VARCHAR(150) DEFAULT NULL,
                     FOREIGN KEY (numero_nomina) REFERENCES empleados(numero_nomina) ON DELETE CASCADE
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
                 """
@@ -373,7 +373,7 @@ class AssistanceModel:
     def get_all(self) -> dict:
         try:
             query = f"""
-            SELECT a.*, e.nombre_completo AS nombre
+            SELECT a.*, e.nombre_completo
             FROM {E_ASSISTANCE.TABLE.value} a
             JOIN empleados e ON a.numero_nomina = e.numero_nomina
             ORDER BY a.fecha ASC
@@ -382,9 +382,14 @@ class AssistanceModel:
             for row in result:
                 if "fecha" in row:
                     row["fecha"] = self._formatear_fecha(str(row["fecha"]))
+                # ✅ Mapear descanso numérico a string
+                descanso_map = {0: "SN", 1: "MD", 2: "CMP"}
+                row["descanso"] = descanso_map.get(row.get("descanso", 0), "SN")
             return {"status": "success", "data": result}
         except Exception as ex:
             return {"status": "error", "message": f"Error al obtener asistencias: {ex}"}
+
+
 
 
     def get_by_id(self, id_asistencia: int) -> dict:

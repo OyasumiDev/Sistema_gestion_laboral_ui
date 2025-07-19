@@ -147,26 +147,11 @@ class EmpleadosContainer(ft.Container):
             numero = e["numero_nomina"]
             en_edicion = self.fila_editando == numero
 
-            if en_edicion:
-                def crear_sueldo_cell(valor_inicial):
-                    sueldo = ft.TextField(value=str(valor_inicial), keyboard_type=ft.KeyboardType.NUMBER)
-
-                    def validar(_):
-                        try:
-                            v = float(sueldo.value)
-                            if v < 0:
-                                raise ValueError
-                            sueldo.border_color = None
-                        except:
-                            sueldo.border_color = ft.colors.RED
-                        self.page.update()
-
-                    sueldo.on_change = validar
-                    return sueldo
-
-                sueldo_cell = crear_sueldo_cell(e["sueldo_por_hora"])
-            else:
-                sueldo_cell = ft.Text(str(e["sueldo_por_hora"]))
+            sueldo_cell = (
+                self._crear_textfield_sueldo(e["sueldo_por_hora"])
+                if en_edicion else
+                ft.Text(str(e["sueldo_por_hora"]))
+            )
 
             def guardar_cambios(ev, id=numero, sueldo_cell=sueldo_cell):
                 try:
@@ -200,7 +185,6 @@ class EmpleadosContainer(ft.Container):
                 ).mostrar()
 
             def activar_edicion(ev, id=numero):
-                print(f"✏️ Editando fila {id}")
                 self._actualizar_tabla(fila_en_edicion=id)
 
             def confirmar_eliminar(ev, id=numero):
@@ -230,16 +214,13 @@ class EmpleadosContainer(ft.Container):
                     on_click=cancelar
                 )
 
-            if en_edicion:
-                acciones = ft.Row([
-                    ft.IconButton(icon=ft.icons.CHECK, icon_color=ft.colors.GREEN_600, tooltip="Guardar", on_click=guardar_cambios),
-                    crear_boton_cancelar(numero)
-                ])
-            else:
-                acciones = ft.Row([
-                    ft.IconButton(icon=ft.icons.EDIT, tooltip="Editar", on_click=activar_edicion),
-                    ft.IconButton(icon=ft.icons.DELETE_OUTLINE, tooltip="Eliminar", icon_color=ft.colors.RED_600, on_click=confirmar_eliminar)
-                ])
+            acciones = ft.Row([
+                ft.IconButton(icon=ft.icons.CHECK, icon_color=ft.colors.GREEN_600, tooltip="Guardar", on_click=guardar_cambios),
+                crear_boton_cancelar(numero)
+            ]) if en_edicion else ft.Row([
+                ft.IconButton(icon=ft.icons.EDIT, tooltip="Editar", on_click=activar_edicion),
+                ft.IconButton(icon=ft.icons.DELETE_OUTLINE, tooltip="Eliminar", icon_color=ft.colors.RED_600, on_click=confirmar_eliminar)
+            ])
 
             rows.append(ft.DataRow(cells=[
                 ft.DataCell(ft.Text(str(numero))),
@@ -303,6 +284,23 @@ class EmpleadosContainer(ft.Container):
         )
 
 
+    def _crear_textfield_sueldo(self, valor_inicial):
+        sueldo = ft.TextField(value=str(valor_inicial), keyboard_type=ft.KeyboardType.NUMBER)
+
+        def validar(_):
+            try:
+                v = float(sueldo.value)
+                if v < 0:
+                    raise ValueError
+                sueldo.border_color = None
+            except:
+                sueldo.border_color = ft.colors.RED
+            self.page.update()
+
+        sueldo.on_change = validar
+        return sueldo
+
+
     def _insertar_fila_editable(self, e=None):
         if self.fila_nueva_en_proceso:
             ModalAlert.mostrar_info("Atención", "Ya hay un registro nuevo en proceso.")
@@ -331,38 +329,38 @@ class EmpleadosContainer(ft.Container):
         sueldo_input.on_change = validar_sueldo_input
 
         def on_guardar(_):
+            errores = []
+
+            if not nombre_input.value or len(nombre_input.value.strip()) < 3 or not all(char.isalpha() or char.isspace() for char in nombre_input.value.strip()):
+                nombre_input.border_color = ft.colors.RED
+                errores.append("Nombre inválido (mínimo 3 letras)")
             try:
-                if not nombre_input.value or not sueldo_input.value:
-                    raise ValueError("Todos los campos son obligatorios")
-
-                nombre = nombre_input.value.strip()
-                if len(nombre) < 3 or not all(char.isalpha() or char.isspace() for char in nombre):
-                    nombre_input.border_color = ft.colors.RED
-                    self.page.update()
-                    raise ValueError("Nombre inválido")
-
                 sueldo = float(sueldo_input.value)
                 if sueldo < 0:
-                    sueldo_input.border_color = ft.colors.RED
-                    self.page.update()
-                    raise ValueError("Sueldo negativo")
+                    raise ValueError
+            except:
+                sueldo_input.border_color = ft.colors.RED
+                errores.append("Sueldo inválido (número positivo)")
 
-                resultado = self.empleado_model.add(
-                    numero_nomina=nuevo_id,
-                    nombre_completo=nombre,
-                    sueldo_por_hora=sueldo
-                )
+            self.page.update()
 
-                self.fila_nueva_en_proceso = False
+            if errores:
+                ModalAlert.mostrar_info("Errores encontrados", "\n".join(errores))
+                return
 
-                if resultado["status"] == "success":
-                    ModalAlert.mostrar_info("Éxito", f"Empleado agregado con ID {nuevo_id}")
-                    self._actualizar_tabla()
-                else:
-                    ModalAlert.mostrar_info("Error", resultado["message"])
+            resultado = self.empleado_model.add(
+                numero_nomina=nuevo_id,
+                nombre_completo=nombre_input.value.strip(),
+                sueldo_por_hora=sueldo
+            )
 
-            except Exception as ex:
-                ModalAlert.mostrar_info("Error", f"No se pudo agregar el empleado: {ex}")
+            self.fila_nueva_en_proceso = False
+
+            if resultado["status"] == "success":
+                ModalAlert.mostrar_info("Éxito", f"Empleado agregado con ID {nuevo_id}")
+                self._actualizar_tabla()
+            else:
+                ModalAlert.mostrar_info("Error", resultado["message"])
 
         def on_cancelar(_):
             self.fila_nueva_en_proceso = False
@@ -382,9 +380,7 @@ class EmpleadosContainer(ft.Container):
         self.table.rows.append(nueva_fila)
         self.page.update()
 
-        # Usar scroll seguro
         SafeScrollInvoker.scroll_to_bottom(self.page)
-
         nombre_input.focus()
 
 

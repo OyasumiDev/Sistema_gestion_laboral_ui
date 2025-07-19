@@ -23,6 +23,7 @@ class AsistenciasImportController:
         self.asistencia_model = AssistanceModel()
         self.e_asistencia_model = E_ASSISTANCE  # ✅ Corrección aquí (sin paréntesis)
         self.ultimo_grupo_importado = None
+        
 
         self.file_invoker = FileOpenInvoker(
             page=self.page,
@@ -38,6 +39,8 @@ class AsistenciasImportController:
         if not path:
             print("⚠️ No se seleccionó ningún archivo.")
             return
+
+        self.file_invoker.selected_path = path  # ✅ Guardar la ruta del archivo seleccionado
 
         df = self._cargar_excel(path)
         if df is not None:
@@ -68,6 +71,7 @@ class AsistenciasImportController:
                 )
                 self.page.snack_bar.open = True
                 self.page.update()
+
 
     def _cargar_excel(self, path: str) -> pd.DataFrame | None:
         motores = ["openpyxl", "xlrd", "pyxlsb"]
@@ -130,8 +134,9 @@ class AsistenciasImportController:
 
 
     def _insertar_asistencias(self, asistencias: list):
-        # ✅ Usar un único grupo para todas las asistencias de esta importación
-        grupo_importacion = f"import_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        import os
+        nombre_archivo = os.path.splitext(os.path.basename(self.file_invoker.selected_path))[0]
+        grupo_importacion = f"Asistencias importadas {nombre_archivo}"
         self.ultimo_grupo_importado = grupo_importacion
 
         for asistencia in asistencias:
