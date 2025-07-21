@@ -1,6 +1,7 @@
 import flet as ft
 from datetime import datetime, timedelta, date
 import pandas as pd
+import asyncio
 
 from app.models.assistance_model import AssistanceModel
 from app.controllers.asistencias_import_controller import AsistenciasImportController
@@ -12,8 +13,12 @@ from app.views.containers.modal_alert import ModalAlert
 
 from app.helpers.sort_helpers import SortHelper
 from app.helpers.table_column_builder import TableColumnBuilder
-from app.utils.table_action_buttons import crear_boton_editar
-from app.core.invokers.safe_scroll_invoker import SafeScrollInvoker
+from app.helpers.asistencias_scroll_helper import AsistenciasScrollHelper
+from app.helpers.asistencias_row_helper import AsistenciasRowHelper
+from app.helpers.boton_factory import (
+    crear_boton_importar,
+    crear_boton_exportar
+)
 
 
 class AsistenciasContainer(ft.Container):
@@ -23,10 +28,13 @@ class AsistenciasContainer(ft.Container):
         self.asistencia_model = AssistanceModel()
         self.theme_ctrl = ThemeController()
         self.sort_helper = SortHelper(default_key="numero_nomina")
+        self.row_helper = AsistenciasRowHelper(
+            recalcular_callback=self._recalcular_horas_fila,
+            actualizar_callback=self._actualizar_valor_fila
+        )
         self.editando = {}
         self.datos_por_grupo = {}
         self.grupos_expandido = {}
-        self.safe_scroll = SafeScrollInvoker
 
         self.columnas_definidas = [
             ("Nómina", "numero_nomina"),
@@ -60,34 +68,47 @@ class AsistenciasContainer(ft.Container):
 
         self.window_snackbar = WindowSnackbar(self.page)
 
+        # ✅ Ancla de scroll al final
+        self.scroll_anchor = ft.Container(height=1, key="bottom-anchor")
+
+        # ✅ Scroll Column incluye el anchor al final
         self.scroll_column = ft.Column(
             controls=[],
-            scroll=ft.ScrollMode.ALWAYS,
             expand=True,
+            scroll=ft.ScrollMode.ALWAYS,
+            spacing=10,
             alignment=ft.MainAxisAlignment.START
         )
 
-        self.import_button = self._build_action_button(
-            label="Importar",
-            icon_path="assets/buttons/import-button.png",
-            on_tap=lambda _: self.import_controller.file_invoker.open()
+        self.import_button = crear_boton_importar(
+            on_click=lambda e: self.import_controller.file_invoker.open()
         )
 
-        self.export_button = self._build_action_button(
-            label="Exportar",
-            icon_path="assets/buttons/export-button.png",
-            on_tap=lambda _: self.save_invoker.open_save()
+        self.export_button = crear_boton_exportar(
+            on_click=lambda e: self.save_invoker.open_save()
         )
-
-        self.new_column_button = None
 
         self.content = self._build_content()
         self._actualizar_tabla()
 
 
 
+    def _recalcular_horas_fila(self, grupo):
+        print(f"🔄 Recalculando horas para el grupo '{grupo}'")
+        self._actualizar_tabla()
+
+    def _on_click_editar(self, numero_nomina, fecha):
+        self.activar_edicion(numero_nomina, fecha)
+        self._actualizar_tabla()
+
+    def _actualizar_valor_fila(self, grupo, campo, valor):
+        if ("nuevo", grupo) in self.editando:
+            self.editando[("nuevo", grupo)][campo] = valor
+            print(f"📝 Actualizado campo '{campo}' para grupo '{grupo}' con valor: {valor}")
+
+
     def _build_content(self):
-        contenido = ft.Container(
+        return ft.Container(
             expand=True,
             content=ft.Column(
                 scroll=ft.ScrollMode.ALWAYS,
@@ -117,33 +138,6 @@ class AsistenciasContainer(ft.Container):
                 ]
             )
         )
-        self.page.add(self)
-        return contenido
-
-
-    def _build_action_button(self, label, icon_path=None, icon=None, on_tap=None):
-        content = ft.Row(spacing=5, alignment=ft.MainAxisAlignment.CENTER)
-        if icon_path:
-            content.controls.append(ft.Image(src=icon_path, width=20, height=20))
-        elif icon:
-            content.controls.append(ft.Icon(name=icon, size=20))
-        content.controls.append(ft.Text(label, size=11, weight="bold"))
-
-        return ft.GestureDetector(
-            on_tap=on_tap,
-            content=ft.Container(
-                padding=8,
-                border_radius=12,
-                bgcolor=ft.colors.SURFACE_VARIANT,
-                content=content
-            )
-        )
-
-
-    def _on_click_editar(self, numero_nomina, fecha):
-        self.activar_edicion(numero_nomina, fecha)
-        self._redibujar_tabla_sin_consultar_db()
-
 
 
     def crear_columnas(self):
@@ -151,19 +145,76 @@ class AsistenciasContainer(ft.Container):
 
 
     def _agregar_fila_en_grupo(self, grupo_importacion):
+        print(f"➕ Agregando fila nueva en grupo '{grupo_importacion}'")
         self.editando[("nuevo", grupo_importacion)] = {
             "numero_nomina": "",
             "fecha": "",
             "hora_entrada": "",
-            "hora_salida": ""
+            "hora_salida": "",
+            "descanso": "SN",
+            "tiempo_trabajo": "0.00",
+            "estado": "PENDIENTE"
         }
+
         self.grupos_expandido = {k: False for k in self.datos_por_grupo.keys()}
         self.grupos_expandido[grupo_importacion] = True
+
+        self._actualizar_tabla()
+        self.page.update()
+
+        # 🔥 Usamos el scroll_to propio del Column para ir a la fila nueva agregada
+        if self.scroll_column:
+            print(f"🔧 Scroll automático al nuevo registro '{grupo_importacion}'")
+            self.scroll_column.scroll_to(
+                key=f"nuevo-{grupo_importacion}",
+                duration=300
+            )
+
+
+
+    def _guardar_fila_nueva(self, grupo):
+        datos = self.editando.get(("nuevo", grupo), None)
+        if not datos:
+            self.window_snackbar.show_error("❌ No hay datos para guardar.")
+            return
+
+        numero = datos.get("numero_nomina", "").strip()
+        fecha = datos.get("fecha", "").strip()
+
+        if not numero or not fecha:
+            self.window_snackbar.show_error("⚠️ Debes ingresar número de nómina y fecha.")
+            return
+
+        try:
+            datetime.strptime(fecha, "%Y-%m-%d")
+        except Exception:
+            self.window_snackbar.show_error("⚠️ Fecha inválida. Usa el formato YYYY-MM-DD.")
+            return
+
+        resultado = self.asistencia_model.create_asistencia(datos)
+        if resultado["status"] == "success":
+            self.window_snackbar.show_success("✅ Asistencia registrada correctamente.")
+        else:
+            self.window_snackbar.show_error(f"❌ {resultado.get('message', 'Error al guardar la asistencia.')}")
+
+        self.editando.pop(("nuevo", grupo), None)
         self._actualizar_tabla()
 
-        if self.page:
-            self.safe_scroll.scroll_to_bottom(self.page)
 
+    def _cancelar_fila_nueva(self, grupo):
+        if ("nuevo", grupo) in self.editando:
+            self.editando.pop(("nuevo", grupo))
+            self._actualizar_tabla()
+            self.window_snackbar.show_success("ℹ️ Registro cancelado.")
+
+    def _toggle_expansion(self, grupo):
+        print(f"🔽 Toggling expansión del grupo '{grupo}'")
+        self.grupos_expandido = {k: False for k in self.datos_por_grupo.keys()}
+        self.grupos_expandido[grupo] = True
+        self._actualizar_tabla()
+        self.page.update()
+        print(f"🔧 Registrando scroll tras toggle para grupo '{grupo}'")
+        AsistenciasScrollHelper.scroll_to_group_after_build(self.page, group_id=grupo)
 
 
     def _actualizar_tabla(self):
@@ -176,209 +227,83 @@ class AsistenciasContainer(ft.Container):
         self.datos_por_grupo = self._agrupar_por_grupo_importacion(datos)
         self.scroll_column.controls.clear()
 
-        paneles = []
+        if not self.datos_por_grupo:
+            self.scroll_column.controls.append(ft.Text("No hay asistencias registradas."))
+            self.scroll_column.controls.append(self.scroll_anchor)
+            self.page.update()
+            return
 
+        paneles = []
         grupos_ordenados = sorted(
             self.datos_por_grupo.items(),
             key=lambda item: self._extraer_fecha_primer_registro(item[1]),
             reverse=True
         )
 
-        if not self.grupos_expandido:
-            self.grupos_expandido = {grupo: False for grupo, _ in grupos_ordenados}
-            if grupos_ordenados:
-                self.grupos_expandido[grupos_ordenados[0][0]] = True
+        if not self.grupos_expandido and grupos_ordenados:
+            self.grupos_expandido = {g: False for g, _ in grupos_ordenados}
+            self.grupos_expandido[grupos_ordenados[0][0]] = True
 
         for grupo, registros in grupos_ordenados:
             expandido = self.grupos_expandido.get(grupo, False)
+            filas = []
 
-            filas = [self._crear_fila(reg) for reg in registros]
+            for reg in registros:
+                if self._es_editando(reg):
+                    filas.append(self.row_helper.build_fila_edicion(
+                        registro=reg,
+                        on_save=lambda g=grupo, r=reg: self._guardar_edicion(r["numero_nomina"], r["fecha"]),
+                        on_cancel=lambda g=grupo, r=reg: self._cancelar_edicion(r["numero_nomina"], r["fecha"])
+                    ))
+                else:
+                    filas.append(self.row_helper.build_fila_vista(
+                        registro=reg,
+                        on_edit=self._on_click_editar
+                    ))
 
             if ("nuevo", grupo) in self.editando:
-                filas.append(self._crear_fila_nueva(grupo))
+                nueva_fila = self.row_helper.build_fila_nueva(
+                    grupo_importacion=grupo,
+                    registro=self.editando[("nuevo", grupo)],
+                    on_save=lambda g=grupo: self._guardar_fila_nueva(g),
+                    on_cancel=lambda g=grupo: self._cancelar_fila_nueva(g)
+                )
 
-            tabla = ft.DataTable(
-                columns=self.crear_columnas(),
-                rows=filas
-            )
+                # ✅ Asignar key al contenido de la primera celda del DataRow
+                if nueva_fila.cells and nueva_fila.cells[0].content:
+                    nueva_fila.cells[0].content.key = f"nuevo-{grupo}"
 
+                filas.append(nueva_fila)
+
+            tabla = ft.DataTable(columns=self.crear_columnas(), rows=filas)
             encabezado = ft.Row([
                 ft.Text(f"🗂 {grupo}", expand=True),
-                ft.IconButton(
-                    icon=ft.icons.ADD,
-                    tooltip="Agregar asistencia",
-                    on_click=lambda e, g=grupo: self._agregar_fila_en_grupo(g)
-                )
+                ft.IconButton(icon=ft.icons.ADD, tooltip="Agregar asistencia",
+                            on_click=lambda e, g=grupo: self._agregar_fila_en_grupo(g))
             ])
 
             panel = ft.ExpansionPanel(
                 header=encabezado,
-                content=tabla,
+                content=ft.Column([ft.Container(key=grupo), tabla]),
                 can_tap_header=True,
                 expanded=expandido
             )
 
-            def crear_toggle(grupo_local):
-                return lambda e: self._toggle_expansion(grupo_local)
-
-            panel.on_expansion_changed = crear_toggle(grupo)
+            panel.on_expansion_changed = lambda e, g=grupo: self._toggle_expansion(g)
             paneles.append(panel)
 
-        self.scroll_column.controls.append(
-            ft.ExpansionPanelList(
-                expand=True,
-                controls=paneles
-            )
-        )
+        self.scroll_column.controls.append(ft.ExpansionPanelList(expand=True, controls=paneles))
+        self.scroll_column.controls.append(self.scroll_anchor)  # ✅ Siempre agregamos el ancla
 
         if self.page:
+            grupo_expandido = next((g for g, exp in self.grupos_expandido.items() if exp), None)
+            if grupo_expandido:
+                AsistenciasScrollHelper.scroll_to_group_after_build(self.page, group_id=grupo_expandido)
             self.page.update()
 
 
-
-    def _crear_fila_nueva(self, grupo_importacion):
-        registro = self.editando.get(("nuevo", grupo_importacion), {
-            "numero_nomina": "",
-            "nombre_completo": "",
-            "fecha": "",
-            "hora_entrada": "",
-            "hora_salida": "",
-            "descanso": "SN",
-            "tiempo_trabajo": "0.00",
-            "estado": "PENDIENTE"
-        })
-
-        campo_nomina = ft.TextField(
-            value=registro.get("numero_nomina", ""),
-            width=100,
-            on_change=lambda e: self._actualizar_valor_fila_nueva(grupo_importacion, "numero_nomina", e.control.value)
-        )
-
-        campo_fecha = ft.TextField(
-            value=registro.get("fecha", ""),
-            width=100,
-            on_change=lambda e: self._actualizar_valor_fila_nueva(grupo_importacion, "fecha", e.control.value)
-        )
-
-        campo_entrada = ft.TextField(
-            value=registro.get("hora_entrada", ""),
-            width=100,
-            on_change=lambda e: self._actualizar_valor_fila_nueva(grupo_importacion, "hora_entrada", e.control.value)
-        )
-
-        campo_salida = ft.TextField(
-            value=registro.get("hora_salida", ""),
-            width=100,
-            on_change=lambda e: self._actualizar_valor_fila_nueva(grupo_importacion, "hora_salida", e.control.value)
-        )
-
-        botones_descanso = {
-            "SN": ft.FilledButton("SN", on_click=lambda e, t="SN": self._actualizar_valor_fila_nueva(grupo_importacion, "descanso", t)),
-            "MD": ft.FilledButton("MD", on_click=lambda e, t="MD": self._actualizar_valor_fila_nueva(grupo_importacion, "descanso", t)),
-            "CMP": ft.FilledButton("CMP", on_click=lambda e, t="CMP": self._actualizar_valor_fila_nueva(grupo_importacion, "descanso", t)),
-        }
-
-        descanso_widget = ft.Row([*botones_descanso.values()], spacing=5)
-
-        campo_horas = ft.TextField(
-            value=registro.get("tiempo_trabajo", "0.00"),
-            width=80,
-            read_only=True
-        )
-
-        acciones = ft.Row([
-            ft.IconButton(
-                icon=ft.icons.SAVE,
-                tooltip="Guardar",
-                on_click=lambda e: self._guardar_fila_nueva(grupo_importacion)
-            ),
-            ft.IconButton(
-                icon=ft.icons.CANCEL,
-                tooltip="Cancelar",
-                on_click=lambda e: self._cancelar_fila_nueva(grupo_importacion)
-            )
-        ])
-
-        return ft.DataRow(
-            cells=[
-                ft.DataCell(campo_nomina),
-                ft.DataCell(ft.Text("-")),
-                ft.DataCell(campo_fecha),
-                ft.DataCell(campo_entrada),
-                ft.DataCell(campo_salida),
-                ft.DataCell(descanso_widget),
-                ft.DataCell(campo_horas),
-                ft.DataCell(ft.Text("PENDIENTE")),
-                ft.DataCell(acciones),
-            ]
-        )
-
-
-
-    def _actualizar_valor_fila_nueva(self, grupo_importacion, campo, valor):
-        if ("nuevo", grupo_importacion) not in self.editando:
-            self.editando[("nuevo", grupo_importacion)] = {}
-
-        self.editando[("nuevo", grupo_importacion)][campo] = valor
-
-        # Si es hora_entrada, hora_salida o descanso, recalcular las horas trabajadas
-        if campo in ("hora_entrada", "hora_salida", "descanso"):
-            self._recalcular_horas_trabajadas(grupo_importacion)
-        if self.page:
-            self.page.update()
-
-
-    def _recalcular_horas_edicion(self, numero_nomina, fecha):
-        datos = self.editando.get((numero_nomina, str(fecha)), {})
-        entrada = self._parse_time(datos.get("hora_entrada", ""))
-        salida = self._parse_time(datos.get("hora_salida", ""))
-        descanso = self._descanso_a_minutos(datos.get("descanso", "SN"))
-        if entrada and salida:
-            total = (datetime.combine(date.min, salida) - datetime.combine(date.min, entrada)).total_seconds() / 3600
-            total -= descanso / 60
-            total = max(total, 0)
-            datos["tiempo_trabajo"] = f"{total:.2f}"
-        else:
-            datos["tiempo_trabajo"] = "0.00"
-
-    def _recalcular_horas_trabajadas(self, grupo_importacion):
-        datos = self.editando.get(("nuevo", grupo_importacion), {})
-        entrada = self._parse_time(datos.get("hora_entrada", ""))
-        salida = self._parse_time(datos.get("hora_salida", ""))
-        descanso = self._descanso_a_minutos(datos.get("descanso", "SN"))
-
-        if entrada and salida:
-            total = (datetime.combine(date.min, salida) - datetime.combine(date.min, entrada)).total_seconds() / 3600
-            total -= descanso / 60
-            total = max(total, 0)
-            datos["tiempo_trabajo"] = f"{total:.2f}"
-        else:
-            datos["tiempo_trabajo"] = "0.00"
-
-
-    def _guardar_fila_nueva(self, grupo_importacion):
-        datos = self.editando.get(("nuevo", grupo_importacion), {})
-        if not datos:
-            self.window_snackbar.show_error("❌ No se encontraron datos para guardar.")
-            return
-
-        try:
-            resultado = self.asistencia_model.create(datos)
-            if resultado["status"] == "success":
-                self.window_snackbar.show_success("✅ Asistencia registrada correctamente.")
-            else:
-                self.window_snackbar.show_error("❌ " + resultado["message"])
-        except Exception as e:
-            self.window_snackbar.show_error("⚠️ " + str(e))
-
-        self.editando.pop(("nuevo", grupo_importacion), None)
-        self._actualizar_tabla()
-
-
-    def _cancelar_fila_nueva(self, grupo_importacion):
-        self.editando.pop(("nuevo", grupo_importacion), None)
-        self._redibujar_tabla_sin_consultar_db()
-
+    def _es_editando(self, registro):
+        return self.editando.get((registro["numero_nomina"], str(registro["fecha"])), False)
 
     def _agrupar_por_grupo_importacion(self, datos: list) -> dict:
         agrupado = {}
@@ -392,13 +317,12 @@ class AsistenciasContainer(ft.Container):
                     except:
                         fecha_registro = date.today()
                 grupo_fecha = f"GRUPO:{fecha_registro.strftime('%d/%m/%Y')}"
-                reg["grupo_importacion"] = grupo_fecha  # solo si no existe
+                reg["grupo_importacion"] = grupo_fecha
 
             if grupo_fecha not in agrupado:
                 agrupado[grupo_fecha] = []
             agrupado[grupo_fecha].append(reg)
         return agrupado
-
 
     def _extraer_fecha_primer_registro(self, registros: list):
         try:
@@ -407,13 +331,6 @@ class AsistenciasContainer(ft.Container):
             return datetime.strptime(fecha_str, "%Y-%m-%d").date()
         except:
             return date.min
-
-
-    def _toggle_expansion(self, grupo):
-        self.grupos_expandido = {k: False for k in self.datos_por_grupo.keys()}
-        self.grupos_expandido[grupo] = True
-        self._redibujar_tabla_sin_consultar_db()
-
 
 
     def activar_edicion(self, numero_nomina, fecha):
@@ -431,200 +348,16 @@ class AsistenciasContainer(ft.Container):
             print(f"✅ Grupo encontrado: {grupo_encontrado}")
             self.grupos_expandido = {k: False for k in self.datos_por_grupo.keys()}
             self.grupos_expandido[grupo_encontrado] = True
+            # ✅ Solo actualizas la tabla una vez
+            self._actualizar_tabla()
+            self.page.update()
+            AsistenciasScrollHelper.scroll_to_group_after_build(self.page, group_id=grupo_encontrado)
         else:
             print("⚠️ Grupo NO encontrado para este registro")
+            self._actualizar_tabla()
 
         print(f"📋 Estado 'editando' actualizado: {self.editando}")
-        self._redibujar_tabla_sin_consultar_db()
 
-
-
-    def _redibujar_tabla_sin_consultar_db(self):
-        self.scroll_column.controls.clear()
-        paneles = []
-
-        grupos_ordenados = sorted(
-            self.datos_por_grupo.items(),
-            key=lambda item: self._extraer_fecha_primer_registro(item[1]),
-            reverse=True
-        )
-
-        for grupo, registros in grupos_ordenados:
-            expandido = self.grupos_expandido.get(grupo, False)
-            filas = [self._crear_fila(reg) for reg in registros]
-
-            if ("nuevo", grupo) in self.editando:
-                filas.append(self._crear_fila_nueva(grupo))
-
-            tabla = ft.DataTable(
-                columns=self.crear_columnas(),
-                rows=filas
-            )
-
-            encabezado = ft.Row([
-                ft.Text(f"🗂 {grupo}", expand=True),
-                ft.IconButton(
-                    icon=ft.icons.ADD,
-                    tooltip="Agregar asistencia",
-                    on_click=lambda e, g=grupo: self._agregar_fila_en_grupo(g)
-                )
-            ])
-
-            panel = ft.ExpansionPanel(
-                header=encabezado,
-                content=tabla,
-                can_tap_header=True,
-                expanded=expandido
-            )
-
-            def crear_toggle(grupo_local):
-                return lambda e: self._toggle_expansion(grupo_local)
-
-            panel.on_expansion_changed = crear_toggle(grupo)
-            paneles.append(panel)
-
-        self.scroll_column.controls.append(
-            ft.ExpansionPanelList(
-                expand=True,
-                controls=paneles
-            )
-        )
-
-        if self.page:
-            self.page.update()
-
-
-    def _crear_fila(self, registro):
-        numero_nomina = registro["numero_nomina"]
-        fecha = registro["fecha"]
-        editable = self.editando.get((numero_nomina, str(fecha)), False)
-
-        print(f"👀 Renderizando fila: ({numero_nomina}, {fecha}) — Editable: {editable}")
-
-        descanso_valor = registro.get("descanso", "SN")
-        descanso_texto = f"{descanso_valor}: {self._descanso_a_minutos(descanso_valor)} min"
-
-        if editable:
-            campo_entrada = ft.TextField(
-                value=registro.get("hora_entrada", ""),
-                width=100,
-                on_change=lambda e: self._actualizar_campo_edicion(numero_nomina, fecha, "hora_entrada", e.control.value)
-            )
-            campo_salida = ft.TextField(
-                value=registro.get("hora_salida", ""),
-                width=100,
-                on_change=lambda e: self._actualizar_campo_edicion(numero_nomina, fecha, "hora_salida", e.control.value)
-            )
-            botones_descanso = {}
-            for tipo in ["SN", "MD", "CMP"]:
-                botones_descanso[tipo] = ft.FilledButton(
-                    tipo,
-                    on_click=lambda e, t=tipo: self._actualizar_campo_edicion(numero_nomina, fecha, "descanso", t)
-                )
-            descanso_widget = ft.Row(list(botones_descanso.values()), spacing=5)
-
-            campo_horas = ft.TextField(
-                value=registro.get("tiempo_trabajo", "0.00"),
-                width=80,
-                read_only=True
-            )
-
-            acciones = ft.Row([
-                ft.IconButton(
-                    icon=ft.icons.SAVE,
-                    tooltip="Guardar edición",
-                    on_click=lambda e: self._guardar_edicion(numero_nomina, fecha)
-                ),
-                ft.IconButton(
-                    icon=ft.icons.CANCEL,
-                    tooltip="Cancelar",
-                    on_click=lambda e: self._cancelar_edicion(numero_nomina, fecha)
-                )
-            ])
-        else:
-            campo_entrada = ft.Text(registro.get("hora_entrada", ""))
-            campo_salida = ft.Text(registro.get("hora_salida", ""))
-            descanso_widget = ft.Text(descanso_texto)
-            campo_horas = ft.Text(str(registro.get("tiempo_trabajo", "0.00")))
-            acciones = ft.Row([
-                ft.IconButton(
-                    icon=ft.icons.EDIT,
-                    tooltip="Editar",
-                    on_click=lambda e: self._on_click_editar(numero_nomina, fecha)
-                )
-            ])
-
-        return ft.DataRow(cells=[
-            ft.DataCell(ft.Text(str(numero_nomina))),
-            ft.DataCell(ft.Text(registro.get("nombre_completo", ""))),
-            ft.DataCell(ft.Text(str(fecha))),
-            ft.DataCell(campo_entrada),
-            ft.DataCell(campo_salida),
-            ft.DataCell(descanso_widget),
-            ft.DataCell(campo_horas),
-            ft.DataCell(ft.Text(registro.get("estado", ""))),
-            ft.DataCell(acciones),
-        ])
-
-
-    def _guardar_edicion(self, numero_nomina, fecha):
-        datos = self.editando.get((numero_nomina, str(fecha)), {})
-        if not datos:
-            self.window_snackbar.show_error("❌ No hay cambios para guardar.")
-            return
-
-        datos_actualizados = {
-            "numero_nomina": numero_nomina,
-            "fecha": fecha,
-            "hora_entrada": datos.get("hora_entrada", ""),
-            "hora_salida": datos.get("hora_salida", ""),
-            "descanso": datos.get("descanso", "SN")
-        }
-
-        try:
-            resultado = self.asistencia_model.update(datos_actualizados)
-            if resultado["status"] == "success":
-                self.window_snackbar.show_success("✅ Asistencia actualizada correctamente.")
-            else:
-                self.window_snackbar.show_error("❌ " + resultado["message"])
-        except Exception as e:
-            self.window_snackbar.show_error("⚠️ " + str(e))
-
-        self._cancelar_edicion(numero_nomina, fecha)
-        self._actualizar_tabla()
-
-
-    def _actualizar_campo_edicion(self, numero_nomina, fecha, campo, valor):
-        key = (numero_nomina, str(fecha))
-        if key not in self.editando:
-            self.editando[key] = {}
-        self.editando[key][campo] = valor
-        if campo in ("hora_entrada", "hora_salida", "descanso"):
-            self._recalcular_horas_edicion(numero_nomina, fecha)
-        if self.page:
-            self.page.update()
-
-
-    def _cancelar_edicion(self, numero_nomina, fecha):
-        self.editando.pop((numero_nomina, str(fecha)), None)
-        self._redibujar_tabla_sin_consultar_db()
-
-
-    def _descanso_a_minutos(self, tipo):
-        if tipo == "MD":
-            return 30
-        elif tipo == "CMP":
-            return 60
-        elif tipo == "SN":
-            return 0
-        return 0
-
-
-    def _parse_time(self, value: str):
-        try:
-            return datetime.strptime(value, "%H:%M").time()
-        except Exception:
-            return None
 
 
     def _confirmar_eliminacion(self, numero, fecha, e=None):
@@ -641,12 +374,11 @@ class AsistenciasContainer(ft.Container):
             if resultado["status"] == "success":
                 self.window_snackbar.show_success("✅ Asistencia eliminada correctamente.")
             else:
-                self.window_snackbar.show_error("❌ " + resultado["message"])
+                self.window_snackbar.show_error(f"❌ {resultado['message']}")
         except Exception as e:
-            self.window_snackbar.show_error("⚠️ " + str(e))
+            self.window_snackbar.show_error(f"⚠️ {str(e)}")
 
         self._actualizar_tabla()
-
 
     def _exportar_asistencias(self, ruta_guardado: str):
         try:
@@ -658,15 +390,11 @@ class AsistenciasContainer(ft.Container):
             df = pd.DataFrame(resultado["data"])
             df.to_excel(ruta_guardado, index=False)
             self.window_snackbar.show_success("✅ Asistencias exportadas correctamente.")
-
         except Exception as e:
             self.window_snackbar.show_error(f"❌ Error al exportar asistencias: {str(e)}")
 
-
-
     def _agrupar_por_periodo(self, datos: list) -> dict:
         agrupado = {}
-
         for reg in datos:
             fecha = reg.get("fecha")
             if not fecha:
@@ -690,7 +418,6 @@ class AsistenciasContainer(ft.Container):
 
             if periodo_str not in agrupado:
                 agrupado[periodo_str] = []
-
             agrupado[periodo_str].append(reg)
 
         return agrupado
