@@ -10,5 +10,6 @@ class E_ASSISTANCE(Enum):
     DESCANSO = "descanso"
     ESTADO = "estado"
     TIEMPO_TRABAJO = "tiempo_trabajo"
+    TIEMPO_TRABAJO_CON_DESCANSO = "tiempo_trabajo_con_descanso"
     FECHA_GENERADA = "fecha_generada"
     GRUPO_IMPORTACION = "grupo_importacion"

@@ -80,13 +80,15 @@ class AsistenciasContainer(ft.Container):
             alignment=ft.MainAxisAlignment.START
         )
 
+        # ✅ Botones de acción (Importar y Exportar) usando BotonFactory
         self.import_button = crear_boton_importar(
-            on_click=lambda e: self.import_controller.file_invoker.open()
+            on_click=lambda: self.import_controller.file_invoker.open()
         )
 
         self.export_button = crear_boton_exportar(
-            on_click=lambda e: self.save_invoker.open_save()
+            on_click=lambda: self.save_invoker.open_save()
         )
+
 
         self.content = self._build_content()
         self._actualizar_tabla()
@@ -95,16 +97,40 @@ class AsistenciasContainer(ft.Container):
 
     def _recalcular_horas_fila(self, grupo):
         print(f"🔄 Recalculando horas para el grupo '{grupo}'")
-        self._actualizar_tabla()
+        # Si es nueva fila en edición, simplemente actualizamos la tabla (como ya haces)
+        if ("nuevo", grupo) in self.editando:
+            self._actualizar_tabla()
+            return
+
+        # Si hay alguna edición activa en ese grupo, actualiza la tabla
+        for (numero_nomina, fecha), edit_flag in self.editando.items():
+            if edit_flag is True:
+                for registros in self.datos_por_grupo.get(grupo, []):
+                    if registros["numero_nomina"] == numero_nomina and str(registros["fecha"]) == str(fecha):
+                        self._actualizar_tabla()
+                        return
+
 
     def _on_click_editar(self, numero_nomina, fecha):
         self.activar_edicion(numero_nomina, fecha)
         self._actualizar_tabla()
 
     def _actualizar_valor_fila(self, grupo, campo, valor):
+        # Si es nueva fila
         if ("nuevo", grupo) in self.editando:
             self.editando[("nuevo", grupo)][campo] = valor
-            print(f"📝 Actualizado campo '{campo}' para grupo '{grupo}' con valor: {valor}")
+            print(f"📝 Actualizado campo '{campo}' para NUEVA fila en grupo '{grupo}' con valor: {valor}")
+            return
+
+        # Si hay edición activa (solo uno activo a la vez)
+        for (numero_nomina, fecha), edit_flag in self.editando.items():
+            if edit_flag is True:
+                for registros in self.datos_por_grupo.get(grupo, []):
+                    if registros["numero_nomina"] == numero_nomina and str(registros["fecha"]) == str(fecha):
+                        registros[campo] = valor
+                        print(f"📝 Actualizado campo '{campo}' en edición activa ({numero_nomina}, {fecha}) con valor: {valor}")
+                        return
+
 
 
     def _build_content(self):
@@ -269,7 +295,6 @@ class AsistenciasContainer(ft.Container):
                     on_cancel=lambda g=grupo: self._cancelar_fila_nueva(g)
                 )
 
-                # ✅ Asignar key al contenido de la primera celda del DataRow
                 if nueva_fila.cells and nueva_fila.cells[0].content:
                     nueva_fila.cells[0].content.key = f"nuevo-{grupo}"
 
@@ -293,7 +318,7 @@ class AsistenciasContainer(ft.Container):
             paneles.append(panel)
 
         self.scroll_column.controls.append(ft.ExpansionPanelList(expand=True, controls=paneles))
-        self.scroll_column.controls.append(self.scroll_anchor)  # ✅ Siempre agregamos el ancla
+        self.scroll_column.controls.append(self.scroll_anchor)
 
         if self.page:
             grupo_expandido = next((g for g, exp in self.grupos_expandido.items() if exp), None)
@@ -304,6 +329,89 @@ class AsistenciasContainer(ft.Container):
 
     def _es_editando(self, registro):
         return self.editando.get((registro["numero_nomina"], str(registro["fecha"])), False)
+
+
+    def _guardar_edicion(self, numero_nomina, fecha):
+        print(f"💾 [GUARDAR EDICIÓN] Iniciando para: (Nómina: {numero_nomina}, Fecha: {fecha})")
+
+        registro_actualizado = None
+
+        for grupo, registros in self.datos_por_grupo.items():
+            for reg in registros:
+                if reg["numero_nomina"] == numero_nomina and str(reg["fecha"]) == str(fecha):
+                    registro_actualizado = reg
+                    print(f"🔎 [GUARDAR EDICIÓN] Registro encontrado en grupo '{grupo}': {reg}")
+                    break
+            if registro_actualizado:
+                break
+
+        if not registro_actualizado:
+            self.window_snackbar.show_error("❌ No se encontró el registro a actualizar.")
+            return
+
+        numero = str(registro_actualizado.get("numero_nomina", "")).strip()
+        fecha_valor = str(registro_actualizado.get("fecha", "")).strip()
+
+        if not numero or not fecha_valor:
+            self.window_snackbar.show_error("⚠️ Número de nómina y fecha son obligatorios.")
+            return
+
+        try:
+            if "/" in fecha_valor:
+                fecha_obj = datetime.strptime(fecha_valor, "%d/%m/%Y")
+            else:
+                fecha_obj = datetime.strptime(fecha_valor, "%Y-%m-%d")
+            registro_actualizado["fecha"] = fecha_obj.strftime("%Y-%m-%d")
+            print(f"✅ Fecha validada y convertida: {registro_actualizado['fecha']}")
+        except Exception as e:
+            print(f"❌ Error validando fecha '{fecha_valor}': {e}")
+            self.window_snackbar.show_error("⚠️ Fecha inválida. Usa el formato YYYY-MM-DD.")
+            return
+
+        # ✅ Conversión correcta de hora_entrada y hora_salida
+        def convertir_tiempo(t):
+            if isinstance(t, timedelta):
+                return (datetime.min + t).time().strftime("%H:%M:%S")
+            return str(t).strip()
+
+        registro_actualizado["hora_entrada"] = convertir_tiempo(registro_actualizado.get("hora_entrada", "00:00:00"))
+        registro_actualizado["hora_salida"] = convertir_tiempo(registro_actualizado.get("hora_salida", "00:00:00"))
+
+        print(f"⏰ Hora entrada: {registro_actualizado['hora_entrada']} | Hora salida: {registro_actualizado['hora_salida']} | Descanso: {registro_actualizado.get('descanso')}")
+
+        # ✅ Recalcular tiempo trabajado antes de guardar
+        tiempo_calculado = self.row_helper.recalcular_horas(
+            registro_actualizado["hora_entrada"],
+            registro_actualizado["hora_salida"],
+            registro_actualizado.get("descanso", "SN")
+        )
+
+        registro_actualizado["tiempo_trabajo"] = tiempo_calculado
+        registro_actualizado["tiempo_trabajo_con_descanso"] = tiempo_calculado
+
+        print(f"🧮 Tiempo calculado final: {tiempo_calculado}")
+        print(f"📤 Datos enviados al backend para guardar: {registro_actualizado}")
+
+        resultado = self.asistencia_model.update_asistencia(registro_actualizado)
+        if resultado["status"] == "success":
+            self.window_snackbar.show_success("✅ Asistencia actualizada correctamente.")
+            print("✅ Actualización exitosa en backend.")
+        else:
+            print(f"❌ Error recibido del backend: {resultado}")
+            self.window_snackbar.show_error(f"❌ {resultado.get('message', 'Error al actualizar la asistencia.')}")
+
+        print("🧹 Limpiando estado de edición y refrescando tabla.")
+        self.editando.clear()
+        self._actualizar_tabla()
+
+
+
+    def _cancelar_edicion(self, numero_nomina, fecha):
+        print(f"❌ Cancelando edición para: ({numero_nomina}, {fecha}) — Limpieza de estado de edición")
+        self.editando.clear()
+        self._actualizar_tabla()
+        self.window_snackbar.show_success("ℹ️ Edición cancelada.")
+
 
     def _agrupar_por_grupo_importacion(self, datos: list) -> dict:
         agrupado = {}

@@ -3,6 +3,7 @@ from app.core.interfaces.database_mysql import DatabaseMysql
 from datetime import date, datetime, timedelta
 from typing import Optional
 import pandas as pd 
+from datetime import time
 
 class AssistanceModel:
     def __init__(self):
@@ -26,38 +27,46 @@ class AssistanceModel:
 
                 create_query = f"""
                 CREATE TABLE IF NOT EXISTS {E_ASSISTANCE.TABLE.value} (
-                    id_asistencia INT AUTO_INCREMENT PRIMARY KEY,
-                    numero_nomina SMALLINT UNSIGNED NOT NULL,
-                    fecha DATE NOT NULL,
-                    hora_entrada TIME,
-                    hora_salida TIME,
-                    descanso TINYINT DEFAULT 0,
-                    estado VARCHAR(20),
-                    tiempo_trabajo TIME,
-                    fecha_generada DATE DEFAULT NULL,
-                    grupo_importacion VARCHAR(150) DEFAULT NULL,
-                    FOREIGN KEY (numero_nomina) REFERENCES empleados(numero_nomina) ON DELETE CASCADE
+                    {E_ASSISTANCE.ID_ASISTENCIA.value} INT AUTO_INCREMENT PRIMARY KEY,
+                    {E_ASSISTANCE.NUMERO_NOMINA.value} SMALLINT UNSIGNED NOT NULL,
+                    {E_ASSISTANCE.FECHA.value} DATE NOT NULL,
+                    {E_ASSISTANCE.HORA_ENTRADA.value} TIME,
+                    {E_ASSISTANCE.HORA_SALIDA.value} TIME,
+                    {E_ASSISTANCE.DESCANSO.value} TINYINT DEFAULT 0,
+                    {E_ASSISTANCE.ESTADO.value} VARCHAR(20),
+                    {E_ASSISTANCE.TIEMPO_TRABAJO.value} TIME,
+                    {E_ASSISTANCE.TIEMPO_TRABAJO_CON_DESCANSO.value} TIME,
+                    {E_ASSISTANCE.FECHA_GENERADA.value} DATE DEFAULT NULL,
+                    {E_ASSISTANCE.GRUPO_IMPORTACION.value} VARCHAR(150) DEFAULT NULL,
+                    FOREIGN KEY ({E_ASSISTANCE.NUMERO_NOMINA.value}) REFERENCES empleados(numero_nomina) ON DELETE CASCADE
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
                 """
                 self.db.run_query(create_query)
                 print(f"✅ Tabla {E_ASSISTANCE.TABLE.value} creada correctamente.")
             else:
-                # Asegurarse que la columna exista si la tabla ya está creada
-                columna_query = """
-                    SELECT COUNT(*) AS existe
-                    FROM information_schema.columns
-                    WHERE table_schema = %s AND table_name = %s AND column_name = 'grupo_importacion'
-                """
-                col_result = self.db.get_data(columna_query, (self.db.database, E_ASSISTANCE.TABLE.value), dictionary=True)
-                if col_result.get("existe", 0) == 0:
-                    alter_query = f"""
-                        ALTER TABLE {E_ASSISTANCE.TABLE.value}
-                        ADD COLUMN grupo_importacion VARCHAR(50) DEFAULT NULL
+                # Validar columnas necesarias
+                columnas_requeridas = [
+                    E_ASSISTANCE.GRUPO_IMPORTACION.value,
+                    E_ASSISTANCE.TIEMPO_TRABAJO_CON_DESCANSO.value
+                ]
+
+                for columna in columnas_requeridas:
+                    check_col_query = """
+                        SELECT COUNT(*) AS existe
+                        FROM information_schema.columns
+                        WHERE table_schema = %s AND table_name = %s AND column_name = %s
                     """
-                    self.db.run_query(alter_query)
-                    print("🛠️ Columna 'grupo_importacion' agregada a la tabla asistencias.")
-                else:
-                    print("✔️ Columna 'grupo_importacion' ya existe en asistencias.")
+                    col_result = self.db.get_data(check_col_query, (self.db.database, E_ASSISTANCE.TABLE.value, columna), dictionary=True)
+                    if col_result.get("existe", 0) == 0:
+                        tipo = "VARCHAR(150) DEFAULT NULL" if columna == E_ASSISTANCE.GRUPO_IMPORTACION.value else "TIME"
+                        alter_query = f"""
+                            ALTER TABLE {E_ASSISTANCE.TABLE.value}
+                            ADD COLUMN {columna} {tipo}
+                        """
+                        self.db.run_query(alter_query)
+                        print(f"🛠️ Columna '{columna}' agregada a la tabla {E_ASSISTANCE.TABLE.value}.")
+                    else:
+                        print(f"✔️ Columna '{columna}' ya existe en {E_ASSISTANCE.TABLE.value}.")
 
             return True
 
@@ -66,11 +75,10 @@ class AssistanceModel:
             return False
 
 
-
     def verificar_o_crear_triggers(self):
         try:
             self._crear_trigger_calculo_horas()
-            self._crear_trigger_actualizar_horas()  # <<—— aquí lo agregas
+            self._crear_trigger_actualizar_horas()
             self._crear_trigger_estado()
         except Exception as ex:
             print(f"❌ Error al verificar/crear triggers: {ex}")
@@ -237,76 +245,43 @@ class AssistanceModel:
             print(f"✔️ Trigger '{trigger_name}' ya existe.")
 
 
-    def add(
-        self,
-        numero_nomina: int,
-        fecha: str,
-        turno: str = None,
-        entrada_turno: str = None,
-        salida_turno: str = None,
-        hora_entrada: str = None,
-        hora_salida: str = None,
-        descanso: int = 0,
-        tipo_registro: str = "manual",
-        grupo_importacion: str = None
-    ):
+    def add(self, numero_nomina: int, fecha: str, hora_entrada: str = None, hora_salida: str = None, descanso: int = 0, grupo_importacion: str = None):
         try:
-            if tipo_registro not in ['automático', 'manual']:
-                tipo_registro = 'manual'
+            def limpiar_y_parsear_hora(hora, campo):
+                if isinstance(hora, timedelta):
+                    return (datetime.min + hora).time().strftime("%H:%M:%S")
+                if isinstance(hora, str) and ":" in hora:
+                    return hora.strip()
+                print(f"⚠️ {campo} inválida para {numero_nomina} - {fecha}, se asigna 00:00:00")
+                return "00:00:00"
 
-            def limpiar_hora(valor, campo: str):
-                motivo = None
-                if valor is None:
-                    motivo = "valor None"
-                elif isinstance(valor, float) and pd.isna(valor):
-                    motivo = "valor NaN como float"
-                else:
-                    valor_str = str(valor).strip().lower()
-                    if valor_str in ['nan', '', 'none']:
-                        motivo = f"cadena inválida: '{valor_str}'"
-                if motivo:
-                    print(f"⚠️ {campo.upper()} inválida para empleado {numero_nomina} en fecha {fecha} ({motivo}). Reemplazada por '00:00:00'")
-                    return "00:00:00"
-                return str(valor).strip()
+            hora_entrada = limpiar_y_parsear_hora(hora_entrada, "Hora Entrada")
+            hora_salida = limpiar_y_parsear_hora(hora_salida, "Hora Salida")
 
-            hora_entrada = limpiar_hora(hora_entrada, "hora_entrada")
-            hora_salida = limpiar_hora(hora_salida, "hora_salida")
-
-            if descanso not in (0, 1, 2):
-                print(f"⚠️ Valor de descanso inválido ({descanso}), se asigna 0 por defecto.")
-                descanso = 0
-
-            query = f"""
-            INSERT INTO {E_ASSISTANCE.TABLE.value} (
-                {E_ASSISTANCE.NUMERO_NOMINA.value},
-                {E_ASSISTANCE.FECHA.value},
-                {E_ASSISTANCE.HORA_ENTRADA.value},
-                {E_ASSISTANCE.HORA_SALIDA.value},
-                {E_ASSISTANCE.DESCANSO.value},
-                {E_ASSISTANCE.ESTADO.value},
-                {E_ASSISTANCE.TIEMPO_TRABAJO.value},
-                {E_ASSISTANCE.FECHA_GENERADA.value},
-                {E_ASSISTANCE.GRUPO_IMPORTACION.value}
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            query = """
+                INSERT INTO asistencias (
+                    numero_nomina, fecha, hora_entrada, hora_salida, descanso,
+                    estado, tiempo_trabajo, tiempo_trabajo_con_descanso, fecha_generada, grupo_importacion
+                ) VALUES (%s, %s, %s, %s, %s, NULL, NULL, NULL, NULL, %s)
             """
 
-            valores = (
+            params = (
                 numero_nomina,
                 fecha,
                 hora_entrada,
                 hora_salida,
                 descanso,
-                None,
-                None,
-                None,
                 grupo_importacion
             )
 
-            self.db.run_query(query, valores)
-            return {"status": "success", "message": "Asistencia agregada correctamente"}
+            print(f"📝 Parámetros INSERT: {params}")
+            self.db.run_query(query, params)
+            print("✅ Asistencia registrada correctamente.")
+            return {"status": "success"}
 
         except Exception as ex:
-            return {"status": "error", "message": f"Error al agregar asistencia: {ex}"}
+            print(f"❌ Error al agregar asistencia: {ex}")
+            return {"status": "error", "message": str(ex)}
 
 
     def add_manual_assistance(
@@ -335,14 +310,12 @@ class AssistanceModel:
                 print(f"⚠️ Descanso inválido ({descanso}), se usará 0.")
                 descanso = 0
 
-            fecha_formateada = fecha
-
             query_check = f"""
                 SELECT COUNT(*) AS existe
                 FROM {E_ASSISTANCE.TABLE.value}
                 WHERE {E_ASSISTANCE.NUMERO_NOMINA.value} = %s AND {E_ASSISTANCE.FECHA.value} = %s
             """
-            resultado = self.db.get_data(query_check, (numero_nomina, fecha_formateada), dictionary=True)
+            resultado = self.db.get_data(query_check, (numero_nomina, fecha), dictionary=True)
             if resultado.get("existe", 0) > 0:
                 return {"status": "error", "message": "Ya existe una asistencia registrada para ese empleado en esa fecha"}
 
@@ -353,21 +326,68 @@ class AssistanceModel:
                     {E_ASSISTANCE.HORA_ENTRADA.value},
                     {E_ASSISTANCE.HORA_SALIDA.value},
                     {E_ASSISTANCE.DESCANSO.value},
+                    {E_ASSISTANCE.TIEMPO_TRABAJO_CON_DESCANSO.value},
                     {E_ASSISTANCE.GRUPO_IMPORTACION.value}
-                ) VALUES (%s, %s, %s, %s, %s, %s)
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s)
             """
-            self.db.run_query(query_insert, (numero_nomina, fecha_formateada, hora_entrada, hora_salida, descanso, grupo_importacion))
+            self.db.run_query(query_insert, (numero_nomina, fecha, hora_entrada, hora_salida, descanso, None, grupo_importacion))
+            print("✅ Asistencia manual agregada correctamente.")
             return {"status": "success", "message": "Asistencia agregada correctamente"}
 
         except Exception as e:
+            print(f"❌ Error en add_manual_assistance: {e}")
             return {"status": "error", "message": str(e)}
 
 
-    def _formatear_fecha(self, fecha_sql: str) -> str:
+    def update_asistencia(self, registro: dict) -> dict:
         try:
-            return datetime.strptime(fecha_sql, "%Y-%m-%d").strftime("%d/%m/%Y")
-        except Exception:
-            return fecha_sql
+            print(f"📤 Ejecutando UPDATE con datos: {registro}")
+
+            def formatear_hora(hora_valor):
+                if isinstance(hora_valor, time):
+                    return hora_valor.strftime("%H:%M:%S")
+                if isinstance(hora_valor, timedelta):
+                    total_seconds = int(hora_valor.total_seconds())
+                    horas = total_seconds // 3600
+                    minutos = (total_seconds % 3600) // 60
+                    segundos = total_seconds % 60
+                    return f"{horas:02}:{minutos:02}:{segundos:02}"
+                if isinstance(hora_valor, str):
+                    for fmt in ("%H:%M:%S", "%H:%M"):
+                        try:
+                            return datetime.strptime(hora_valor.strip(), fmt).strftime("%H:%M:%S")
+                        except:
+                            continue
+                return "00:00:00"
+
+            query = """
+                UPDATE asistencias
+                SET 
+                    hora_entrada = %s,
+                    hora_salida = %s,
+                    descanso = %s,
+                    estado = %s
+                WHERE numero_nomina = %s AND fecha = %s
+            """
+
+            params = (
+                formatear_hora(registro.get("hora_entrada")),
+                formatear_hora(registro.get("hora_salida")),
+                self._mapear_descanso_str_a_int(registro.get("descanso", "SN")),
+                registro.get("estado"),
+                registro.get("numero_nomina"),
+                self._convertir_fecha_a_mysql(registro.get("fecha"))
+            )
+
+            print(f"📝 Parámetros finales para UPDATE: {params}")
+            self.db.run_query(query, params)
+            print("✅ Actualización realizada correctamente.")
+            return {"status": "success"}
+
+        except Exception as e:
+            print(f"❌ Error al actualizar asistencia: {e}")
+            return {"status": "error", "message": str(e)}
+
 
 
     def get_all(self) -> dict:
@@ -379,16 +399,16 @@ class AssistanceModel:
             ORDER BY a.fecha ASC
             """
             result = self.db.get_data_list(query, dictionary=True)
-            for row in result:
-                if "fecha" in row:
-                    row["fecha"] = self._formatear_fecha(str(row["fecha"]))
-                # ✅ Mapear descanso numérico a string
-                descanso_map = {0: "SN", 1: "MD", 2: "CMP"}
-                row["descanso"] = descanso_map.get(row.get("descanso", 0), "SN")
-            return {"status": "success", "data": result}
-        except Exception as ex:
-            return {"status": "error", "message": f"Error al obtener asistencias: {ex}"}
 
+            for row in result:
+                self._mapear_fila_asistencia(row)
+
+            print(f"✅ {len(result)} registros obtenidos correctamente.")
+            return {"status": "success", "data": result}
+
+        except Exception as ex:
+            print(f"❌ Error al obtener asistencias: {ex}")
+            return {"status": "error", "message": f"Error al obtener asistencias: {ex}"}
 
 
 
@@ -396,19 +416,26 @@ class AssistanceModel:
         try:
             query = f"""
                 SELECT * FROM {E_ASSISTANCE.TABLE.value}
-                WHERE {E_ASSISTANCE.ID.value} = %s
+                WHERE {E_ASSISTANCE.ID_ASISTENCIA.value} = %s
             """
             result = self.db.get_data(query, (id_asistencia,), dictionary=True)
-            if result and "fecha" in result:
-                result["fecha"] = self._formatear_fecha(str(result["fecha"]))
-            return {"status": "success", "data": result}
+
+            if result:
+                result = self._mapear_fila_asistencia(result)
+                print(f"✅ Asistencia obtenida por ID {id_asistencia}: {result}")
+                return {"status": "success", "data": result}
+
+            print(f"ℹ️ No se encontró asistencia para ID {id_asistencia}")
+            return {"status": "error", "message": "Asistencia no encontrada"}
+
         except Exception as ex:
-            return {"status": "error", "message": f"Error al obtener asistencia por ID: {ex}"}
+            print(f"❌ Error al obtener asistencia por ID: {ex}")
+            return {"status": "error", "message": str(ex)}
+
 
 
     def get_by_empleado_fecha(self, numero_nomina: int, fecha: str) -> dict | None:
         try:
-            # Detectar si la fecha viene en formato DD/MM/YYYY
             if "/" in fecha:
                 fecha = datetime.strptime(fecha, "%d/%m/%Y").strftime("%Y-%m-%d")
 
@@ -417,12 +444,19 @@ class AssistanceModel:
                 WHERE {E_ASSISTANCE.NUMERO_NOMINA.value} = %s AND {E_ASSISTANCE.FECHA.value} = %s
             """
             result = self.db.get_data(query, (numero_nomina, fecha), dictionary=True)
-            if result and "fecha" in result:
-                result["fecha"] = self._formatear_fecha(str(result["fecha"]))
-            return result
-        except Exception as ex:
-            print(f"Error al obtener asistencia: {ex}")
+
+            if result:
+                self._mapear_fila_asistencia(result)
+                print(f"✅ Asistencia encontrada para {numero_nomina} en {fecha}")
+                return result
+
+            print(f"ℹ️ No se encontró asistencia para {numero_nomina} en {fecha}")
             return None
+
+        except Exception as ex:
+            print(f"❌ Error al obtener asistencia por empleado y fecha: {ex}")
+            return None
+
 
 
     def delete_by_numero_nomina_and_fecha(self, numero_nomina: int, fecha: str) -> dict:
@@ -495,26 +529,50 @@ class AssistanceModel:
             return {"status": "error", "message": str(e)}
 
 
-    def actualizar_asistencia_completa(self, numero_nomina, fecha, hora_entrada, hora_salida, estado, descanso: int = 0):
+    def actualizar_asistencia_completa(self, numero_nomina, fecha, hora_entrada, hora_salida, estado, descanso: int = 0, tiempo_con_descanso: Optional[str] = None):
         try:
             fecha_sql = datetime.strptime(fecha, "%d/%m/%Y").strftime("%Y-%m-%d")
 
-            if descanso not in (0, 1, 2):
-                print(f"⚠️ Descanso inválido ({descanso}), se usará 0.")
-                descanso = 0
+            def parse_hora(hora):
+                if isinstance(hora, timedelta):
+                    return (datetime.min + hora).time().strftime("%H:%M:%S")
+                if isinstance(hora, str) and ":" in hora:
+                    return hora.strip()
+                return "00:00:00"
+
+            hora_entrada = parse_hora(hora_entrada)
+            hora_salida = parse_hora(hora_salida)
+
+            if isinstance(tiempo_con_descanso, (float, int)):
+                tiempo_con_descanso = self.convertir_decimal_a_time(tiempo_con_descanso)
 
             query = """
                 UPDATE asistencias
                 SET hora_entrada = %s,
                     hora_salida = %s,
                     estado = %s,
-                    descanso = %s
+                    descanso = %s,
+                    tiempo_trabajo_con_descanso = %s
                 WHERE numero_nomina = %s AND fecha = %s
             """
-            params = (hora_entrada, hora_salida, estado, descanso, numero_nomina, fecha_sql)
+
+            params = (
+                hora_entrada,
+                hora_salida,
+                estado,
+                descanso,
+                tiempo_con_descanso,
+                numero_nomina,
+                fecha_sql
+            )
+
+            print(f"📝 Parámetros para UPDATE COMPLETO: {params}")
             self.db.run_query(query, params)
-            return {"status": "success", "message": "Asistencia actualizada"}
+            print("✅ Asistencia actualizada correctamente.")
+            return {"status": "success"}
+
         except Exception as e:
+            print(f"❌ Error al actualizar asistencia completa: {e}")
             return {"status": "error", "message": str(e)}
 
 
@@ -594,3 +652,56 @@ class AssistanceModel:
         except Exception as e:
             print(f"❌ Error al obtener fechas generadas: {e}")
             return []
+
+
+    def _convertir_fecha_a_mysql(self, fecha: str) -> str:
+        try:
+            if "/" in fecha:
+                return datetime.strptime(fecha, "%d/%m/%Y").strftime("%Y-%m-%d")
+            return fecha
+        except Exception as e:
+            print(f"❌ Error formateando fecha para MySQL '{fecha}': {e}")
+            return fecha
+
+
+    def _mapear_descanso_str_a_int(self, descanso_str: str) -> int:
+        mapa = {"SN": 0, "MD": 1, "CMP": 2}
+        return mapa.get(descanso_str, 0)
+
+
+    def _mapear_fila_asistencia(self, row: dict) -> dict:
+        try:
+            descanso_map = {0: "SN", 1: "MD", 2: "CMP"}
+
+            if "fecha" in row:
+                row["fecha"] = self._formatear_fecha(str(row["fecha"]))
+
+            row["descanso"] = descanso_map.get(row.get("descanso", 0), "SN")
+
+            # ✅ Corregido para validar vacíos y ceros
+            tiempo_con_descanso = row.get("tiempo_trabajo_con_descanso")
+            if not tiempo_con_descanso or str(tiempo_con_descanso).strip() in ("0", "0.00", "00:00:00"):
+                row["tiempo_trabajo_con_descanso"] = row.get("tiempo_trabajo", "00:00:00")
+
+            return row
+        except Exception as e:
+            print(f"❌ Error al mapear fila asistencia: {e}")
+            return row
+
+
+    def convertir_decimal_a_time(decimal_horas: float) -> str:
+        try:
+            total_segundos = int(decimal_horas * 3600)
+            horas = total_segundos // 3600
+            minutos = (total_segundos % 3600) // 60
+            segundos = total_segundos % 60
+            return f"{horas:02}:{minutos:02}:{segundos:02}"
+        except Exception:
+            return "00:00:00"
+
+
+    def _formatear_fecha(self, fecha_sql: str) -> str:
+        try:
+            return datetime.strptime(fecha_sql, "%Y-%m-%d").strftime("%d/%m/%Y")
+        except Exception:
+            return fecha_sql
