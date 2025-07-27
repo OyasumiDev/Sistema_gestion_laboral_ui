@@ -42,7 +42,13 @@ class AsistenciasRowHelper:
             return ""
 
 
-    def build_fila_nueva(self, grupo_importacion: str, registro: Dict, on_save: Callable, on_cancel: Callable) -> ft.DataRow:
+    def build_fila_nueva(
+        self,
+        grupo_importacion: str,
+        registro: Dict,
+        on_save: Callable,
+        on_cancel: Callable
+    ) -> ft.DataRow:
         if "descanso" not in registro:
             registro["descanso"] = "SN"
 
@@ -79,8 +85,9 @@ class AsistenciasRowHelper:
         )
 
         return ft.DataRow(cells=[
-            ft.DataCell(self._wrap_cell(self._crear_textfield(grupo_importacion, "numero_nomina", registro), 100)),
-            ft.DataCell(self._wrap_cell(ft.Text("-"), 150)),
+            ft.DataCell(self._wrap_cell(self._crear_textfield(grupo_importacion, "numero_nomina", registro), 60)),
+            ft.DataCell(self._wrap_cell(ft.Text("-", overflow=ft.TextOverflow.ELLIPSIS, max_lines=1,text_align=ft.TextAlign.LEFT  # o START si usas idiomas LTR/RTL
+), 250)),
             ft.DataCell(self._wrap_cell(self._crear_textfield(grupo_importacion, "fecha", registro), 110)),
             ft.DataCell(self._wrap_cell(entrada_field, 100)),
             ft.DataCell(self._wrap_cell(salida_field, 100)),
@@ -94,7 +101,12 @@ class AsistenciasRowHelper:
         ])
 
 
-    def build_fila_edicion(self, registro: Dict, on_save: Callable, on_cancel: Callable) -> ft.DataRow:
+    def build_fila_edicion(
+        self,
+        registro: Dict,
+        on_save: Callable,
+        on_cancel: Callable
+    ) -> ft.DataRow:
         numero_nomina = registro["numero_nomina"]
         fecha = registro["fecha"]
 
@@ -134,8 +146,9 @@ class AsistenciasRowHelper:
         )
 
         return ft.DataRow(cells=[
-            ft.DataCell(self._wrap_cell(ft.Text(str(numero_nomina)), 100)),
-            ft.DataCell(self._wrap_cell(ft.Text(registro.get("nombre_completo", "")), 150)),
+            ft.DataCell(self._wrap_cell(ft.Text(str(numero_nomina)), 60)),
+            ft.DataCell(self._wrap_cell(ft.Text(registro.get("nombre_completo", ""), overflow=ft.TextOverflow.ELLIPSIS, max_lines=1,text_align=ft.TextAlign.LEFT  # o START si usas idiomas LTR/RTL
+), 250)),
             ft.DataCell(self._wrap_cell(ft.Text(str(fecha)), 110)),
             ft.DataCell(self._wrap_cell(entrada_field, 100)),
             ft.DataCell(self._wrap_cell(salida_field, 100)),
@@ -149,9 +162,12 @@ class AsistenciasRowHelper:
         ])
 
 
-
-
-    def build_fila_vista(self, registro: dict, on_edit: Callable, on_delete: Callable = None) -> ft.DataRow:
+    def build_fila_vista(
+        self,
+        registro: dict,
+        on_edit: Callable,
+        on_delete: Callable = None
+    ) -> ft.DataRow:
         numero_nomina = registro["numero_nomina"]
         fecha = registro["fecha"]
         descanso = registro.get("descanso", "SN")
@@ -177,9 +193,10 @@ class AsistenciasRowHelper:
             )
 
         return ft.DataRow(cells=[
-            ft.DataCell(self._wrap_cell(ft.Text(str(numero_nomina)), 100)),
-            ft.DataCell(self._wrap_cell(ft.Text(registro.get("nombre_completo", "")), 150)),
-            ft.DataCell(self._wrap_cell(ft.Text(str(fecha)), 110)),
+            ft.DataCell(self._wrap_cell(ft.Text(str(numero_nomina)), 60)),
+            ft.DataCell(self._wrap_cell(ft.Text(registro.get("nombre_completo", ""), overflow=ft.TextOverflow.ELLIPSIS, max_lines=1,text_align=ft.TextAlign.LEFT  # o START si usas idiomas LTR/RTL
+), 250)),
+            ft.DataCell(self._wrap_cell(ft.Text(str(fecha)), 100)),
             ft.DataCell(self._wrap_cell(ft.Text(registro.get("hora_entrada", "")), 100)),
             ft.DataCell(self._wrap_cell(ft.Text(registro.get("hora_salida", "")), 100)),
             ft.DataCell(self._wrap_cell(ft.Text(descanso_texto), 180)),
@@ -187,6 +204,7 @@ class AsistenciasRowHelper:
             ft.DataCell(self._wrap_cell(ft.Text(registro.get("estado", "")), 100)),
             ft.DataCell(self._wrap_cell(ft.Row(acciones, spacing=5), 100))
         ])
+
 
 
     def _actualizar_tiempo_trabajo(
