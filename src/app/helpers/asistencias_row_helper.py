@@ -42,130 +42,81 @@ class AsistenciasRowHelper:
             return ""
 
 
-    def build_fila_nueva(
-        self,
-        grupo_importacion: str,
-        registro: Dict,
-        on_save: Callable,
-        on_cancel: Callable
-    ) -> ft.DataRow:
+    def build_fila_nueva(self, grupo_importacion: str, registro: Dict, on_save: Callable, on_cancel: Callable) -> ft.DataRow:
         if "descanso" not in registro:
             registro["descanso"] = "SN"
 
-        tiempo_trabajo_field = ft.TextField(
-            value=registro.get("tiempo_trabajo_con_descanso", "0.00"),
-            width=90,
-            read_only=True
-        )
+        tiempo_trabajo_field = ft.TextField(value=registro.get("tiempo_trabajo_con_descanso", "0.00"), width=70, read_only=True)
 
-        entrada_field = ft.TextField(width=85)
-        salida_field = ft.TextField(width=85)
+        entrada_field = ft.TextField(width=70)
+        salida_field = ft.TextField(width=70)
 
         entrada_field.value = self._sanitizar_hora(registro.get("hora_entrada", ""))
         salida_field.value = self._sanitizar_hora(registro.get("hora_salida", ""))
 
-        entrada_field.on_change = lambda e: self._actualizar_tiempo_trabajo(
-            entrada_field, salida_field, registro["descanso"],
-            tiempo_trabajo_field, registro,
-            [entrada_field, salida_field, tiempo_trabajo_field]
-        )
+        entrada_field.on_change = lambda e: self._actualizar_tiempo_trabajo(entrada_field, salida_field, registro["descanso"],
+            tiempo_trabajo_field, registro, [entrada_field, salida_field, tiempo_trabajo_field])
+        salida_field.on_change = lambda e: self._actualizar_tiempo_trabajo(entrada_field, salida_field, registro["descanso"],
+            tiempo_trabajo_field, registro, [entrada_field, salida_field, tiempo_trabajo_field])
 
-        salida_field.on_change = lambda e: self._actualizar_tiempo_trabajo(
-            entrada_field, salida_field, registro["descanso"],
-            tiempo_trabajo_field, registro,
-            [entrada_field, salida_field, tiempo_trabajo_field]
-        )
-
-        descanso_widget = self._crear_botones_descanso(
-            grupo_importacion,
-            registro,
-            tiempo_trabajo_field,
-            entrada_field,
-            salida_field
-        )
+        descanso_widget = self._crear_botones_descanso(grupo_importacion, registro, tiempo_trabajo_field, entrada_field, salida_field)
 
         return ft.DataRow(cells=[
-            ft.DataCell(self._wrap_cell(self._crear_textfield(grupo_importacion, "numero_nomina", registro), 50)),
-            ft.DataCell(self._wrap_cell(ft.Text("-", overflow=ft.TextOverflow.ELLIPSIS, max_lines=1), 160)),
-            ft.DataCell(self._wrap_cell(self._crear_textfield(grupo_importacion, "fecha", registro), 90)),
-            ft.DataCell(self._wrap_cell(entrada_field, 85)),
-            ft.DataCell(self._wrap_cell(salida_field, 85)),
-            ft.DataCell(self._wrap_cell(descanso_widget, 140)),
-            ft.DataCell(self._wrap_cell(tiempo_trabajo_field, 90)),
-            ft.DataCell(self._wrap_cell(ft.Text("PENDIENTE"), 80)),
+            ft.DataCell(self._wrap_cell(self._crear_textfield(grupo_importacion, "numero_nomina", registro), 45)),
+            ft.DataCell(self._wrap_cell(ft.Text("-", overflow=ft.TextOverflow.ELLIPSIS, max_lines=1, size=11), 110)),
+            ft.DataCell(self._wrap_cell(self._crear_textfield(grupo_importacion, "fecha", registro), 75)),
+            ft.DataCell(self._wrap_cell(entrada_field, 70)),
+            ft.DataCell(self._wrap_cell(salida_field, 70)),
+            ft.DataCell(self._wrap_cell(descanso_widget, 105)),
+            ft.DataCell(self._wrap_cell(tiempo_trabajo_field, 70)),
+            ft.DataCell(self._wrap_cell(ft.Text("PENDIENTE", size=11), 60)),
             ft.DataCell(self._wrap_cell(ft.Row([
-                ft.IconButton(icon=ft.icons.SAVE, tooltip="Guardar", icon_size=18, on_click=lambda e: on_save()),
-                ft.IconButton(icon=ft.icons.CANCEL, tooltip="Cancelar", icon_size=18, on_click=lambda e: on_cancel())
-            ], spacing=2), 80))
+                ft.IconButton(icon=ft.icons.SAVE, tooltip="Guardar", icon_size=16, on_click=lambda e: on_save()),
+                ft.IconButton(icon=ft.icons.CANCEL, tooltip="Cancelar", icon_size=16, on_click=lambda e: on_cancel())
+            ], spacing=2), 60))
         ])
 
 
-    def build_fila_edicion(
-        self,
-        registro: Dict,
-        on_save: Callable,
-        on_cancel: Callable
-    ) -> ft.DataRow:
+    def build_fila_edicion(self, registro: Dict, on_save: Callable, on_cancel: Callable) -> ft.DataRow:
         numero_nomina = registro["numero_nomina"]
         fecha = registro["fecha"]
 
         if "descanso" not in registro:
             registro["descanso"] = "SN"
 
-        tiempo_trabajo_field = ft.TextField(
-            value=registro.get("tiempo_trabajo_con_descanso", "0.00"),
-            width=90,
-            read_only=True
-        )
+        tiempo_trabajo_field = ft.TextField(value=registro.get("tiempo_trabajo_con_descanso", "0.00"), width=70, read_only=True)
 
-        entrada_field = ft.TextField(width=85)
-        salida_field = ft.TextField(width=85)
+        entrada_field = ft.TextField(width=70)
+        salida_field = ft.TextField(width=70)
 
         entrada_field.value = self._sanitizar_hora(registro.get("hora_entrada", ""))
         salida_field.value = self._sanitizar_hora(registro.get("hora_salida", ""))
 
-        entrada_field.on_change = lambda e: self._actualizar_tiempo_trabajo(
-            entrada_field, salida_field, registro["descanso"],
-            tiempo_trabajo_field, registro,
-            [entrada_field, salida_field, tiempo_trabajo_field]
-        )
+        entrada_field.on_change = lambda e: self._actualizar_tiempo_trabajo(entrada_field, salida_field, registro["descanso"],
+            tiempo_trabajo_field, registro, [entrada_field, salida_field, tiempo_trabajo_field])
+        salida_field.on_change = lambda e: self._actualizar_tiempo_trabajo(entrada_field, salida_field, registro["descanso"],
+            tiempo_trabajo_field, registro, [entrada_field, salida_field, tiempo_trabajo_field])
 
-        salida_field.on_change = lambda e: self._actualizar_tiempo_trabajo(
-            entrada_field, salida_field, registro["descanso"],
-            tiempo_trabajo_field, registro,
-            [entrada_field, salida_field, tiempo_trabajo_field]
-        )
-
-        descanso_widget = self._crear_botones_descanso(
-            numero_nomina,
-            registro,
-            tiempo_trabajo_field,
-            entrada_field,
-            salida_field
-        )
+        descanso_widget = self._crear_botones_descanso(numero_nomina, registro, tiempo_trabajo_field, entrada_field, salida_field)
 
         return ft.DataRow(cells=[
-            ft.DataCell(self._wrap_cell(ft.Text(str(numero_nomina)), 50)),
-            ft.DataCell(self._wrap_cell(ft.Text(registro.get("nombre_completo", ""), overflow=ft.TextOverflow.ELLIPSIS, max_lines=1), 160)),
-            ft.DataCell(self._wrap_cell(ft.Text(str(fecha)), 90)),
-            ft.DataCell(self._wrap_cell(entrada_field, 85)),
-            ft.DataCell(self._wrap_cell(salida_field, 85)),
-            ft.DataCell(self._wrap_cell(descanso_widget, 140)),
-            ft.DataCell(self._wrap_cell(tiempo_trabajo_field, 90)),
-            ft.DataCell(self._wrap_cell(ft.Text(registro.get("estado", "")), 80)),
+            ft.DataCell(self._wrap_cell(ft.Text(str(numero_nomina), size=11), 45)),
+            ft.DataCell(self._wrap_cell(ft.Text(registro.get("nombre_completo", ""), overflow=ft.TextOverflow.ELLIPSIS, max_lines=1, size=11), 110)),
+            ft.DataCell(self._wrap_cell(ft.Text(str(fecha), size=11), 75)),
+            ft.DataCell(self._wrap_cell(entrada_field, 70)),
+            ft.DataCell(self._wrap_cell(salida_field, 70)),
+            ft.DataCell(self._wrap_cell(descanso_widget, 105)),
+            ft.DataCell(self._wrap_cell(tiempo_trabajo_field, 70)),
+            ft.DataCell(self._wrap_cell(ft.Text(registro.get("estado", ""), size=11), 60)),
             ft.DataCell(self._wrap_cell(ft.Row([
-                ft.IconButton(icon=ft.icons.SAVE, tooltip="Guardar edición", icon_size=18, on_click=lambda e: on_save()),
-                ft.IconButton(icon=ft.icons.CANCEL, tooltip="Cancelar", icon_size=18, on_click=lambda e: on_cancel())
-            ], spacing=2), 80))
+                ft.IconButton(icon=ft.icons.SAVE, tooltip="Guardar edición", icon_size=16, on_click=lambda e: on_save()),
+                ft.IconButton(icon=ft.icons.CANCEL, tooltip="Cancelar", icon_size=16, on_click=lambda e: on_cancel())
+            ], spacing=2), 60))
         ])
 
 
-    def build_fila_vista(
-        self,
-        registro: dict,
-        on_edit: Callable,
-        on_delete: Callable = None
-    ) -> ft.DataRow:
+
+    def build_fila_vista(self, registro: dict, on_edit: Callable, on_delete: Callable = None) -> ft.DataRow:
         numero_nomina = registro["numero_nomina"]
         fecha = registro["fecha"]
         descanso = registro.get("descanso", "SN")
@@ -173,36 +124,25 @@ class AsistenciasRowHelper:
         tiempo_mostrar = registro.get("tiempo_trabajo_con_descanso", "00:00:00")
 
         acciones = [
-            ft.IconButton(
-                icon=ft.icons.EDIT,
-                tooltip="Editar",
-                icon_size=18,
-                on_click=lambda e: on_edit(numero_nomina, fecha)
-            )
+            ft.IconButton(icon=ft.icons.EDIT, tooltip="Editar", icon_size=16, on_click=lambda e: on_edit(numero_nomina, fecha))
         ]
-
         if on_delete:
             acciones.append(
-                ft.IconButton(
-                    icon=ft.icons.DELETE_OUTLINE,
-                    tooltip="Eliminar",
-                    icon_size=18,
-                    icon_color=ft.colors.RED_600,
-                    on_click=lambda e: on_delete(registro)
-                )
+                ft.IconButton(icon=ft.icons.DELETE_OUTLINE, tooltip="Eliminar", icon_color=ft.colors.RED_600, icon_size=16, on_click=lambda e: on_delete(registro))
             )
 
         return ft.DataRow(cells=[
-            ft.DataCell(self._wrap_cell(ft.Text(str(numero_nomina)), 50)),
-            ft.DataCell(self._wrap_cell(ft.Text(registro.get("nombre_completo", ""), overflow=ft.TextOverflow.ELLIPSIS, max_lines=1), 160)),
-            ft.DataCell(self._wrap_cell(ft.Text(str(fecha)), 90)),
-            ft.DataCell(self._wrap_cell(ft.Text(registro.get("hora_entrada", "")), 85)),
-            ft.DataCell(self._wrap_cell(ft.Text(registro.get("hora_salida", "")), 85)),
-            ft.DataCell(self._wrap_cell(ft.Text(descanso_texto), 140)),
-            ft.DataCell(self._wrap_cell(ft.Text(str(tiempo_mostrar)), 90)),
-            ft.DataCell(self._wrap_cell(ft.Text(registro.get("estado", "")), 80)),
-            ft.DataCell(self._wrap_cell(ft.Row(acciones, spacing=2), 80))
+            ft.DataCell(self._wrap_cell(ft.Text(str(numero_nomina), size=11), 45)),
+            ft.DataCell(self._wrap_cell(ft.Text(registro.get("nombre_completo", ""), overflow=ft.TextOverflow.ELLIPSIS, max_lines=1, size=11), 110)),
+            ft.DataCell(self._wrap_cell(ft.Text(str(fecha), size=11), 75)),
+            ft.DataCell(self._wrap_cell(ft.Text(registro.get("hora_entrada", ""), size=11), 70)),
+            ft.DataCell(self._wrap_cell(ft.Text(registro.get("hora_salida", ""), size=11), 70)),
+            ft.DataCell(self._wrap_cell(ft.Text(descanso_texto, size=11), 105)),
+            ft.DataCell(self._wrap_cell(ft.Text(str(tiempo_mostrar), size=11), 70)),
+            ft.DataCell(self._wrap_cell(ft.Text(registro.get("estado", ""), size=11), 60)),
+            ft.DataCell(self._wrap_cell(ft.Row(acciones, spacing=2), 60))
         ])
+
 
 
 
