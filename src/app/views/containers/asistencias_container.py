@@ -197,7 +197,6 @@ class AsistenciasContainer(ft.Container):
             )
 
 
-
     def _guardar_fila_nueva(self, grupo):
         datos = self.editando.get(("nuevo", grupo), None)
         if not datos:
@@ -217,11 +216,25 @@ class AsistenciasContainer(ft.Container):
             self.window_snackbar.show_error("⚠️ Fecha inválida. Usa el formato YYYY-MM-DD.")
             return
 
-        resultado = self.asistencia_model.create_asistencia(datos)
-        if resultado["status"] == "success":
+        # ✅ Recalcular horas trabajadas con validación robusta
+        resultado = self.row_helper.calculo_helper.recalcular_con_estado(
+            datos.get("hora_entrada", ""),
+            datos.get("hora_salida", ""),
+            datos.get("descanso", "SN")
+        )
+
+        if resultado["estado"] != "ok":
+            self.window_snackbar.show_error("❌ " + (resultado["mensaje"] or "Error en el cálculo de tiempo trabajado."))
+            return
+
+        datos["tiempo_trabajo"] = resultado["tiempo_trabajo"]
+        datos["tiempo_trabajo_con_descanso"] = resultado["tiempo_trabajo_con_descanso"]
+
+        resultado_db = self.asistencia_model.create_asistencia(datos)
+        if resultado_db["status"] == "success":
             self.window_snackbar.show_success("✅ Asistencia registrada correctamente.")
         else:
-            self.window_snackbar.show_error(f"❌ {resultado.get('message', 'Error al guardar la asistencia.')}")
+            self.window_snackbar.show_error(f"❌ {resultado_db.get('message', 'Error al guardar la asistencia.')}")
 
         self.editando.pop(("nuevo", grupo), None)
         self._actualizar_tabla()
@@ -275,6 +288,10 @@ class AsistenciasContainer(ft.Container):
             filas = []
 
             for reg in registros:
+                # ⚠️ Marcar errores visuales
+                if reg.get("__error_horas", False):
+                    reg["estado"] = "ERROR"
+
                 if self._es_editando(reg):
                     filas.append(self.row_helper.build_fila_edicion(
                         registro=reg,
@@ -284,7 +301,8 @@ class AsistenciasContainer(ft.Container):
                 else:
                     filas.append(self.row_helper.build_fila_vista(
                         registro=reg,
-                        on_edit=self._on_click_editar
+                        on_edit=self._on_click_editar,
+                        on_delete=lambda r=reg: self._confirmar_eliminacion(r["numero_nomina"], r["fecha"])
                     ))
 
             if ("nuevo", grupo) in self.editando:
@@ -301,10 +319,11 @@ class AsistenciasContainer(ft.Container):
                 filas.append(nueva_fila)
 
             tabla = ft.DataTable(columns=self.crear_columnas(), rows=filas)
+
             encabezado = ft.Row([
                 ft.Text(f"🗂 {grupo}", expand=True),
-                ft.IconButton(icon=ft.icons.ADD, tooltip="Agregar asistencia",
-                            on_click=lambda e, g=grupo: self._agregar_fila_en_grupo(g))
+                ft.IconButton(icon=ft.icons.ADD, tooltip="Agregar asistencia", on_click=lambda e, g=grupo: self._agregar_fila_en_grupo(g)),
+                ft.IconButton(icon=ft.icons.DELETE_OUTLINE, tooltip="Eliminar grupo", icon_color=ft.colors.RED_600, on_click=lambda e, g=grupo: self._eliminar_grupo(g))
             ])
 
             panel = ft.ExpansionPanel(
@@ -330,17 +349,15 @@ class AsistenciasContainer(ft.Container):
     def _es_editando(self, registro):
         return self.editando.get((registro["numero_nomina"], str(registro["fecha"])), False)
 
-
     def _guardar_edicion(self, numero_nomina, fecha):
         print(f"💾 [GUARDAR EDICIÓN] Iniciando para: (Nómina: {numero_nomina}, Fecha: {fecha})")
 
         registro_actualizado = None
-
         for grupo, registros in self.datos_por_grupo.items():
             for reg in registros:
                 if reg["numero_nomina"] == numero_nomina and str(reg["fecha"]) == str(fecha):
                     registro_actualizado = reg
-                    print(f"🔎 [GUARDAR EDICIÓN] Registro encontrado en grupo '{grupo}': {reg}")
+                    print(f"🔎 Registro encontrado en grupo '{grupo}': {reg}")
                     break
             if registro_actualizado:
                 break
@@ -349,62 +366,44 @@ class AsistenciasContainer(ft.Container):
             self.window_snackbar.show_error("❌ No se encontró el registro a actualizar.")
             return
 
-        numero = str(registro_actualizado.get("numero_nomina", "")).strip()
         fecha_valor = str(registro_actualizado.get("fecha", "")).strip()
-
-        if not numero or not fecha_valor:
-            self.window_snackbar.show_error("⚠️ Número de nómina y fecha son obligatorios.")
-            return
-
         try:
-            if "/" in fecha_valor:
-                fecha_obj = datetime.strptime(fecha_valor, "%d/%m/%Y")
-            else:
-                fecha_obj = datetime.strptime(fecha_valor, "%Y-%m-%d")
+            fecha_obj = datetime.strptime(fecha_valor, "%d/%m/%Y") if "/" in fecha_valor else datetime.strptime(fecha_valor, "%Y-%m-%d")
             registro_actualizado["fecha"] = fecha_obj.strftime("%Y-%m-%d")
-            print(f"✅ Fecha validada y convertida: {registro_actualizado['fecha']}")
         except Exception as e:
-            print(f"❌ Error validando fecha '{fecha_valor}': {e}")
             self.window_snackbar.show_error("⚠️ Fecha inválida. Usa el formato YYYY-MM-DD.")
             return
 
-        # ✅ Conversión correcta de hora_entrada y hora_salida
-        def convertir_tiempo(t):
+        def convertir(t):
             if isinstance(t, timedelta):
                 return (datetime.min + t).time().strftime("%H:%M:%S")
             return str(t).strip()
 
-        registro_actualizado["hora_entrada"] = convertir_tiempo(registro_actualizado.get("hora_entrada", "00:00:00"))
-        registro_actualizado["hora_salida"] = convertir_tiempo(registro_actualizado.get("hora_salida", "00:00:00"))
+        registro_actualizado["hora_entrada"] = convertir(registro_actualizado.get("hora_entrada"))
+        registro_actualizado["hora_salida"] = convertir(registro_actualizado.get("hora_salida"))
 
-        print(f"⏰ Hora entrada: {registro_actualizado['hora_entrada']} | Hora salida: {registro_actualizado['hora_salida']} | Descanso: {registro_actualizado.get('descanso')}")
-
-        # ✅ Recalcular tiempo trabajado antes de guardar
-        tiempo_calculado = self.row_helper.recalcular_horas(
+        # ✅ Validar y calcular tiempo con helper unificado
+        resultado = self.row_helper.calculo_helper.recalcular_con_estado(
             registro_actualizado["hora_entrada"],
             registro_actualizado["hora_salida"],
             registro_actualizado.get("descanso", "SN")
         )
 
-        registro_actualizado["tiempo_trabajo"] = tiempo_calculado
-        registro_actualizado["tiempo_trabajo_con_descanso"] = tiempo_calculado
+        if resultado["estado"] != "ok":
+            self.window_snackbar.show_error("❌ " + (resultado["mensaje"] or "Error al calcular tiempo trabajado."))
+            return
 
-        print(f"🧮 Tiempo calculado final: {tiempo_calculado}")
-        print(f"📤 Datos enviados al backend para guardar: {registro_actualizado}")
+        registro_actualizado["tiempo_trabajo"] = resultado["tiempo_trabajo"]
+        registro_actualizado["tiempo_trabajo_con_descanso"] = resultado["tiempo_trabajo_con_descanso"]
 
-        resultado = self.asistencia_model.update_asistencia(registro_actualizado)
-        if resultado["status"] == "success":
+        resultado_db = self.asistencia_model.update_asistencia(registro_actualizado)
+        if resultado_db["status"] == "success":
             self.window_snackbar.show_success("✅ Asistencia actualizada correctamente.")
-            print("✅ Actualización exitosa en backend.")
         else:
-            print(f"❌ Error recibido del backend: {resultado}")
-            self.window_snackbar.show_error(f"❌ {resultado.get('message', 'Error al actualizar la asistencia.')}")
+            self.window_snackbar.show_error(f"❌ {resultado_db.get('message', 'Error al actualizar la asistencia.')}")
 
-        print("🧹 Limpiando estado de edición y refrescando tabla.")
         self.editando.clear()
         self._actualizar_tabla()
-
-
 
     def _cancelar_edicion(self, numero_nomina, fecha):
         print(f"❌ Cancelando edición para: ({numero_nomina}, {fecha}) — Limpieza de estado de edición")
@@ -466,6 +465,25 @@ class AsistenciasContainer(ft.Container):
 
         print(f"📋 Estado 'editando' actualizado: {self.editando}")
 
+
+    def _eliminar_grupo(self, grupo):
+        confirmacion = ModalAlert(
+            title_text="¿Eliminar grupo?",
+            message=f"¿Deseas eliminar todas las asistencias del grupo '{grupo}'?",
+            on_confirm=lambda: self._confirmar_eliminar_grupo(grupo),
+            on_cancel=self._actualizar_tabla
+        )
+        confirmacion.mostrar()
+
+    def _confirmar_eliminar_grupo(self, grupo):
+        try:
+            registros = self.datos_por_grupo.get(grupo, [])
+            for reg in registros:
+                self.asistencia_model.delete_by_numero_nomina_and_fecha(reg["numero_nomina"], reg["fecha"])
+            self.window_snackbar.show_success(f"✅ Grupo '{grupo}' eliminado.")
+        except Exception as e:
+            self.window_snackbar.show_error(f"❌ Error eliminando grupo: {str(e)}")
+        self._actualizar_tabla()
 
 
     def _confirmar_eliminacion(self, numero, fecha, e=None):

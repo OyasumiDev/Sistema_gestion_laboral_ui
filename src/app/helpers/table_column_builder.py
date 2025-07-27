@@ -37,12 +37,15 @@ class TableColumnBuilder:
                 )
             else:
                 col = ft.DataColumn(label=ft.Text(titulo))
+
             columnas.append(col)
 
         if self.on_edit or self.on_delete:
             columnas.append(ft.DataColumn(label=ft.Text("Acciones")))
 
         return columnas
+
+
 
     def build_action_buttons(
         self,
