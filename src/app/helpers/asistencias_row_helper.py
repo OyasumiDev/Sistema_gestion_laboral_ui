@@ -54,12 +54,12 @@ class AsistenciasRowHelper:
 
         tiempo_trabajo_field = ft.TextField(
             value=registro.get("tiempo_trabajo_con_descanso", "0.00"),
-            width=100,
+            width=90,
             read_only=True
         )
 
-        entrada_field = ft.TextField(width=100)
-        salida_field = ft.TextField(width=100)
+        entrada_field = ft.TextField(width=85)
+        salida_field = ft.TextField(width=85)
 
         entrada_field.value = self._sanitizar_hora(registro.get("hora_entrada", ""))
         salida_field.value = self._sanitizar_hora(registro.get("hora_salida", ""))
@@ -85,19 +85,18 @@ class AsistenciasRowHelper:
         )
 
         return ft.DataRow(cells=[
-            ft.DataCell(self._wrap_cell(self._crear_textfield(grupo_importacion, "numero_nomina", registro), 60)),
-            ft.DataCell(self._wrap_cell(ft.Text("-", overflow=ft.TextOverflow.ELLIPSIS, max_lines=1,text_align=ft.TextAlign.LEFT  # o START si usas idiomas LTR/RTL
-), 250)),
-            ft.DataCell(self._wrap_cell(self._crear_textfield(grupo_importacion, "fecha", registro), 110)),
-            ft.DataCell(self._wrap_cell(entrada_field, 100)),
-            ft.DataCell(self._wrap_cell(salida_field, 100)),
-            ft.DataCell(self._wrap_cell(descanso_widget, 180)),
-            ft.DataCell(self._wrap_cell(tiempo_trabajo_field, 100)),
-            ft.DataCell(self._wrap_cell(ft.Text("PENDIENTE"), 100)),
+            ft.DataCell(self._wrap_cell(self._crear_textfield(grupo_importacion, "numero_nomina", registro), 50)),
+            ft.DataCell(self._wrap_cell(ft.Text("-", overflow=ft.TextOverflow.ELLIPSIS, max_lines=1), 160)),
+            ft.DataCell(self._wrap_cell(self._crear_textfield(grupo_importacion, "fecha", registro), 90)),
+            ft.DataCell(self._wrap_cell(entrada_field, 85)),
+            ft.DataCell(self._wrap_cell(salida_field, 85)),
+            ft.DataCell(self._wrap_cell(descanso_widget, 140)),
+            ft.DataCell(self._wrap_cell(tiempo_trabajo_field, 90)),
+            ft.DataCell(self._wrap_cell(ft.Text("PENDIENTE"), 80)),
             ft.DataCell(self._wrap_cell(ft.Row([
-                ft.IconButton(icon=ft.icons.SAVE, tooltip="Guardar", on_click=lambda e: on_save()),
-                ft.IconButton(icon=ft.icons.CANCEL, tooltip="Cancelar", on_click=lambda e: on_cancel())
-            ], spacing=5), 100))
+                ft.IconButton(icon=ft.icons.SAVE, tooltip="Guardar", icon_size=18, on_click=lambda e: on_save()),
+                ft.IconButton(icon=ft.icons.CANCEL, tooltip="Cancelar", icon_size=18, on_click=lambda e: on_cancel())
+            ], spacing=2), 80))
         ])
 
 
@@ -115,12 +114,12 @@ class AsistenciasRowHelper:
 
         tiempo_trabajo_field = ft.TextField(
             value=registro.get("tiempo_trabajo_con_descanso", "0.00"),
-            width=100,
+            width=90,
             read_only=True
         )
 
-        entrada_field = ft.TextField(width=100)
-        salida_field = ft.TextField(width=100)
+        entrada_field = ft.TextField(width=85)
+        salida_field = ft.TextField(width=85)
 
         entrada_field.value = self._sanitizar_hora(registro.get("hora_entrada", ""))
         salida_field.value = self._sanitizar_hora(registro.get("hora_salida", ""))
@@ -146,19 +145,18 @@ class AsistenciasRowHelper:
         )
 
         return ft.DataRow(cells=[
-            ft.DataCell(self._wrap_cell(ft.Text(str(numero_nomina)), 60)),
-            ft.DataCell(self._wrap_cell(ft.Text(registro.get("nombre_completo", ""), overflow=ft.TextOverflow.ELLIPSIS, max_lines=1,text_align=ft.TextAlign.LEFT  # o START si usas idiomas LTR/RTL
-), 250)),
-            ft.DataCell(self._wrap_cell(ft.Text(str(fecha)), 110)),
-            ft.DataCell(self._wrap_cell(entrada_field, 100)),
-            ft.DataCell(self._wrap_cell(salida_field, 100)),
-            ft.DataCell(self._wrap_cell(descanso_widget, 180)),
-            ft.DataCell(self._wrap_cell(tiempo_trabajo_field, 100)),
-            ft.DataCell(self._wrap_cell(ft.Text(registro.get("estado", "")), 100)),
+            ft.DataCell(self._wrap_cell(ft.Text(str(numero_nomina)), 50)),
+            ft.DataCell(self._wrap_cell(ft.Text(registro.get("nombre_completo", ""), overflow=ft.TextOverflow.ELLIPSIS, max_lines=1), 160)),
+            ft.DataCell(self._wrap_cell(ft.Text(str(fecha)), 90)),
+            ft.DataCell(self._wrap_cell(entrada_field, 85)),
+            ft.DataCell(self._wrap_cell(salida_field, 85)),
+            ft.DataCell(self._wrap_cell(descanso_widget, 140)),
+            ft.DataCell(self._wrap_cell(tiempo_trabajo_field, 90)),
+            ft.DataCell(self._wrap_cell(ft.Text(registro.get("estado", "")), 80)),
             ft.DataCell(self._wrap_cell(ft.Row([
-                ft.IconButton(icon=ft.icons.SAVE, tooltip="Guardar edición", on_click=lambda e: on_save()),
-                ft.IconButton(icon=ft.icons.CANCEL, tooltip="Cancelar", on_click=lambda e: on_cancel())
-            ], spacing=5), 100))
+                ft.IconButton(icon=ft.icons.SAVE, tooltip="Guardar edición", icon_size=18, on_click=lambda e: on_save()),
+                ft.IconButton(icon=ft.icons.CANCEL, tooltip="Cancelar", icon_size=18, on_click=lambda e: on_cancel())
+            ], spacing=2), 80))
         ])
 
 
@@ -178,6 +176,7 @@ class AsistenciasRowHelper:
             ft.IconButton(
                 icon=ft.icons.EDIT,
                 tooltip="Editar",
+                icon_size=18,
                 on_click=lambda e: on_edit(numero_nomina, fecha)
             )
         ]
@@ -187,23 +186,24 @@ class AsistenciasRowHelper:
                 ft.IconButton(
                     icon=ft.icons.DELETE_OUTLINE,
                     tooltip="Eliminar",
+                    icon_size=18,
                     icon_color=ft.colors.RED_600,
                     on_click=lambda e: on_delete(registro)
                 )
             )
 
         return ft.DataRow(cells=[
-            ft.DataCell(self._wrap_cell(ft.Text(str(numero_nomina)), 60)),
-            ft.DataCell(self._wrap_cell(ft.Text(registro.get("nombre_completo", ""), overflow=ft.TextOverflow.ELLIPSIS, max_lines=1,text_align=ft.TextAlign.LEFT  # o START si usas idiomas LTR/RTL
-), 250)),
-            ft.DataCell(self._wrap_cell(ft.Text(str(fecha)), 100)),
-            ft.DataCell(self._wrap_cell(ft.Text(registro.get("hora_entrada", "")), 100)),
-            ft.DataCell(self._wrap_cell(ft.Text(registro.get("hora_salida", "")), 100)),
-            ft.DataCell(self._wrap_cell(ft.Text(descanso_texto), 180)),
-            ft.DataCell(self._wrap_cell(ft.Text(str(tiempo_mostrar)), 100)),
-            ft.DataCell(self._wrap_cell(ft.Text(registro.get("estado", "")), 100)),
-            ft.DataCell(self._wrap_cell(ft.Row(acciones, spacing=5), 100))
+            ft.DataCell(self._wrap_cell(ft.Text(str(numero_nomina)), 50)),
+            ft.DataCell(self._wrap_cell(ft.Text(registro.get("nombre_completo", ""), overflow=ft.TextOverflow.ELLIPSIS, max_lines=1), 160)),
+            ft.DataCell(self._wrap_cell(ft.Text(str(fecha)), 90)),
+            ft.DataCell(self._wrap_cell(ft.Text(registro.get("hora_entrada", "")), 85)),
+            ft.DataCell(self._wrap_cell(ft.Text(registro.get("hora_salida", "")), 85)),
+            ft.DataCell(self._wrap_cell(ft.Text(descanso_texto), 140)),
+            ft.DataCell(self._wrap_cell(ft.Text(str(tiempo_mostrar)), 90)),
+            ft.DataCell(self._wrap_cell(ft.Text(registro.get("estado", "")), 80)),
+            ft.DataCell(self._wrap_cell(ft.Row(acciones, spacing=2), 80))
         ])
+
 
 
 
