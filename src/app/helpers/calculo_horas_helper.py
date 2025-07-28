@@ -105,3 +105,59 @@ class CalculoHorasHelper:
         print(f"❗ Error parseando hora '{value}': no coincide con formatos válidos")
         return None
 
+    @staticmethod
+    def validar_duplicado_en_grupo(
+        grupo: list[dict],
+        numero_nomina: str,
+        fecha: str
+    ) -> dict:
+        """
+        Verifica si existe un número de nómina duplicado en la misma fecha dentro del grupo.
+        Retorna dict con:
+        - 'duplicado': True/False
+        - 'mensaje': str descriptivo
+        - 'estado': 'duplicado' | 'ok'
+        """
+        print(f"🔍 validar_duplicado_en_grupo - Número: {numero_nomina}, Fecha: {fecha}")
+        for registro in grupo:
+            if (
+                str(registro.get("numero_nomina", "")).strip() == str(numero_nomina).strip()
+                and str(registro.get("fecha", "")).strip() == str(fecha).strip()
+            ):
+                return {
+                    "duplicado": True,
+                    "mensaje": "⚠️ Ya existe un registro con este número y fecha.",
+                    "estado": "duplicado"
+                }
+
+        return {
+            "duplicado": False,
+            "mensaje": "✅ Número válido para esta fecha.",
+            "estado": "ok"
+        }
+
+    @staticmethod
+    def validar_numero_fecha_en_grupo(grupo: list[dict], numero_nomina: str, fecha: str) -> tuple[bool, list[str]]:
+        """
+        Valida número y fecha con lógica de duplicado incluida.
+
+        Retorna:
+        - bool: True si es válido
+        - list[str]: Lista de errores ("Número inválido", "Fecha inválida", "Duplicado")
+        """
+        errores = []
+
+        if not numero_nomina or not numero_nomina.strip().isdigit():
+            errores.append("Número inválido")
+
+        try:
+            datetime.strptime(fecha, "%Y-%m-%d")
+        except Exception:
+            errores.append("Fecha inválida")
+
+        if not errores:
+            resultado = CalculoHorasHelper.validar_duplicado_en_grupo(grupo, numero_nomina, fecha)
+            if resultado["duplicado"]:
+                errores.append("Duplicado")
+
+        return (len(errores) == 0), errores

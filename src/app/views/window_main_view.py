@@ -24,8 +24,17 @@ class WindowMain:
         self._page.vertical_alignment = ft.MainAxisAlignment.CENTER
         self._page.horizontal_alignment = ft.CrossAxisAlignment.CENTER
 
-        self._page.window_maximized = True   # Abre maximizada
-        self._page.window_full_screen = False  # Asegura que no sea fullscreen sin bordes
+        # Configurar modo de ventana
+        pantalla_completa = True  # True = maximizada con bordes y botones visibles
+
+        if pantalla_completa:
+            self._page.window_maximized = True
+            self._page.window_full_screen = False
+        else:
+            self._page.window_maximized = False
+            self._page.window_full_screen = False
+
+
         
         self._page.window_resizable = True
 

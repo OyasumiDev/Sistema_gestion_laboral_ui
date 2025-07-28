@@ -42,13 +42,7 @@ class AsistenciasRowHelper:
             return ""
 
 
-    def build_fila_nueva(
-        self,
-        grupo_importacion: str,
-        registro: Dict,
-        on_save: Callable,
-        on_cancel: Callable
-    ) -> ft.DataRow:
+    def build_fila_nueva(self, grupo_importacion: str, registro: Dict, on_save: Callable, on_cancel: Callable, registros_del_grupo: list) -> ft.DataRow:
         if "descanso" not in registro:
             registro["descanso"] = "SN"
 
@@ -69,12 +63,36 @@ class AsistenciasRowHelper:
             tiempo_trabajo_field, registro,
             [entrada_field, salida_field, tiempo_trabajo_field]
         )
-
         salida_field.on_change = lambda e: self._actualizar_tiempo_trabajo(
             entrada_field, salida_field, registro["descanso"],
             tiempo_trabajo_field, registro,
             [entrada_field, salida_field, tiempo_trabajo_field]
         )
+
+        numero_field = ft.TextField(width=60, value=str(registro.get("numero_nomina", "")))
+        fecha_field = ft.TextField(width=110, value=str(registro.get("fecha", "")))
+
+        def validar_fecha_y_numero():
+            numero = numero_field.value.strip()
+            fecha = fecha_field.value.strip()
+            registro["numero_nomina"] = numero
+            registro["fecha"] = fecha
+
+            es_valido, errores = self.calculo_helper.validar_numero_fecha_en_grupo(
+                registros_del_grupo, numero, fecha
+            )
+            registro["errores"] = errores
+
+            numero_field.border_color = ft.colors.RED_400 if "Número inválido" in errores or "Duplicado" in errores else ft.colors.TRANSPARENT
+            numero_field.bgcolor = ft.colors.RED_50 if "Número inválido" in errores or "Duplicado" in errores else ft.colors.TRANSPARENT
+            fecha_field.border_color = ft.colors.RED_400 if "Fecha inválida" in errores else ft.colors.TRANSPARENT
+            fecha_field.bgcolor = ft.colors.RED_50 if "Fecha inválida" in errores else ft.colors.TRANSPARENT
+
+            numero_field.update()
+            fecha_field.update()
+
+        numero_field.on_blur = lambda e: validar_fecha_y_numero()
+        fecha_field.on_blur = lambda e: validar_fecha_y_numero()
 
         descanso_widget = self._crear_botones_descanso(
             grupo_importacion,
@@ -85,10 +103,9 @@ class AsistenciasRowHelper:
         )
 
         return ft.DataRow(cells=[
-            ft.DataCell(self._wrap_cell(self._crear_textfield(grupo_importacion, "numero_nomina", registro), 60)),
-            ft.DataCell(self._wrap_cell(ft.Text("-", overflow=ft.TextOverflow.ELLIPSIS, max_lines=1,text_align=ft.TextAlign.LEFT  # o START si usas idiomas LTR/RTL
-), 250)),
-            ft.DataCell(self._wrap_cell(self._crear_textfield(grupo_importacion, "fecha", registro), 110)),
+            ft.DataCell(self._wrap_cell(numero_field, 60)),
+            ft.DataCell(self._wrap_cell(ft.Text("-", overflow=ft.TextOverflow.ELLIPSIS, max_lines=1), 250)),
+            ft.DataCell(self._wrap_cell(fecha_field, 110)),
             ft.DataCell(self._wrap_cell(entrada_field, 100)),
             ft.DataCell(self._wrap_cell(salida_field, 100)),
             ft.DataCell(self._wrap_cell(descanso_widget, 180)),
@@ -99,6 +116,7 @@ class AsistenciasRowHelper:
                 ft.IconButton(icon=ft.icons.CANCEL, tooltip="Cancelar", on_click=lambda e: on_cancel())
             ], spacing=5), 100))
         ])
+
 
 
     def build_fila_edicion(

@@ -197,39 +197,59 @@ class AsistenciasContainer(ft.Container):
             )
 
 
-    def _guardar_fila_nueva(self, grupo):
+    def _guardar_fila_nueva(self, grupo: str):
         datos = self.editando.get(("nuevo", grupo), None)
         if not datos:
             self.window_snackbar.show_error("❌ No hay datos para guardar.")
             return
 
-        numero = datos.get("numero_nomina", "").strip()
-        fecha = datos.get("fecha", "").strip()
+        numero = str(datos.get("numero_nomina", "")).strip()
+        fecha = str(datos.get("fecha", "")).strip()
 
-        if not numero or not fecha:
-            self.window_snackbar.show_error("⚠️ Debes ingresar número de nómina y fecha.")
-            return
+        errores = []
 
-        try:
-            datetime.strptime(fecha, "%Y-%m-%d")
-        except Exception:
-            self.window_snackbar.show_error("⚠️ Fecha inválida. Usa el formato YYYY-MM-DD.")
-            return
+        # ❌ Validar existencia de campos
+        if not numero:
+            errores.append("Número de nómina requerido.")
+        elif not numero.isdigit():
+            errores.append("Número de nómina inválido.")
 
-        # ✅ Recalcular horas trabajadas con validación robusta
+        if not fecha:
+            errores.append("Fecha requerida.")
+        else:
+            try:
+                datetime.strptime(fecha, "%Y-%m-%d")
+            except Exception:
+                errores.append("Fecha inválida. Usa el formato YYYY-MM-DD.")
+
+        # ❌ Validar duplicado dentro del grupo actual
+        grupo_actual = self.datos_por_grupo.get(grupo, [])
+        validacion = self.row_helper.calculo_helper.validar_duplicado_en_grupo(
+            grupo_actual, numero, fecha
+        )
+        if validacion["duplicado"]:
+            errores.append(validacion["mensaje"])
+
+        # ❌ Validar tiempo trabajado
         resultado = self.row_helper.calculo_helper.recalcular_con_estado(
             datos.get("hora_entrada", ""),
             datos.get("hora_salida", ""),
             datos.get("descanso", "SN")
         )
-
         if resultado["estado"] != "ok":
-            self.window_snackbar.show_error("❌ " + (resultado["mensaje"] or "Error en el cálculo de tiempo trabajado."))
+            errores.append(resultado["mensaje"] or "Error en el cálculo de tiempo trabajado.")
+
+        if errores:
+            self.window_snackbar.show_error("❌ " + "\n".join(errores))
             return
 
+        # ✅ Preparar datos para guardar
+        datos["numero_nomina"] = numero
+        datos["fecha"] = fecha
         datos["tiempo_trabajo"] = resultado["tiempo_trabajo"]
         datos["tiempo_trabajo_con_descanso"] = resultado["tiempo_trabajo_con_descanso"]
 
+        # ✅ Guardar en base de datos
         resultado_db = self.asistencia_model.create_asistencia(datos)
         if resultado_db["status"] == "success":
             self.window_snackbar.show_success("✅ Asistencia registrada correctamente.")
@@ -305,12 +325,14 @@ class AsistenciasContainer(ft.Container):
                         on_delete=lambda r=reg: self._confirmar_eliminacion(r["numero_nomina"], r["fecha"])
                     ))
 
+            # ✅ Agregar fila nueva si corresponde
             if ("nuevo", grupo) in self.editando:
                 nueva_fila = self.row_helper.build_fila_nueva(
                     grupo_importacion=grupo,
                     registro=self.editando[("nuevo", grupo)],
                     on_save=lambda g=grupo: self._guardar_fila_nueva(g),
-                    on_cancel=lambda g=grupo: self._cancelar_fila_nueva(g)
+                    on_cancel=lambda g=grupo: self._cancelar_fila_nueva(g),
+                    registros_del_grupo=registros  # ✅ Corrección: este parámetro es obligatorio ahora
                 )
 
                 if nueva_fila.cells and nueva_fila.cells[0].content:
@@ -344,6 +366,7 @@ class AsistenciasContainer(ft.Container):
             if grupo_expandido:
                 AsistenciasScrollHelper.scroll_to_group_after_build(self.page, group_id=grupo_expandido)
             self.page.update()
+
 
 
     def _es_editando(self, registro):
