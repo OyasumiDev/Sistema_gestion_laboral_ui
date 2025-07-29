@@ -7,6 +7,7 @@ from app.views.containers.modal_alert import ModalAlert
 from app.core.invokers.file_save_invoker import FileSaveInvoker
 from threading import Timer
 from app.core.invokers.safe_scroll_invoker import SafeScrollInvoker
+from app.views.containers.window_snackbar import WindowSnackbar
 
 
 class EmpleadosContainer(ft.Container):
@@ -14,9 +15,11 @@ class EmpleadosContainer(ft.Container):
         super().__init__()
 
         self.page = AppState().page
+        self.window_snackbar = WindowSnackbar(self.page)
         self.empleado_model = EmployesModel()
         self.fila_editando = None
         self.fila_nueva_en_proceso = False
+
 
         self.orden_actual = {
             "numero_nomina": None,
@@ -163,7 +166,7 @@ class EmpleadosContainer(ft.Container):
                 except:
                     sueldo_cell.border_color = ft.colors.RED
                     self.page.update()
-                    ModalAlert.mostrar_info("Error", "El sueldo debe ser un número positivo.")
+                    self.window_snackbar.show_error("❌ El sueldo debe ser un número positivo.")
                     return
 
                 def confirmar_guardado():
@@ -172,10 +175,10 @@ class EmpleadosContainer(ft.Container):
                         sueldo_por_hora=sueldo
                     )
                     if resultado["status"] == "success":
-                        ModalAlert.mostrar_info("Éxito", "Cambios guardados correctamente")
                         self._actualizar_tabla()
+                        self.window_snackbar.show_success("✅ Cambios guardados correctamente.")
                     else:
-                        ModalAlert.mostrar_info("Error", f"No se pudo guardar: {resultado['message']}")
+                        self.window_snackbar.show_error(f"❌ No se pudo guardar: {resultado['message']}")
 
                 self.fila_editando = None
                 ModalAlert(
@@ -191,10 +194,10 @@ class EmpleadosContainer(ft.Container):
                 def on_confirm():
                     resultado = self.empleado_model.delete_by_numero_nomina(id)
                     if resultado["status"] == "success":
-                        ModalAlert.mostrar_info("Eliminado", "Empleado eliminado correctamente")
                         self._actualizar_tabla("")
+                        self.window_snackbar.show_success("✅ Empleado eliminado correctamente.")
                     else:
-                        ModalAlert.mostrar_info("Error", f"No se pudo eliminar: {resultado['message']}")
+                        self.window_snackbar.show_error(f"❌ No se pudo eliminar: {resultado['message']}")
 
                 ModalAlert(
                     title_text="¿Eliminar empleado?",
@@ -205,7 +208,7 @@ class EmpleadosContainer(ft.Container):
             def crear_boton_cancelar(id_cancelar):
                 def cancelar(ev):
                     self.fila_editando = None
-                    ModalAlert.mostrar_info("Edición cancelada", f"Se canceló la edición del empleado {id_cancelar}")
+                    self.window_snackbar.show_success(f"ℹ️ Se canceló la edición del empleado {id_cancelar}")
                     self._actualizar_tabla()
                 return ft.IconButton(
                     icon=ft.icons.CLOSE,
@@ -213,6 +216,7 @@ class EmpleadosContainer(ft.Container):
                     tooltip="Cancelar",
                     on_click=cancelar
                 )
+
 
             acciones = ft.Row([
                 ft.IconButton(icon=ft.icons.CHECK, icon_color=ft.colors.GREEN_600, tooltip="Guardar", on_click=guardar_cambios),
@@ -239,6 +243,7 @@ class EmpleadosContainer(ft.Container):
             ],
             rows=rows
         )
+
 
 
     def _build_import_button(self):
@@ -345,7 +350,7 @@ class EmpleadosContainer(ft.Container):
             self.page.update()
 
             if errores:
-                ModalAlert.mostrar_info("Errores encontrados", "\n".join(errores))
+                self.window_snackbar.show_error("❌ " + " / ".join(errores))
                 return
 
             resultado = self.empleado_model.add(
@@ -357,10 +362,11 @@ class EmpleadosContainer(ft.Container):
             self.fila_nueva_en_proceso = False
 
             if resultado["status"] == "success":
-                ModalAlert.mostrar_info("Éxito", f"Empleado agregado con ID {nuevo_id}")
+                self.window_snackbar.show_success(f"✅ Empleado agregado con ID {nuevo_id}")
                 self._actualizar_tabla()
             else:
-                ModalAlert.mostrar_info("Error", resultado["message"])
+                self.window_snackbar.show_error(f"❌ {resultado['message']}")
+
 
         def on_cancelar(_):
             self.fila_nueva_en_proceso = False

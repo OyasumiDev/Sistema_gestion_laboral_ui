@@ -15,6 +15,7 @@ from app.helpers.sort_helpers import SortHelper
 from app.helpers.table_column_builder import TableColumnBuilder
 from app.helpers.asistencias_scroll_helper import AsistenciasScrollHelper
 from app.helpers.asistencias_row_helper import AsistenciasRowHelper
+from app.helpers.calculo_horas_helper import CalculoHorasHelper  
 from app.helpers.boton_factory import (
     crear_boton_importar,
     crear_boton_exportar
@@ -28,6 +29,7 @@ class AsistenciasContainer(ft.Container):
         self.asistencia_model = AssistanceModel()
         self.theme_ctrl = ThemeController()
         self.sort_helper = SortHelper(default_key="numero_nomina")
+        self.calculo_helper = CalculoHorasHelper()
         self.row_helper = AsistenciasRowHelper(
             recalcular_callback=self._recalcular_horas_fila,
             actualizar_callback=self._actualizar_valor_fila
@@ -198,66 +200,68 @@ class AsistenciasContainer(ft.Container):
 
 
     def _guardar_fila_nueva(self, grupo: str):
-        datos = self.editando.get(("nuevo", grupo), None)
-        if not datos:
-            self.window_snackbar.show_error("❌ No hay datos para guardar.")
-            return
+        try:
+            fila = self.editando.get(("nuevo", grupo), {})
+            print(f"💾 Guardando nueva fila en grupo '{grupo}': {fila}")
 
-        numero = str(datos.get("numero_nomina", "")).strip()
-        fecha = str(datos.get("fecha", "")).strip()
+            # Validar número de nómina
+            numero = str(fila.get("numero_nomina", "")).strip()
+            if not numero.isdigit():
+                self.window_snackbar.show_error("❌ Número de nómina inválido.")
+                return
 
-        errores = []
+            numero = int(numero)
 
-        # ❌ Validar existencia de campos
-        if not numero:
-            errores.append("Número de nómina requerido.")
-        elif not numero.isdigit():
-            errores.append("Número de nómina inválido.")
-
-        if not fecha:
-            errores.append("Fecha requerida.")
-        else:
+            # Validar y convertir fecha
+            fecha_str = str(fila.get("fecha", "")).strip()
             try:
-                datetime.strptime(fecha, "%Y-%m-%d")
+                fecha_dt = datetime.strptime(fecha_str, "%d/%m/%Y")
+                fecha_iso = fecha_dt.strftime("%Y-%m-%d")
             except Exception:
-                errores.append("Fecha inválida. Usa el formato YYYY-MM-DD.")
+                self.window_snackbar.show_error("❌ Formato de fecha inválido. Usa DD/MM/AAAA.")
+                return
 
-        # ❌ Validar duplicado dentro del grupo actual
-        grupo_actual = self.datos_por_grupo.get(grupo, [])
-        validacion = self.row_helper.calculo_helper.validar_duplicado_en_grupo(
-            grupo_actual, numero, fecha
-        )
-        if validacion["duplicado"]:
-            errores.append(validacion["mensaje"])
+            # Sanitizar horas
+            hora_entrada = self.calculo_helper.sanitizar_hora(fila.get("hora_entrada"))
+            hora_salida = self.calculo_helper.sanitizar_hora(fila.get("hora_salida"))
+            descanso = fila.get("descanso", "SN")
 
-        # ❌ Validar tiempo trabajado
-        resultado = self.row_helper.calculo_helper.recalcular_con_estado(
-            datos.get("hora_entrada", ""),
-            datos.get("hora_salida", ""),
-            datos.get("descanso", "SN")
-        )
-        if resultado["estado"] != "ok":
-            errores.append(resultado["mensaje"] or "Error en el cálculo de tiempo trabajado.")
+            # ✅ Validar horas y calcular tiempo trabajado con descanso
+            resultado = self.calculo_helper.recalcular_con_estado(hora_entrada, hora_salida, descanso)
+            if resultado["estado"] != "ok":
+                self.window_snackbar.show_error(f"❌ {resultado.get('mensaje', 'Error en tiempo trabajado.')}")
+                return
 
-        if errores:
-            self.window_snackbar.show_error("❌ " + "\n".join(errores))
-            return
+            # Validar duplicado dentro del grupo
+            registros_del_grupo = self.datos_por_grupo.get(grupo, [])
+            valido, errores = self.calculo_helper.validar_numero_fecha_en_grupo(
+                registros_del_grupo, numero, fecha_str, registro_actual=fila
+            )
+            if not valido:
+                self.window_snackbar.show_error("❌ " + " ".join(errores))
+                return
 
-        # ✅ Preparar datos para guardar
-        datos["numero_nomina"] = numero
-        datos["fecha"] = fecha
-        datos["tiempo_trabajo"] = resultado["tiempo_trabajo"]
-        datos["tiempo_trabajo_con_descanso"] = resultado["tiempo_trabajo_con_descanso"]
+            # Guardar en la base de datos
+            resultado_db = self.asistencia_model.add(
+                numero_nomina=numero,
+                fecha=fecha_iso,
+                hora_entrada=hora_entrada,
+                hora_salida=hora_salida,
+                descanso={"SN": 0, "MD": 1, "CMP": 2}.get(descanso, 0),
+                grupo_importacion=grupo
+            )
 
-        # ✅ Guardar en base de datos
-        resultado_db = self.asistencia_model.create_asistencia(datos)
-        if resultado_db["status"] == "success":
-            self.window_snackbar.show_success("✅ Asistencia registrada correctamente.")
-        else:
-            self.window_snackbar.show_error(f"❌ {resultado_db.get('message', 'Error al guardar la asistencia.')}")
+            if not resultado_db or resultado_db.get("status") != "success":
+                self.window_snackbar.show_error("❌ Error al guardar en la base de datos.")
+                return
 
-        self.editando.pop(("nuevo", grupo), None)
-        self._actualizar_tabla()
+            self.window_snackbar.show_success("✅ Asistencia guardada correctamente.")
+            self.editando.pop(("nuevo", grupo), None)
+            self._actualizar_tabla()
+
+        except Exception as e:
+            print(f"❌ Error en _guardar_fila_nueva: {e}")
+            self.window_snackbar.show_error("⚠️ Error inesperado al guardar.")
 
 
     def _cancelar_fila_nueva(self, grupo):
