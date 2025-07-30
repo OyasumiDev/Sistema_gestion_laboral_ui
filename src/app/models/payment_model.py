@@ -31,7 +31,7 @@ class PaymentModel:
 
                 create_query = f"""
                 CREATE TABLE IF NOT EXISTS {E_PAYMENT.TABLE.value} (
-                    {E_PAYMENT.ID.value} INT AUTO_INCREMENT PRIMARY KEY,
+                    {E_PAYMENT.ID_PAGO_NOMINA.value} INT AUTO_INCREMENT PRIMARY KEY,
                     {E_PAYMENT.NUMERO_NOMINA.value} SMALLINT UNSIGNED NOT NULL,
                     {E_PAYMENT.FECHA_PAGO.value} DATE NOT NULL,
                     {E_PAYMENT.TOTAL_HORAS_TRABAJADAS.value} DECIMAL(5,2) DEFAULT 0,

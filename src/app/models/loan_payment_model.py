@@ -1,8 +1,8 @@
 from datetime import datetime
 from decimal import Decimal
 from app.core.interfaces.database_mysql import DatabaseMysql
-from app.core.enums.e_loan_payment_model import E_PAGOS_PRESTAMO
-from app.core.enums.e_prestamos_model import E_PRESTAMOS
+from app.core.enums.e_pagos_prestamos import E_PAGOS_PRESTAMO as E
+from app.core.enums.e_prestamos_model import E_PRESTAMOS as P
 
 
 class LoanPaymentModel:
@@ -10,10 +10,9 @@ class LoanPaymentModel:
 
     def __init__(self):
         self.db = DatabaseMysql()
-        self.E = E_PAGOS_PRESTAMO
-        self.P = E_PRESTAMOS
+        self.E = E
+        self.P = P
         self._exists_table = self.check_table()
-
 
     def check_table(self) -> bool:
         try:
@@ -22,15 +21,15 @@ class LoanPaymentModel:
                 FROM information_schema.tables
                 WHERE table_schema = %s AND table_name = %s
             """
-            result = self.db.get_data(query, (self.db.database, self.E.TABLE.value), dictionary=True)
+            result = self.db.get_data(query, (self.db.database, self.E.TABLE_PAGOS_PRESTAMOS.value), dictionary=True)
             if result.get("c", 0) == 0:
-                print(f"⚠️ La tabla {self.E.TABLE.value} no existe. Creando...")
+                print(f"⚠️ La tabla {self.E.TABLE_PAGOS_PRESTAMOS.value} no existe. Creando...")
 
                 create_query = f"""
-                CREATE TABLE {self.E.TABLE.value} (
-                    {self.E.PAGO_ID.value} INT AUTO_INCREMENT PRIMARY KEY,
-                    {self.E.PAGO_ID_PRESTAMO.value} INT NOT NULL,
-                    {self.E.PAGO_ID_NOMINA.value} INT NOT NULL,
+                CREATE TABLE {self.E.TABLE_PAGOS_PRESTAMOS.value} (
+                    {self.E.ID_PAGO_PRESTAMO.value} INT AUTO_INCREMENT PRIMARY KEY,
+                    {self.E.ID_PRESTAMO.value} INT NOT NULL,
+                    {self.E.ID_PAGO_NOMINA.value} INT NOT NULL,
                     {self.E.PAGO_MONTO_PAGADO.value} DECIMAL(10,2) NOT NULL,
                     {self.E.PAGO_FECHA_PAGO.value} DATE NOT NULL,
                     {self.E.PAGO_FECHA_REAL.value} DATE,
@@ -40,23 +39,22 @@ class LoanPaymentModel:
                     {self.E.PAGO_DIAS_RETRASO.value} INT DEFAULT 0,
                     {self.E.PAGO_SALDO_RESTANTE.value} DECIMAL(10,2),
                     {self.E.PAGO_OBSERVACIONES.value} TEXT,
-                    FOREIGN KEY ({self.E.PAGO_ID_PRESTAMO.value})
-                        REFERENCES {self.P.TABLE.value}({self.P.PRESTAMO_ID.value})
+                    FOREIGN KEY ({self.E.ID_PRESTAMO.value})
+                        REFERENCES {self.P.TABLE_PRESTAMOS.value}({self.P.PRESTAMO_ID.value})
                         ON DELETE CASCADE,
-                    FOREIGN KEY ({self.E.PAGO_ID_NOMINA.value})
-                        REFERENCES pagos(id_pago)
+                    FOREIGN KEY ({self.E.ID_PAGO_NOMINA.value})
+                        REFERENCES pagos({self.E.ID_PAGO_NOMINA.value})
                         ON DELETE CASCADE
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
                 """
                 self.db.run_query(create_query)
-                print(f"✅ Tabla {self.E.TABLE.value} creada correctamente.")
+                print(f"✅ Tabla {self.E.TABLE_PAGOS_PRESTAMOS.value} creada correctamente.")
             else:
-                print(f"✔️ La tabla {self.E.TABLE.value} ya existe.")
+                print(f"✔️ La tabla {self.E.TABLE_PAGOS_PRESTAMOS.value} ya existe.")
             return True
         except Exception as ex:
             print(f"❌ Error al verificar/crear la tabla: {ex}")
             return False
-
 
     def add_payment(
         self,
@@ -74,7 +72,7 @@ class LoanPaymentModel:
             # Obtener saldo actual del préstamo
             result = self.db.get_data(f"""
                 SELECT {self.P.PRESTAMO_SALDO.value}
-                FROM {self.P.TABLE.value}
+                FROM {self.P.TABLE_PRESTAMOS.value}
                 WHERE {self.P.PRESTAMO_ID.value} = %s
             """, (id_prestamo,), dictionary=True)
 
@@ -96,9 +94,9 @@ class LoanPaymentModel:
 
             # Insertar el nuevo pago
             insert_query = f"""
-                INSERT INTO {self.E.TABLE.value} (
-                    {self.E.PAGO_ID_PRESTAMO.value},
-                    {self.E.PAGO_ID_NOMINA.value},
+                INSERT INTO {self.E.TABLE_PAGOS_PRESTAMOS.value} (
+                    {self.E.ID_PRESTAMO.value},
+                    {self.E.ID_PAGO_NOMINA.value},
                     {self.E.PAGO_MONTO_PAGADO.value},
                     {self.E.PAGO_FECHA_PAGO.value},
                     {self.E.PAGO_FECHA_REAL.value},
@@ -124,16 +122,24 @@ class LoanPaymentModel:
                 observaciones
             ))
 
-            # Actualizar el saldo del préstamo
+            # Actualizar saldo del préstamo
             self.db.run_query(
-                f"UPDATE {self.P.TABLE.value} SET {self.P.PRESTAMO_SALDO.value} = %s WHERE {self.P.PRESTAMO_ID.value} = %s",
+                f"""
+                UPDATE {self.P.TABLE_PRESTAMOS.value}
+                SET {self.P.PRESTAMO_SALDO.value} = %s
+                WHERE {self.P.PRESTAMO_ID.value} = %s
+                """,
                 (nuevo_saldo, id_prestamo)
             )
 
-            # Si el saldo está saldado, actualizar el estado
+            # Si se liquidó el préstamo, actualizar estado
             if nuevo_saldo <= 0:
                 self.db.run_query(
-                    f"UPDATE {self.P.TABLE.value} SET {self.P.PRESTAMO_ESTADO.value} = 'terminado' WHERE {self.P.PRESTAMO_ID.value} = %s",
+                    f"""
+                    UPDATE {self.P.TABLE_PRESTAMOS.value}
+                    SET {self.P.PRESTAMO_ESTADO.value} = 'terminado'
+                    WHERE {self.P.PRESTAMO_ID.value} = %s
+                    """,
                     (id_prestamo,)
                 )
 
@@ -146,12 +152,11 @@ class LoanPaymentModel:
             return {"status": "error", "message": f"Error al registrar pago: {ex}"}
 
 
-
     def get_by_prestamo(self, id_prestamo: int):
         try:
             query = f"""
-                SELECT * FROM {self.E.TABLE.value}
-                WHERE {self.E.PAGO_ID_PRESTAMO.value} = %s
+                SELECT * FROM {self.E.TABLE_PAGOS_PRESTAMOS.value}
+                WHERE {self.E.ID_PRESTAMO.value} = %s
                 ORDER BY {self.E.PAGO_FECHA_PAGO.value} ASC
             """
             result = self.db.get_data_list(query, (id_prestamo,), dictionary=True)
@@ -170,12 +175,11 @@ class LoanPaymentModel:
             valores.append(id_pago)
 
             query = f"""
-                UPDATE {self.E.TABLE.value}
+                UPDATE {self.E.TABLE_PAGOS_PRESTAMOS.value}
                 SET {campos_sql}
-                WHERE {self.E.PAGO_ID.value} = %s
+                WHERE {self.E.ID_PAGO_PRESTAMO.value} = %s
             """
             self.db.run_query(query, tuple(valores))
-
             return {"status": "success", "message": "Pago actualizado correctamente"}
         except Exception as ex:
             return {"status": "error", "message": f"Error al actualizar el pago: {ex}"}
@@ -184,8 +188,8 @@ class LoanPaymentModel:
     def delete_by_id_pago(self, id_pago: int):
         try:
             query = f"""
-                DELETE FROM {self.E.TABLE.value}
-                WHERE {self.E.PAGO_ID.value} = %s
+                DELETE FROM {self.E.TABLE_PAGOS_PRESTAMOS.value}
+                WHERE {self.E.ID_PAGO_PRESTAMO.value} = %s
             """
             self.db.run_query(query, (id_pago,))
             return {"status": "success", "message": f"Pago ID {id_pago} eliminado correctamente"}
@@ -196,9 +200,10 @@ class LoanPaymentModel:
     def get_saldo_y_monto_prestamo(self, id_prestamo: int):
         try:
             query = f"""
-                SELECT {self.P.PRESTAMO_MONTO.value} AS monto_prestamo,
+                SELECT 
+                    {self.P.PRESTAMO_MONTO.value} AS monto_prestamo,
                     {self.P.PRESTAMO_SALDO.value} AS saldo_prestamo
-                FROM {self.P.TABLE.value}
+                FROM {self.P.TABLE_PRESTAMOS.value}
                 WHERE {self.P.PRESTAMO_ID.value} = %s
             """
             result = self.db.get_data(query, (id_prestamo,), dictionary=True)
@@ -208,7 +213,10 @@ class LoanPaymentModel:
 
 
     def get_next_id(self):
-        query = f"SELECT MAX({self.E.PAGO_ID.value}) AS max_id FROM {self.E.TABLE.value}"
+        query = f"""
+            SELECT MAX({self.E.ID_PAGO_PRESTAMO.value}) AS max_id
+            FROM {self.E.TABLE_PAGOS_PRESTAMOS.value}
+        """
         result = self.db.get_data(query, dictionary=True)
         max_id = result.get("max_id", 0) if result else 0
         return int(max_id) + 1 if max_id else 1
@@ -221,9 +229,10 @@ class LoanPaymentModel:
                     {self.P.PRESTAMO_ID.value} AS id_prestamo,
                     {self.P.PRESTAMO_SALDO.value} AS saldo,
                     {self.P.PRESTAMO_MONTO.value} AS monto_original,
-                    numero_nomina
-                FROM {self.P.TABLE.value}
-                WHERE numero_nomina = %s AND {self.P.PRESTAMO_ESTADO.value} = 'activo'
+                    {self.P.PRESTAMO_NUMERO_NOMINA.value} AS numero_nomina
+                FROM {self.P.TABLE_PRESTAMOS.value}
+                WHERE {self.P.PRESTAMO_NUMERO_NOMINA.value} = %s
+                AND {self.P.PRESTAMO_ESTADO.value} = 'activo'
                 ORDER BY {self.P.PRESTAMO_ID.value} ASC
                 LIMIT 1
             """
@@ -238,8 +247,8 @@ class LoanPaymentModel:
         try:
             query = f"""
                 SELECT IFNULL(SUM({self.E.PAGO_MONTO_PAGADO.value}), 0) AS total_prestamo
-                FROM {self.E.TABLE.value}
-                WHERE {self.E.PAGO_ID_NOMINA.value} = %s AND {self.E.PAGO_APLICADO.value} = 1
+                FROM {self.E.TABLE_PAGOS_PRESTAMOS.value}
+                WHERE {self.E.ID_PAGO_NOMINA.value} = %s AND {self.E.PAGO_APLICADO.value} = 1
             """
             result = self.db.get_data(query, (id_pago_nomina,), dictionary=True)
             return float(result.get("total_prestamo", 0.0)) if result else 0.0
@@ -252,8 +261,8 @@ class LoanPaymentModel:
         try:
             query = f"""
                 SELECT IFNULL(SUM({self.E.PAGO_MONTO_PAGADO.value}), 0) AS total
-                FROM {self.E.TABLE.value}
-                WHERE {self.E.PAGO_ID_NOMINA.value} = %s AND {self.E.PAGO_APLICADO.value} = 1
+                FROM {self.E.TABLE_PAGOS_PRESTAMOS.value}
+                WHERE {self.E.ID_PAGO_NOMINA.value} = %s AND {self.E.PAGO_APLICADO.value} = 1
             """
             result = self.db.get_data(query, (id_pago_nomina,), dictionary=True)
             return float(result.get("total", 0.0)) if result else 0.0
@@ -263,22 +272,27 @@ class LoanPaymentModel:
 
 
     def existe_pago_pendiente_para_pago_nomina(self, id_pago_nomina: int, id_prestamo: int) -> bool:
-        query = f"""
-            SELECT COUNT(*) AS cantidad
-            FROM {self.E.TABLE.value}
-            WHERE {self.E.PAGO_ID_NOMINA.value} = %s
-            AND {self.E.PAGO_ID_PRESTAMO.value} = %s
-            AND {self.E.PAGO_APLICADO.value} = 0
-        """
-        resultado = self.db.get_data(query, (id_pago_nomina, id_prestamo), dictionary=True)
-        return resultado.get("cantidad", 0) > 0
+        try:
+            query = f"""
+                SELECT COUNT(*) AS cantidad
+                FROM {self.E.TABLE_PAGOS_PRESTAMOS.value}
+                WHERE {self.E.ID_PAGO_NOMINA.value} = %s
+                AND {self.E.ID_PRESTAMO.value} = %s
+                AND {self.E.PAGO_APLICADO.value} = 0
+            """
+            resultado = self.db.get_data(query, (id_pago_nomina, id_prestamo), dictionary=True)
+            return resultado.get("cantidad", 0) > 0
+        except Exception as ex:
+            print(f"❌ Error al verificar existencia de pago pendiente: {ex}")
+            return False
+
 
     def get_total_pagado_por_prestamo(self, id_prestamo: int) -> float:
         try:
             query = f"""
-                SELECT IFNULL(SUM(monto_pagado), 0) AS total
-                FROM pagos_prestamo
-                WHERE id_prestamo = %s AND aplicado = 1
+                SELECT IFNULL(SUM({self.E.PAGO_MONTO_PAGADO.value}), 0) AS total
+                FROM {self.E.TABLE_PAGOS_PRESTAMOS.value}
+                WHERE {self.E.ID_PRESTAMO.value} = %s AND {self.E.PAGO_APLICADO.value} = 1
             """
             result = self.db.get_data(query, (id_prestamo,), dictionary=True)
             return float(result.get("total", 0.0)) if result else 0.0

@@ -3,7 +3,7 @@ from enum import Enum
 class E_DISCOUNT(Enum):
     TABLE = "descuentos"
     ID = "id_descuento"
-    ID_PAGO = "id_pago"
+    ID_PAGO = "id_pago_nomina"
     TIPO = "tipo_descuento"            # (comida, imss, transporte, etc.)
     DESCRIPCION = "descripcion"
     MONTO_DESCUENTO = "monto_descuento"

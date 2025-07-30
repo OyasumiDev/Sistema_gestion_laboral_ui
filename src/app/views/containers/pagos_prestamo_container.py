@@ -7,7 +7,7 @@ from app.core.app_state import AppState
 from app.views.containers.modal_alert import ModalAlert
 from app.models.loan_model import LoanModel
 from app.models.loan_payment_model import LoanPaymentModel
-from app.core.enums.e_loan_payment_model import E_PAGOS_PRESTAMO
+from app.core.enums.e_pagos_prestamos import E_PAGOS_PRESTAMO
 from app.core.enums.e_prestamos_model import E_PRESTAMOS
 import pandas as pd
 from app.core.invokers.file_open_invoker import FileOpenInvoker

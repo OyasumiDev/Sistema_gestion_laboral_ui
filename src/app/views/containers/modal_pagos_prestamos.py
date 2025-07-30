@@ -8,7 +8,7 @@ from app.models.detalles_pagos_prestamo_model import DetallesPagosPrestamoModel
 from app.models.loan_payment_model import LoanPaymentModel
 from app.models.employes_model import EmployesModel
 from app.views.containers.modal_alert import ModalAlert
-from app.core.enums.e_loan_payment_model import E_PAGOS_PRESTAMO
+from app.core.enums.e_pagos_prestamos import E_PAGOS_PRESTAMO
 
 
 class ModalPrestamos:
