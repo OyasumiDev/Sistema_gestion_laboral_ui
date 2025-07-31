@@ -12,3 +12,7 @@ class E_PAYMENT(Enum):
     PAGO_DEPOSITO = "pago_deposito"
     PAGO_EFECTIVO = "pago_efectivo"
     ESTADO = "estado"
+
+
+
+

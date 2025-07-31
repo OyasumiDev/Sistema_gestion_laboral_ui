@@ -23,7 +23,7 @@ class DiscountModel:
             {self.E.FECHA_APLICACION.value} DATE NOT NULL DEFAULT (CURRENT_DATE),
             {self.E.FECHA_CREACION.value} TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (numero_nomina) REFERENCES empleados(numero_nomina) ON DELETE CASCADE,
-            FOREIGN KEY ({self.E.ID_PAGO.value}) REFERENCES pagos(id_pago) ON DELETE SET NULL
+            FOREIGN KEY ({self.E.ID_PAGO.value}) REFERENCES pagos(id_pago_nomina) ON DELETE SET NULL
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
         """
         self.db.run_query(query)

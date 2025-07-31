@@ -26,9 +26,9 @@ def iniciar_aplicacion():
     # Tablas que dependen de empleados
     AssistanceModel()   # asistencias → empleados
     LoanModel()         # prestamos → empleados
+    LoanPaymentModel()  # pagos_prestamo → prestamos
     PaymentModel()      # pagos → empleados ✅ debe ir antes de descuentos
     DiscountModel()     # descuentos → empleados, pagos
-    LoanPaymentModel()  # pagos_prestamo → prestamos
     PerformanceModel()  # desempeno → empleados
     WeeklyReportModel() # reportes_semanales → empleados
 
