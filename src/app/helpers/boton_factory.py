@@ -86,3 +86,6 @@ def crear_boton_importar(on_click: Callable):
 
 def crear_boton_exportar(on_click: Callable):
     return _factory.crear_boton_exportar(on_click)
+
+def crear_boton_agregar(on_click: Callable):
+    return _factory.crear_boton_agregar(on_click)

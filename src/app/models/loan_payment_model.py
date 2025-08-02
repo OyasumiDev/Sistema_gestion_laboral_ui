@@ -14,47 +14,66 @@ class LoanPaymentModel:
         self.P = P
         self._exists_table = self.check_table()
 
+
     def check_table(self) -> bool:
         try:
+            # Verifica si la tabla pagos_prestamo ya existe
             query = """
                 SELECT COUNT(*) AS c
                 FROM information_schema.tables
                 WHERE table_schema = %s AND table_name = %s
             """
             result = self.db.get_data(query, (self.db.database, self.E.TABLE_PAGOS_PRESTAMOS.value), dictionary=True)
-            if result.get("c", 0) == 0:
-                print(f"⚠️ La tabla {self.E.TABLE_PAGOS_PRESTAMOS.value} no existe. Creando...")
-
-                create_query = f"""
-                CREATE TABLE {self.E.TABLE_PAGOS_PRESTAMOS.value} (
-                    {self.E.ID_PAGO_PRESTAMO.value} INT AUTO_INCREMENT PRIMARY KEY,
-                    {self.E.ID_PRESTAMO.value} INT NOT NULL,
-                    {self.E.ID_PAGO_NOMINA.value} INT NOT NULL,
-                    {self.E.PAGO_MONTO_PAGADO.value} DECIMAL(10,2) NOT NULL,
-                    {self.E.PAGO_FECHA_PAGO.value} DATE NOT NULL,
-                    {self.E.PAGO_FECHA_REAL.value} DATE,
-                    {self.E.PAGO_APLICADO.value} BOOLEAN NOT NULL DEFAULT 0,
-                    {self.E.PAGO_INTERES_PORCENTAJE.value} INT NOT NULL,
-                    {self.E.PAGO_INTERES_APLICADO.value} DECIMAL(10,2) NOT NULL,
-                    {self.E.PAGO_DIAS_RETRASO.value} INT DEFAULT 0,
-                    {self.E.PAGO_SALDO_RESTANTE.value} DECIMAL(10,2),
-                    {self.E.PAGO_OBSERVACIONES.value} TEXT,
-                    FOREIGN KEY ({self.E.ID_PRESTAMO.value})
-                        REFERENCES {self.P.TABLE_PRESTAMOS.value}({self.P.PRESTAMO_ID.value})
-                        ON DELETE CASCADE,
-                    FOREIGN KEY ({self.E.ID_PAGO_NOMINA.value})
-                        REFERENCES pagos({self.E.ID_PAGO_NOMINA.value})
-                        ON DELETE CASCADE
-                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-                """
-                self.db.run_query(create_query)
-                print(f"✅ Tabla {self.E.TABLE_PAGOS_PRESTAMOS.value} creada correctamente.")
-            else:
+            if result.get("c", 0) > 0:
                 print(f"✔️ La tabla {self.E.TABLE_PAGOS_PRESTAMOS.value} ya existe.")
+                return True
+
+            # Verifica si existen las tablas referenciadas: prestamos y pagos
+            def tabla_existe(nombre_tabla):
+                res = self.db.get_data(query, (self.db.database, nombre_tabla), dictionary=True)
+                return res.get("c", 0) > 0
+
+            if not tabla_existe(self.P.TABLE_PRESTAMOS.value):
+                print(f"❌ No se puede crear {self.E.TABLE_PAGOS_PRESTAMOS.value} porque falta la tabla {self.P.TABLE_PRESTAMOS.value}")
+                return False
+
+            if not tabla_existe("pagos"):
+                print("❌ No se puede crear pagos_prestamo porque falta la tabla 'pagos'")
+                return False
+
+            # Crear tabla pagos_prestamo si no existe
+            print(f"⚠️ La tabla {self.E.TABLE_PAGOS_PRESTAMOS.value} no existe. Creando...")
+
+            create_query = f"""
+            CREATE TABLE {self.E.TABLE_PAGOS_PRESTAMOS.value} (
+                {self.E.ID_PAGO_PRESTAMO.value} INT AUTO_INCREMENT PRIMARY KEY,
+                {self.E.ID_PRESTAMO.value} INT NOT NULL,
+                {self.E.ID_PAGO_NOMINA.value} INT NOT NULL,
+                {self.E.PAGO_MONTO_PAGADO.value} DECIMAL(10,2) NOT NULL,
+                {self.E.PAGO_FECHA_PAGO.value} DATE NOT NULL,
+                {self.E.PAGO_FECHA_REAL.value} DATE,
+                {self.E.PAGO_APLICADO.value} BOOLEAN NOT NULL DEFAULT 0,
+                {self.E.PAGO_INTERES_PORCENTAJE.value} INT NOT NULL,
+                {self.E.PAGO_INTERES_APLICADO.value} DECIMAL(10,2) NOT NULL,
+                {self.E.PAGO_DIAS_RETRASO.value} INT DEFAULT 0,
+                {self.E.PAGO_SALDO_RESTANTE.value} DECIMAL(10,2),
+                {self.E.PAGO_OBSERVACIONES.value} TEXT,
+                FOREIGN KEY ({self.E.ID_PRESTAMO.value})
+                    REFERENCES {self.P.TABLE_PRESTAMOS.value}({self.P.PRESTAMO_ID.value})
+                    ON DELETE CASCADE,
+                FOREIGN KEY ({self.E.ID_PAGO_NOMINA.value})
+                    REFERENCES pagos(id_pago_nomina)
+                    ON DELETE CASCADE
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+            """
+            self.db.run_query(create_query)
+            print(f"✅ Tabla {self.E.TABLE_PAGOS_PRESTAMOS.value} creada correctamente.")
             return True
+
         except Exception as ex:
             print(f"❌ Error al verificar/crear la tabla: {ex}")
             return False
+
 
     def add_payment(
         self,
@@ -69,6 +88,10 @@ class LoanPaymentModel:
         observaciones: str = None
     ):
         try:
+            # Verificar duplicado pendiente
+            if self.existe_pago_pendiente_para_pago_nomina(id_pago_nomina, id_prestamo):
+                return {"status": "error", "message": "Ya existe un pago pendiente para este préstamo en esta nómina"}
+
             # Obtener saldo actual del préstamo
             result = self.db.get_data(f"""
                 SELECT {self.P.PRESTAMO_SALDO.value}
@@ -81,11 +104,16 @@ class LoanPaymentModel:
 
             saldo_actual = float(result.get(self.P.PRESTAMO_SALDO.value, 0))
 
-            if interes_porcentaje not in self.INTERESES_PERMITIDOS:
-                return {"status": "error", "message": "Solo se permiten intereses del 5%, 10% o 15%"}
+            if not (0 <= interes_porcentaje <= 100):
+                return {"status": "error", "message": "El interés debe ser un porcentaje entre 0 y 100"}
 
             interes_aplicado = round(saldo_actual * (interes_porcentaje / 100), 2)
             saldo_con_interes = saldo_actual + interes_aplicado
+
+            # Ajustar monto si excede el saldo con interés
+            if monto_pagado > saldo_con_interes:
+                monto_pagado = saldo_con_interes
+
             nuevo_saldo = round(saldo_con_interes - monto_pagado, 2)
 
             f_gen = datetime.strptime(fecha_generacion, "%Y-%m-%d")
@@ -132,7 +160,7 @@ class LoanPaymentModel:
                 (nuevo_saldo, id_prestamo)
             )
 
-            # Si se liquidó el préstamo, actualizar estado
+            # Marcar como terminado si se salda
             if nuevo_saldo <= 0:
                 self.db.run_query(
                     f"""
@@ -208,18 +236,24 @@ class LoanPaymentModel:
             """
             result = self.db.get_data(query, (id_prestamo,), dictionary=True)
             return result if result else {}
-        except Exception:
+        except Exception as ex:
+            print(f"❌ Error al obtener monto y saldo del préstamo: {ex}")
             return {}
 
 
     def get_next_id(self):
-        query = f"""
-            SELECT MAX({self.E.ID_PAGO_PRESTAMO.value}) AS max_id
-            FROM {self.E.TABLE_PAGOS_PRESTAMOS.value}
-        """
-        result = self.db.get_data(query, dictionary=True)
-        max_id = result.get("max_id", 0) if result else 0
-        return int(max_id) + 1 if max_id else 1
+        try:
+            query = f"""
+                SELECT MAX({self.E.ID_PAGO_PRESTAMO.value}) AS max_id
+                FROM {self.E.TABLE_PAGOS_PRESTAMOS.value}
+            """
+            result = self.db.get_data(query, dictionary=True)
+            max_id = result.get("max_id", 0) if result else 0
+            return int(max_id) + 1 if max_id else 1
+        except Exception as ex:
+            print(f"❌ Error al obtener el siguiente ID: {ex}")
+            return 1
+
 
 
     def get_prestamo_activo_por_empleado(self, numero_nomina: int) -> dict:
@@ -232,7 +266,7 @@ class LoanPaymentModel:
                     {self.P.PRESTAMO_NUMERO_NOMINA.value} AS numero_nomina
                 FROM {self.P.TABLE_PRESTAMOS.value}
                 WHERE {self.P.PRESTAMO_NUMERO_NOMINA.value} = %s
-                AND {self.P.PRESTAMO_ESTADO.value} = 'activo'
+                AND {self.P.PRESTAMO_ESTADO.value} = 'pagando'
                 ORDER BY {self.P.PRESTAMO_ID.value} ASC
                 LIMIT 1
             """
@@ -241,6 +275,7 @@ class LoanPaymentModel:
         except Exception as e:
             print(f"❌ Error al buscar préstamo activo: {e}")
             return {}
+
 
 
     def get_total_prestamos_por_pago(self, id_pago_nomina: int) -> float:

@@ -27,7 +27,7 @@ class DetallesPagosPrestamoModel:
                         {self.E.OBSERVACIONES.value} TEXT,
                         {self.E.FECHA.value} DATETIME DEFAULT CURRENT_TIMESTAMP,
                         UNIQUE KEY uk_pago_prestamo ({self.E.ID_PAGO.value}, {self.E.ID_PRESTAMO.value}),
-                        FOREIGN KEY ({self.E.ID_PAGO.value}) REFERENCES pagos(id_pago) ON DELETE CASCADE,
+                        FOREIGN KEY ({self.E.ID_PAGO.value}) REFERENCES pagos(id_pago_nomina) ON DELETE CASCADE,
                         FOREIGN KEY ({self.E.ID_PRESTAMO.value}) REFERENCES prestamos(id_prestamo) ON DELETE CASCADE
                     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
                 """

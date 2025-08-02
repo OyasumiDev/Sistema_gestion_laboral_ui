@@ -27,7 +27,7 @@ class DescuentoDetallesModel:
             descripcion_extra VARCHAR(100) DEFAULT '',
             monto_extra DECIMAL(10,2) DEFAULT 0.0,
 
-            FOREIGN KEY (id_pago) REFERENCES pagos(id_pago) ON DELETE CASCADE
+            FOREIGN KEY (id_pago_nomina) REFERENCES pagos(id_pago_nomina) ON DELETE CASCADE
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
         """
         self.db.run_query(query)
