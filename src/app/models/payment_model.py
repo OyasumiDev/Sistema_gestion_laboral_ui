@@ -540,7 +540,7 @@ class PaymentModel:
         """
         try:
             query = f"""
-                SELECT {E_PAYMENT.ID.value} AS id_pago
+                SELECT {E_PAYMENT.ID_PAGO_NOMINA.value} AS id_pago
                 FROM {E_PAYMENT.TABLE.value}
                 WHERE {E_PAYMENT.NUMERO_NOMINA.value} = %s AND {E_PAYMENT.ESTADO.value} = %s
                 ORDER BY {E_PAYMENT.FECHA_PAGO.value} DESC
@@ -551,3 +551,4 @@ class PaymentModel:
         except Exception as ex:
             print(f"❌ Error en get_pago_id_por_empleado_y_estado: {ex}")
             return None
+

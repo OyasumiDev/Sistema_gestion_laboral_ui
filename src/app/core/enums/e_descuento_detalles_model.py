@@ -1,6 +1,5 @@
 from enum import Enum
 
-
 class E_DESCUENTO_DETALLES(Enum):
     TABLE = "descuento_detalles"
 
@@ -17,4 +16,3 @@ class E_DESCUENTO_DETALLES(Enum):
     MONTO_COMIDA = "monto_comida"
     MONTO_EXTRA = "monto_extra"
     DESCRIPCION_EXTRA = "descripcion_extra"
-

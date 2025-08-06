@@ -227,3 +227,60 @@ class LoanModel:
             ORDER BY {p.PRESTAMO_FECHA_SOLICITUD.value} DESC
         """
         return self.db.get_data_list(query, (numero_nomina,), dictionary=True)
+
+
+    def get_prestamos_agrupados_y_ordenados(self) -> list[dict]:
+        """
+        Agrupa préstamos por empleado y ordena de mayor a menor según la cantidad de préstamos abiertos.
+        """
+        try:
+            query = f"""
+                SELECT
+                    {self.E.PRESTAMO_NUMERO_NOMINA.value} AS numero_nomina,
+                    {self.E.PRESTAMO_NOMBRE_EMPLEADO.value} AS nombre_empleado,
+                    COUNT(*) AS total_prestamos,
+                    SUM(CASE WHEN {self.E.PRESTAMO_ESTADO.value} = 'pagando' THEN 1 ELSE 0 END) AS prestamos_abiertos
+                FROM {self.E.TABLE_PRESTAMOS.value}
+                GROUP BY {self.E.PRESTAMO_NUMERO_NOMINA.value}, {self.E.PRESTAMO_NOMBRE_EMPLEADO.value}
+                ORDER BY prestamos_abiertos DESC, nombre_empleado ASC
+            """
+            return self.db.get_data_list(query, dictionary=True)
+        except Exception as e:
+            print(f"❌ Error al agrupar préstamos: {e}")
+            return []
+
+
+    def get_agrupado_por_empleado(self):
+        try:
+            # Consulta todos los préstamos y sus empleados
+            query = f"""
+                SELECT p.*, e.nombre_completo AS nombre_empleado
+                FROM {self.E.TABLE_PRESTAMOS.value} p
+                JOIN empleados e ON p.{self.E.PRESTAMO_NUMERO_NOMINA.value} = e.numero_nomina
+                ORDER BY p.{self.E.PRESTAMO_NUMERO_NOMINA.value}, p.{self.E.PRESTAMO_FECHA_SOLICITUD.value}
+            """
+            prestamos = self.db.get_data_list(query, dictionary=True)  # ← ✅ Cambio aquí
+
+            agrupado = {}
+            for p in prestamos:
+                num = p["numero_nomina"]
+                if num not in agrupado:
+                    agrupado[num] = {
+                        "numero_nomina": num,
+                        "nombre_empleado": p["nombre_empleado"],
+                        "prestamos_abiertos": 0,
+                        "prestamos": []
+                    }
+
+                if p["estado"] == "pagando":
+                    agrupado[num]["prestamos_abiertos"] += 1
+
+                agrupado[num]["prestamos"].append(p)
+
+            # Convertir a lista ordenada
+            resultado = sorted(agrupado.values(), key=lambda x: (-x["prestamos_abiertos"], x["nombre_empleado"]))
+            return {"status": "success", "data": resultado}
+
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
+

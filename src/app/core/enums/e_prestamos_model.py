@@ -14,3 +14,5 @@ class E_PRESTAMOS(Enum):
     PRESTAMO_FECHA_CIERRE = 'fecha_cierre'              # Nuevo
     PRESTAMO_FECHA_CREACION = 'fecha_creacion'
     PRESTAMO_FECHA_MODIFICACION = 'fecha_modificacion'
+
+

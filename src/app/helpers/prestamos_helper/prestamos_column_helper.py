@@ -1,8 +1,10 @@
 import flet as ft
+from app.core.enums.e_prestamos_model import E_PRESTAMOS as E
+
 
 class PrestamosColumnHelper:
     @staticmethod
-    def construir_columnas_prestamos() -> list[ft.DataColumn]:
+    def construir_columnas_tabla() -> list[ft.DataColumn]:
         return [
             ft.DataColumn(ft.Text("ID")),
             ft.DataColumn(ft.Text("Empleado")),
@@ -16,9 +18,10 @@ class PrestamosColumnHelper:
 
     @staticmethod
     def construir_columnas_exportacion() -> list[tuple]:
-        """Devuelve tuplas de (clave_enum, nombre_columna)"""
-        from app.core.enums.e_prestamos_model import E_PRESTAMOS as E
-
+        """
+        Devuelve las columnas requeridas para exportación a Excel,
+        con sus claves internas y nombres visibles.
+        """
         return [
             (E.PRESTAMO_ID.value, "ID Préstamo"),
             (E.PRESTAMO_NUMERO_NOMINA.value, "ID Empleado"),

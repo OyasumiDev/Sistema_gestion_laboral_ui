@@ -12,7 +12,9 @@ class LoanPaymentModel:
         self.db = DatabaseMysql()
         self.E = E
         self.P = P
+        self.table = self.E.TABLE_PAGOS_PRESTAMOS.value  # ← Esta es la clave
         self._exists_table = self.check_table()
+
 
 
     def check_table(self) -> bool:
@@ -334,3 +336,18 @@ class LoanPaymentModel:
         except Exception as ex:
             print(f"❌ Error al obtener total pagado por préstamo: {ex}")
             return 0.0
+
+
+    def get_by_id_prestamo(self, id_prestamo: int) -> dict:
+        try:
+            query = f"""
+                SELECT *
+                FROM {self.table}
+                WHERE {self.E.ID_PRESTAMO.value} = %s
+                ORDER BY {self.E.PAGO_FECHA_PAGO.value} ASC
+            """
+            result = self.db.get_data_list(query, (id_prestamo,), dictionary=True)
+            return {"status": "success", "data": result}
+        except Exception as e:
+            print(f"❌ Error en get_by_id_prestamo: {e}")
+            return {"status": "error", "message": str(e)}

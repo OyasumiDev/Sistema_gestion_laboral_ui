@@ -9,13 +9,32 @@ class DiscountModel:
     def __init__(self):
         self.db = DatabaseMysql()
         self.E = E_DISCOUNT
-        self._create_table()
+        self._exists_table = self._check_table()
+
+    def _check_table(self) -> bool:
+        try:
+            query = """
+                SELECT COUNT(*) AS c
+                FROM information_schema.tables
+                WHERE table_schema = %s AND table_name = %s
+            """
+            result = self.db.get_data(query, (self.db.database, self.E.TABLE.value), dictionary=True)
+            if result.get("c", 0) == 0:
+                print(f"⚠️ La tabla {self.E.TABLE.value} no existe. Creando...")
+                self._create_table()
+                print(f"✅ Tabla {self.E.TABLE.value} creada correctamente.")
+            else:
+                print(f"✔️ La tabla {self.E.TABLE.value} ya existe.")
+            return True
+        except Exception as e:
+            print(f"❌ Error verificando o creando la tabla {self.E.TABLE.value}: {e}")
+            return False
 
     def _create_table(self):
         query = f"""
         CREATE TABLE IF NOT EXISTS {self.E.TABLE.value} (
             {self.E.ID.value} INT AUTO_INCREMENT PRIMARY KEY,
-            numero_nomina SMALLINT UNSIGNED NOT NULL,
+            {self.E.PRESTAMO_NUMERO_NOMINA.value} SMALLINT UNSIGNED NOT NULL,
             {self.E.ID_PAGO.value} INT DEFAULT NULL,
             {self.E.TIPO.value} VARCHAR(50) NOT NULL,
             {self.E.DESCRIPCION.value} VARCHAR(100) DEFAULT NULL,
@@ -23,10 +42,11 @@ class DiscountModel:
             {self.E.FECHA_APLICACION.value} DATE NOT NULL DEFAULT (CURRENT_DATE),
             {self.E.FECHA_CREACION.value} TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY ({self.E.PRESTAMO_NUMERO_NOMINA.value}) REFERENCES empleados({self.E.PRESTAMO_NUMERO_NOMINA.value}) ON DELETE CASCADE,
-            FOREIGN KEY ({self.E.ID_PAGO.value}) REFERENCES pagos(id_pago_nomina) ON DELETE SET NULL
+            FOREIGN KEY ({self.E.ID_PAGO.value}) REFERENCES pagos({self.E.ID_PAGO.value}) ON DELETE SET NULL
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
         """
         self.db.run_query(query)
+
 
     # --------------------------------------------------------
     # Inserción
