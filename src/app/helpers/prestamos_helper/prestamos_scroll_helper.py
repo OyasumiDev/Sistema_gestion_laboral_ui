@@ -1,76 +1,116 @@
-import time
-from threading import Timer
-import flet as ft
+# app/helpers/prestamos_helper/prestamos_scroll_helper.py
 import asyncio
+from threading import Timer
+from typing import Optional
+import flet as ft
+
 
 class PrestamosScrollHelper:
-    @staticmethod
-    def scroll_to_group_after_build(page: ft.Page, group_id: str, delay: float = 0.02):
-        """
-        Programa el scroll al grupo después del ciclo completo de construcción visual,
-        usando on_after_build y un pequeño delay para asegurar que el control esté renderizado.
-        """
-        def after_build(e):
-            try:
-                print(f"🕒 [scroll_to_group_after_build] Esperando {delay*1000:.0f}ms para scroll al grupo '{group_id}'")
-                time.sleep(delay)
-                print(f"🔍 Buscando control con key='{group_id}'")
-
-                found = page.get_control(group_id) is not None
-                print(f"🔍 Control encontrado: {found}")
-
-                if found:
-                    page.scroll_to(key=group_id, duration=300)
-                    page.update()
-                    print(f"✅ Scroll al grupo '{group_id}' realizado")
-                else:
-                    print(f"⚠️ No se encontró el grupo '{group_id}' para hacer scroll")
-            except Exception as ex:
-                print(f"⚠️ [scroll_to_group_after_build] Error al hacer scroll al grupo '{group_id}': {ex}")
-            finally:
-                page.on_after_build = None
-
-        print(f"🔧 Registrando on_after_build para grupo '{group_id}'")
-        page.on_after_build = after_build
+    """
+    Scroll NO bloqueante y seguro:
+    - No usa page.on_after_build ni time.sleep().
+    - Reintenta sólo si la View está montada y la key existe.
+    """
 
     @staticmethod
-    def scroll_after_table_update(page: ft.Page, group_id: str, delay: float = 0.05):
+    def scroll_to_group_after_build(
+        page: ft.Page,
+        group_id: str,
+        delay: float = 0.08,
+        retries: int = 20,
+    ) -> None:
         """
-        Scroll después de actualizar tabla sin bloquear la UI.
-        Usa Timer para dar chance a que Flet renderice.
+        Hace scroll a key=group_id cuando:
+          1) La View está montada (page.views no vacío), y
+          2) Existe un control con esa key.
+        Reintenta hasta `retries` veces con espera `delay`.
         """
-        def hacer_scroll():
-            try:
-                print(f"🔍 [scroll_after_table_update] Esperando {delay*1000:.0f}ms para scroll al grupo '{group_id}'")
-                found = page.get_control(group_id) is not None
-                print(f"🔍 Control encontrado: {found}")
+        async def _go():
+            for _ in range(max(1, retries)):
+                try:
+                    # 1) Espera un poco para permitir render
+                    await asyncio.sleep(max(0.0, delay))
 
-                if found:
+                    # 2) La View debe estar montada
+                    if not getattr(page, "views", None) or len(page.views) == 0:
+                        continue
+
+                    # 3) El control con esa key debe existir
+                    ctrl = page.get_control(group_id)
+                    if ctrl is None:
+                        continue
+
+                    # 4) Ahora sí: scroll
                     page.scroll_to(key=group_id, duration=300)
                     page.update()
-                    print(f"✅ Scroll al grupo '{group_id}' realizado")
-                else:
-                    print(f"⏳ Control no existe aún, no se hace scroll al grupo '{group_id}'")
-            except Exception as e:
-                print(f"⚠️ [scroll_after_table_update] Error al hacer scroll al grupo '{group_id}': {e}")
+                    return
+                except Exception as ex:
+                    # Si hay error (p. ej. la view aún no está), lo intentamos en el siguiente ciclo
+                    print(f"[scroll_to_group_after_build] retry: {ex}")
+                    continue
 
-        Timer(delay, hacer_scroll).start()
+        try:
+            page.run_task(_go)
+        except Exception as ex:
+            # Fallback sin asyncio (raro, pero por si acaso)
+            print(f"[scroll_to_group_after_build] run_task fallback: {ex}")
+            Timer(delay, lambda: PrestamosScrollHelper._fallback_scroll(page, group_id)).start()
 
-    def __init__(self, page: ft.Page, lista_ref: ft.ListView):
+    @staticmethod
+    def _fallback_scroll(page: ft.Page, group_id: str):
+        try:
+            if getattr(page, "views", None) and len(page.views) > 0:
+                if page.get_control(group_id) is not None:
+                    page.scroll_to(key=group_id, duration=300)
+                    page.update()
+        except Exception as ex:
+            print(f"[scroll fallback] {ex}")
+
+    @staticmethod
+    def scroll_after_table_update(page: ft.Page, group_id: str, delay: float = 0.08) -> None:
+        PrestamosScrollHelper.scroll_to_group_after_build(page, group_id, delay=delay, retries=10)
+
+    # --- Opcional: scroll a fin de ListView/Column (si los usas como contenedor scrolleable) ---
+
+    def __init__(self, page: ft.Page, lista_ref: Optional[ft.Control] = None):
         self.page = page
         self.lista_ref = lista_ref
 
-    def scroll_a_nueva_fila(self):
-        try:
-            if self.page and self.lista_ref:
-                self.page.run_task(self._hacer_scroll)
-        except Exception as e:
-            print(f"⚠️ Error en scroll automático: {e}")
+    def scroll_a_nueva_fila(self, delay: float = 0.08) -> None:
+        async def _go():
+            await asyncio.sleep(max(0.0, delay))
+            try:
+                if isinstance(self.lista_ref, ft.ListView):
+                    idx = max(0, len(self.lista_ref.controls) - 1)
+                    if idx >= 0:
+                        self.lista_ref.scroll_to(index=idx, duration=200)
+                        self.page.update()
+                elif isinstance(self.lista_ref, ft.Column):
+                    if self.lista_ref.controls:
+                        last = self.lista_ref.controls[-1]
+                        if isinstance(last, ft.Control) and last.key:
+                            self.page.scroll_to(key=last.key, duration=300)
+                            self.page.update()
+            except Exception as ex:
+                print(f"[scroll_a_nueva_fila] {ex}")
 
-    async def _hacer_scroll(self):
-        await asyncio.sleep(0.05)
         try:
-            self.lista_ref.scroll_to(offset=self.lista_ref.height or 10000, duration=200)
-            self.page.update()
-        except Exception as e:
-            print(f"⚠️ Error en _hacer_scroll: {e}")
+            self.page.run_task(_go)
+        except Exception as ex:
+            print(f"[scroll_a_nueva_fila] run_task fallback: {ex}")
+            Timer(delay, lambda: self._fallback_list_scroll()).start()
+
+    def _fallback_list_scroll(self):
+        try:
+            if isinstance(self.lista_ref, ft.ListView):
+                idx = max(0, len(self.lista_ref.controls) - 1)
+                if idx >= 0:
+                    self.lista_ref.scroll_to(index=idx, duration=200)
+                    self.page.update()
+            elif isinstance(self.lista_ref, ft.Column) and self.lista_ref.controls:
+                last = self.lista_ref.controls[-1]
+                if isinstance(last, ft.Control) and last.key:
+                    self.page.scroll_to(key=last.key, duration=300)
+                    self.page.update()
+        except Exception as ex:
+            print(f"[fallback_list_scroll] {ex}")

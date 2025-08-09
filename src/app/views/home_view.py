@@ -21,11 +21,20 @@ class HomeView(ft.View):
         self.is_root = user_data and user_data.get("role") == "root"
 
         self.nav_bar = NavBarView(is_root=self.is_root)
+        # Scroll en navbar SOLO si el control lo soporta
+        try:
+            if getattr(self.nav_bar, "scroll", None) is None:
+                # si tu NavBarView hereda de Column/Container soportará 'scroll'
+                self.nav_bar.scroll = ft.ScrollMode.AUTO
+        except Exception:
+            pass
+
         self.content_area = ft.Container(expand=True)
 
-        # Layout fijo: sin responsividad
+        # Layout fijo
         layout = ft.Row(
             expand=True,
+            vertical_alignment=ft.CrossAxisAlignment.STRETCH,  # <- evita colapso vertical
             controls=[
                 self.nav_bar,
                 self.content_area
@@ -34,6 +43,20 @@ class HomeView(ft.View):
 
         self.controls.append(layout)
         self.update_content("overview")
+
+    def _set_content(self, controls: list[ft.Control]):
+        """Pinta siempre un Column expandible y con scroll dentro del content_area."""
+        self.content_area.content = ft.Column(
+            expand=True,
+            scroll=ft.ScrollMode.AUTO,
+            controls=controls
+        )
+        # Refrescos seguros
+        try:
+            self.content_area.update()
+        except Exception:
+            pass
+        self.page.update()
 
     def update_content(self, section: str):
         if self.page is None:
@@ -62,76 +85,52 @@ class HomeView(ft.View):
         fg_color = self.theme_ctrl.get_fg_color()
 
         if section == "overview":
-            self.content_area.content = OverviewContainer()
-            self.page.update()
+            self._set_content([OverviewContainer()])
             return
 
         if section == "empleados":
             from app.views.containers.empleados_container import EmpleadosContainer
-            self.content_area.content = ft.Column(
-                expand=True,
-                controls=[
-                    ft.Text("AREA DE EMPLEADOS", size=20, weight="bold", color=fg_color),
-                    EmpleadosContainer()
-                ]
-            )
+            self._set_content([
+                ft.Text("AREA DE EMPLEADOS", size=20, weight="bold", color=fg_color),
+                EmpleadosContainer()
+            ])
 
         elif section == "asistencias":
-            self.content_area.content = ft.Column(
-                expand=True,
-                controls=[
-                    ft.Text("AREA DE ASISTENCIAS", size=20, weight="bold", color=fg_color),
-                    AsistenciasContainer()
-                ]
-            )
+            self._set_content([
+                ft.Text("AREA DE ASISTENCIAS", size=20, weight="bold", color=fg_color),
+                AsistenciasContainer()
+            ])
 
         elif section == "pagos":
-            self.content_area.content = ft.Column(
-                expand=True,
-                controls=[
-                    ft.Text("AREA DE PAGOS", size=20, weight="bold", color=fg_color),
-                    PagosContainer()
-                ]
-            )
+            self._set_content([
+                ft.Text("AREA DE PAGOS", size=20, weight="bold", color=fg_color),
+                PagosContainer()
+            ])
 
         elif section == "prestamos":
-            self.content_area.content = ft.Column(
-                expand=True,
-                controls=[
-                    ft.Text("ÁREA DE PRÉSTAMOS", size=20, weight="bold", color=fg_color),
-                    PrestamosContainer()
-                ]
-            )
+            self._set_content([
+                ft.Text("ÁREA DE PRÉSTAMOS", size=20, weight="bold", color=fg_color),
+                PrestamosContainer()
+            ])
 
         elif section.startswith("prestamos/pagosprestamos"):
-            self.content_area.content = ft.Column(
-                expand=True,
-                controls=[
-                    ft.Text("PAGOS DEL PRÉSTAMO", size=20, weight="bold", color=fg_color),
-                    PagosPrestamoContainer()
-                ]
-            )
+            self._set_content([
+                ft.Text("PAGOS DEL PRÉSTAMO", size=20, weight="bold", color=fg_color),
+                PagosPrestamoContainer()
+            ])
 
         elif section == "usuarios" and self.is_root:
-            self.content_area.content = ft.Column(
-                expand=True,
-                controls=[
-                    UsuariosContainer()
-                ]
-            )
+            self._set_content([
+                UsuariosContainer()
+            ])
 
         else:
-            self.content_area.content = ft.Column(
-                expand=True,
-                controls=[
-                    ft.Text(f"Área actual: {content_text}", size=20, weight="bold", color=fg_color),
-                    ft.Container(
-                        expand=True,
-                        padding=20,
-                        bgcolor=None,
-                        content=ft.Text(content_text, color=fg_color, size=16)
-                    )
-                ]
-            )
-
-        self.page.update()
+            self._set_content([
+                ft.Text(f"Área actual: {content_text}", size=20, weight="bold", color=fg_color),
+                ft.Container(
+                    expand=True,
+                    padding=20,
+                    bgcolor=None,
+                    content=ft.Text(content_text, color=fg_color, size=16)
+                )
+            ])

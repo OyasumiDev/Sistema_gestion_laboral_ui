@@ -284,3 +284,43 @@ class LoanModel:
         except Exception as e:
             return {"status": "error", "message": str(e)}
 
+
+    def _insertar_prestamo(self, datos: dict) -> dict:
+        """
+        Compat layer para distintos nombres de método en LoanModel.
+        Intenta varios candidatos y retorna {status, message, data?}.
+        """
+        candidatos = [
+            "insert", "insert_prestamo",
+            "create", "create_prestamo",
+            "add", "add_prestamo",
+            "save", "save_prestamo",
+            "insert_one", "upsert",  # por si acaso
+        ]
+
+        for nombre in candidatos:
+            metodo = getattr(self.loan_model, nombre, None)
+            if callable(metodo):
+                try:
+                    # Preferimos pasar el dict completo
+                    res = metodo(datos)
+                except TypeError:
+                    # Si el método espera kwargs
+                    res = metodo(**datos)
+
+                # Normalizamos respuestas "vacías"
+                if res is None:
+                    return {"status": "error", "message": f"LoanModel.{nombre} devolvió None"}
+                if isinstance(res, dict) and "status" in res:
+                    return res
+
+                # Si devolvió algo distinto, lo convertimos
+                return {"status": "success", "data": res}
+
+        return {
+            "status": "error",
+            "message": (
+                "LoanModel no expone un método de inserción compatible. "
+                "Probados: " + ", ".join(candidatos)
+            ),
+        }
