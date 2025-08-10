@@ -1,5 +1,7 @@
+from typing import Dict, Any, Optional
 from app.core.interfaces.database_mysql import DatabaseMysql
 from app.core.enums.e_detalles_pagos_prestamo_model import E_DETALLES_PAGOS_PRESTAMO as E
+
 
 class DetallesPagosPrestamoModel:
     def __init__(self):
@@ -7,6 +9,9 @@ class DetallesPagosPrestamoModel:
         self.E = E
         self._exists_table = self.check_table()
 
+    # ------------------------------------------------------------------
+    # Infra
+    # ------------------------------------------------------------------
     def check_table(self) -> bool:
         try:
             query = """
@@ -40,6 +45,9 @@ class DetallesPagosPrestamoModel:
             print(f"❌ Error al verificar/crear la tabla: {ex}")
             return False
 
+    # ------------------------------------------------------------------
+    # CRUD
+    # ------------------------------------------------------------------
     def upsert_detalle(self, id_pago: int, id_prestamo: int, monto: float, interes: int, observaciones: str):
         try:
             query = f"""
@@ -94,19 +102,96 @@ class DetallesPagosPrestamoModel:
         except Exception as ex:
             return {"status": "error", "message": f"Error al eliminar: {ex}"}
 
-    def calcular_total_pendiente_por_pago(self, id_pago: int) -> float:
+    def exists_detalle(self, id_pago: int, id_prestamo: int) -> bool:
         try:
             query = f"""
-                SELECT 
-                    COALESCE(SUM({self.E.MONTO_GUARDADO.value} + {self.E.INTERES_GUARDADO.value}), 0) AS total
+                SELECT COUNT(*) AS c
+                FROM {self.E.TABLE.value}
+                WHERE {self.E.ID_PAGO.value} = %s AND {self.E.ID_PRESTAMO.value} = %s
+            """
+            r = self.db.get_data(query, (id_pago, id_prestamo), dictionary=True)
+            return (r.get("c") or 0) > 0
+        except Exception as ex:
+            print(f"❌ Error en exists_detalle: {ex}")
+            return False
+
+    # ------------------------------------------------------------------
+    # Agregaciones
+    # ------------------------------------------------------------------
+    def calcular_total_pendiente_por_pago(self, id_pago: int) -> float:
+        """
+        Suma SOLO los montos guardados (el interés aquí es porcentaje, no dinero).
+        """
+        try:
+            query = f"""
+                SELECT COALESCE(SUM({self.E.MONTO_GUARDADO.value}), 0) AS total
                 FROM {self.E.TABLE.value}
                 WHERE {self.E.ID_PAGO.value} = %s
             """
             resultado = self.db.get_data(query, (id_pago,), dictionary=True)
             total = resultado.get("total", 0)
-            return float(total)  # 👈 aseguramos que nunca retorne Decimal
+            return float(total)
         except Exception as ex:
             print(f"❌ Error al calcular total pendiente: {ex}")
             return 0.0
 
+    # ------------------------------------------------------------------
+    # Helpers de recálculo en tiempo real (para el modal)
+    # ------------------------------------------------------------------
+    def preview_from_inputs(
+        self,
+        id_prestamo: int,
+        monto: float,
+        interes: int,
+        fecha_pago: str,          # "YYYY-MM-DD"
+        fecha_generacion: str,    # "YYYY-MM-DD"
+        fecha_real_pago: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Devuelve un preview universal (sin escribir en BD) usando LoanPaymentModel.preview_calculo.
+        """
+        try:
+            # Import local para evitar dependencias circulares al cargar módulos
+            from app.models.loan_payment_model import LoanPaymentModel
+            lp = LoanPaymentModel()
+            return lp.preview_calculo(
+                id_prestamo=id_prestamo,
+                monto_pagado=float(monto),
+                interes_porcentaje=int(interes),
+                fecha_pago=fecha_pago,
+                fecha_generacion=fecha_generacion,
+                fecha_real_pago=fecha_real_pago,
+            )
+        except Exception as ex:
+            return {"status": "error", "message": f"Error en preview_from_inputs: {ex}"}
 
+    def preview_desde_guardado(
+        self,
+        id_pago: int,
+        id_prestamo: int,
+        fecha_pago: str,          # "YYYY-MM-DD"
+        fecha_generacion: str,    # "YYYY-MM-DD"
+        fecha_real_pago: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Toma el detalle guardado (monto, interés) y retorna el preview,
+        útil para reabrir el modal y recalcular.
+        """
+        try:
+            det = self.get_detalle(id_pago, id_prestamo)
+            if not det:
+                return {"status": "error", "message": "No hay detalle guardado para recalcular."}
+
+            monto = float(det.get(self.E.MONTO_GUARDADO.value) or 0.0)
+            interes = int(det.get(self.E.INTERES_GUARDADO.value) or 0)
+
+            return self.preview_from_inputs(
+                id_prestamo=id_prestamo,
+                monto=monto,
+                interes=interes,
+                fecha_pago=fecha_pago,
+                fecha_generacion=fecha_generacion,
+                fecha_real_pago=fecha_real_pago,
+            )
+        except Exception as ex:
+            return {"status": "error", "message": f"Error en preview_desde_guardado: {ex}"}

@@ -1,6 +1,7 @@
 import flet as ft
 from datetime import datetime
 from decimal import Decimal
+from typing import Optional
 
 from app.core.app_state import AppState
 from app.models.loan_model import LoanModel
@@ -8,139 +9,167 @@ from app.models.detalles_pagos_prestamo_model import DetallesPagosPrestamoModel
 from app.models.loan_payment_model import LoanPaymentModel
 from app.models.employes_model import EmployesModel
 from app.views.containers.modal_alert import ModalAlert
-from app.core.enums.e_pagos_prestamos import E_PAGOS_PRESTAMO
+from app.core.enums.e_pagos_prestamos import E_PAGOS_PRESTAMO as E
 
 
 class ModalPrestamos:
+    """
+    Modal de pagos de préstamo con dos contextos:
+      - contexto="prestamos": abierto desde el área de Préstamos.
+        * No muestra selector de préstamo.
+        * Permite interes libre.
+        * Guarda si recibimos id_pago (FK a pagos). Si no, solo simula.
+      - contexto="pagos": abierto desde Nómina.
+        * Puede bloquear edición si ya hay detalle o pago pendiente.
+    Recalcula en vivo (cálculo inline, sin depender de preview_from_inputs).
+    """
+
     def __init__(self, pago_data: dict, on_confirmar):
         self.page = AppState().page
-        self.pago_data = pago_data
+        self.pago_data = pago_data or {}
         self.on_confirmar = on_confirmar
-        self.numero_nomina = pago_data["numero_nomina"]
-        self.id_pago = pago_data["id_pago"]
-        self.estado_pago = pago_data.get("estado", "pendiente")
 
+        self.numero_nomina = int(self.pago_data["numero_nomina"])
+        # id_pago puede venir None si abrimos desde Préstamos
+        _raw = self.pago_data.get("id_pago", None)
+        self.id_pago: Optional[int] = None
+        try:
+            if _raw is not None and str(_raw).strip().lower() != "none" and str(_raw).strip() != "":
+                self.id_pago = int(_raw)
+        except (TypeError, ValueError):
+            self.id_pago = None
+
+        self.estado_pago = self.pago_data.get("estado", "pendiente")
+        self.contexto = self.pago_data.get("contexto") or ("pagos" if self.id_pago is not None else "prestamos")
+        self.es_desde_prestamos = (self.contexto == "prestamos")
+
+        # Fechas base
+        hoy = datetime.today().strftime("%Y-%m-%d")
+        self.fecha_generacion = self.pago_data.get("fecha_generacion") or hoy
+        self.fecha_pago_base = self.pago_data.get("fecha_pago") or self.fecha_generacion
+
+        # Modelos
         self.loan_model = LoanModel()
         self.pago_model = LoanPaymentModel()
         self.detalles_model = DetallesPagosPrestamoModel()
         self.empleado_model = EmployesModel()
-        self.E = E_PAGOS_PRESTAMO
+        self.E = E
 
-        empleado = self.empleado_model.get_by_numero_nomina(self.numero_nomina)
-        self.nombre_empleado = empleado.get("nombre_completo", "Desconocido")
+        # Empleado
+        emp = self.empleado_model.get_by_numero_nomina(self.numero_nomina) or {}
+        self.nombre_empleado = emp.get("nombre_completo", "Desconocido")
 
-        self.id_prestamo = None
-        self.prestamos_disponibles = []
-        self.pagos = []
-        self.total_pagado = 0
-        self.saldo_restante = 0
+        # Estado
+        self.id_prestamo: Optional[int] = None
+        self.prestamos_disponibles: list[dict] = []
+        self.pagos: list[dict] = []
+        self.total_pagado = 0.0
+        self.saldo_restante = 0.0
 
+        # UI
         self.dialog = ft.AlertDialog(modal=True)
-        self.interes_dropdown = None
-        self.monto_input = None
-        self.observaciones_input = None
-        self.saldo_con_interes = ft.Text("-")
+        self.monto_input: Optional[ft.TextField] = None
+        self.interes_input: Optional[ft.TextField] = None
+        self.observaciones_input: Optional[ft.TextField] = None
+        self.lbl_preview = ft.Text("-", weight=ft.FontWeight.BOLD)
         self.resumen_text = ft.Text("")
-        self.prestamo_dropdown = None
+        self.boton_guardar: Optional[ft.ElevatedButton] = None
         self.puede_editar = False
+        self.prestamo_dropdown = ft.Container()  # oculto por defecto
 
-        self.detalle_guardado = None
+        # Detalle (si existe) solo aplica en nómina
+        self.detalle_guardado: Optional[dict] = None
+
         self._cargar_datos()
 
+    # ---------------- API ----------------
     def mostrar(self):
         if self.page and self.dialog not in self.page.overlay:
             self.page.overlay.append(self.dialog)
         self.dialog.open = True
         self.page.update()
 
-    def _cerrar(self, e=None):
+    # ------------- Internos --------------
+    def _cerrar(self, _=None):
         self.dialog.open = False
         self.page.update()
 
     def _cargar_datos(self):
-        self.prestamos_disponibles = self.loan_model.get_prestamos_por_empleado(self.numero_nomina)
-
-        if self.prestamos_disponibles:
-            for p in self.prestamos_disponibles:
-                detalle = self.detalles_model.get_detalle(self.id_pago, p["id_prestamo"])
-                if detalle:
-                    self.detalle_guardado = detalle
-                    self.id_prestamo = p["id_prestamo"]
-                    break
-            if not self.id_prestamo:
-                self.id_prestamo = self.prestamos_disponibles[0]["id_prestamo"]
-        else:
-            ModalAlert.mostrar_info("Sin préstamo", f"No hay préstamos registrados para {self.numero_nomina}")
+        # préstamos del empleado
+        self.prestamos_disponibles = self.loan_model.get_prestamos_por_empleado(self.numero_nomina) or []
+        if not self.prestamos_disponibles:
+            ModalAlert.mostrar_info("Sin préstamo", f"No hay préstamos para {self.numero_nomina}")
             return
 
-        self._set_prestamo(self.id_prestamo)
+        # id_prestamo debe venir en pago_data cuando abres desde Préstamos;
+        # si vienes desde Pagos y hay detalle guardado lo usamos, si no el primero.
+        pid = self.pago_data.get("id_prestamo")
+        if pid:
+            self.id_prestamo = int(pid)
+        elif not self.es_desde_prestamos and self.id_pago is not None:
+            for p in self.prestamos_disponibles:
+                det = self.detalles_model.get_detalle(self.id_pago, p["id_prestamo"])
+                if det:
+                    self.detalle_guardado = det
+                    self.id_prestamo = int(p["id_prestamo"])
+                    break
 
+        if not self.id_prestamo:
+            self.id_prestamo = int(self.prestamos_disponibles[0]["id_prestamo"])
+
+        self._set_prestamo(self.id_prestamo)
 
     def _set_prestamo(self, id_prestamo: int):
         self.id_prestamo = id_prestamo
         prestamo = next((p for p in self.prestamos_disponibles if p["id_prestamo"] == id_prestamo), None)
         if not prestamo:
-            ModalAlert.mostrar_info("Error", "No se encontró el préstamo seleccionado.")
+            ModalAlert.mostrar_info("Error", "Préstamo no encontrado.")
             return
 
         self.saldo_restante = float(prestamo["saldo_prestamo"])
-        self.pagos = self.pago_model.get_by_prestamo(self.id_prestamo)["data"]
-        self.total_pagado = sum(float(p["monto_pagado"]) for p in self.pagos)
+        pagos_res = self.pago_model.get_by_prestamo(self.id_prestamo) or {}
+        self.pagos = pagos_res.get("data", []) if isinstance(pagos_res, dict) else []
+        self.total_pagado = sum(float(p.get(self.E.PAGO_MONTO_PAGADO.value, 0) or 0) for p in self.pagos)
 
-        existe = self.pago_model.existe_pago_pendiente_para_pago_nomina(
-            id_pago_nomina=self.id_pago,
-            id_prestamo=self.id_prestamo
-        )
+        estado_prest = str(prestamo.get("estado", "")).lower()
+        if self.es_desde_prestamos:
+            # Desde Préstamos: editable si saldo > 0 y no "terminado"
+            self.puede_editar = (self.saldo_restante > 0) and (estado_prest != "terminado")
+        else:
+            # Desde Nómina: bloquear si ya está pagado o existe pendiente
+            existe = self.pago_model.existe_pago_pendiente_para_pago_nomina(
+                id_pago_nomina=self.id_pago, id_prestamo=self.id_prestamo
+            )
+            self.puede_editar = (self.estado_pago != "pagado") and (self.saldo_restante > 0) and (not existe)
 
-        self.puede_editar = self.estado_pago != "pagado" and self.saldo_restante > 0 and not existe
         self._construir_modal()
 
-        if self.detalle_guardado:
-            self.monto_input.value = str(self.detalle_guardado["monto_guardado"])
-            self.observaciones_input.value = self.detalle_guardado["observaciones"] or ""
-            self.interes_dropdown.value = str(self.detalle_guardado["interes_guardado"])
+        # Si venías desde Nómina y había detalle guardado, precarga
+        if (not self.es_desde_prestamos) and self.detalle_guardado:
+            self.monto_input.value = str(self.detalle_guardado[self.detalles_model.E.MONTO_GUARDADO.value])
+            self.observaciones_input.value = self.detalle_guardado.get(self.detalles_model.E.OBSERVACIONES.value) or ""
+            self.interes_input.value = str(self.detalle_guardado[self.detalles_model.E.INTERES_GUARDADO.value])
 
-        self.resumen_text.value = self._obtener_resumen()
         self._recalcular_montos()
         self.page.update()
 
     def _construir_modal(self):
-        self.interes_dropdown = ft.Dropdown(
-            label="Interés %",
-            value="10",
-            options=[ft.dropdown.Option("5"), ft.dropdown.Option("10"), ft.dropdown.Option("15")],
-            disabled=not self.puede_editar,
-            on_change=self._recalcular_montos if self.puede_editar else None,
-            width=100
-        )
-
-        self.monto_input = ft.TextField(
-            label="Monto a pagar",
-            width=180,
-            on_change=self._recalcular_montos,
-            disabled=not self.puede_editar
-        )
-
-        self.observaciones_input = ft.TextField(
-            label="Observaciones",
-            hint_text="Descripción adicional (opcional)",
-            multiline=True,
-            min_lines=2,
-            max_lines=3,
-            disabled=not self.puede_editar
-        )
-
-        self.saldo_con_interes = ft.Text(value="Saldo + interés: -", weight=ft.FontWeight.BOLD)
-
+        # Historial (últimos 5)
         rows = []
         for p in self.pagos[-5:]:
-            interes_aplicado = float(p["interes_aplicado"])
-            saldo = float(p["saldo_restante"])
+            try:
+                fecha = p.get(self.E.PAGO_FECHA_PAGO.value)
+                monto = float(p.get(self.E.PAGO_MONTO_PAGADO.value, 0) or 0)
+                interes_pct = p.get(self.E.PAGO_INTERES_PORCENTAJE.value)
+                interes_apl = float(p.get(self.E.PAGO_INTERES_APLICADO.value, 0) or 0)
+                saldo = float(p.get(self.E.PAGO_SALDO_RESTANTE.value, 0) or 0)
+            except Exception:
+                continue
             rows.append(ft.DataRow(cells=[
-                ft.DataCell(ft.Text(p["fecha_pago"])),
-                ft.DataCell(ft.Text(f"${float(p['monto_pagado']):.2f}")),
-                ft.DataCell(ft.Text(f"{p['interes_porcentaje']}%")),
-                ft.DataCell(ft.Text(f"${interes_aplicado:.2f}")),
+                ft.DataCell(ft.Text(str(fecha))),
+                ft.DataCell(ft.Text(f"${monto:.2f}")),
+                ft.DataCell(ft.Text(f"{interes_pct}%")),
+                ft.DataCell(ft.Text(f"${interes_apl:.2f}")),
                 ft.DataCell(ft.Text(f"${saldo:.2f}")),
             ]))
 
@@ -153,162 +182,250 @@ class ModalPrestamos:
                 ft.DataColumn(label=ft.Text("Saldo")),
             ],
             rows=rows,
-            column_spacing=20,
-            data_row_max_height=38
+            column_spacing=18,
+            data_row_max_height=36,
         )
 
-        self.prestamo_dropdown = ft.Dropdown(
-            label="Préstamo seleccionado" if not self.puede_editar else "Seleccionar préstamo",
-            value=str(self.id_prestamo),
-            options=[
-                ft.dropdown.Option(str(self.id_prestamo), f"ID {self.id_prestamo} - Saldo: ${float(self.saldo_restante):.2f}")
-            ] if not self.puede_editar else [
-                ft.dropdown.Option(str(p["id_prestamo"]), f"ID {p['id_prestamo']} - Saldo: ${float(p['saldo_prestamo']):.2f}")
-                for p in self.prestamos_disponibles
-            ],
-            on_change=(None if not self.puede_editar else lambda e: self._set_prestamo(int(e.control.value))),
+        # Interés libre
+        self.interes_input = ft.TextField(
+            label="Interés (%)",
+            width=120,
+            keyboard_type=ft.KeyboardType.NUMBER,
+            on_change=self._recalcular_montos if self.puede_editar else None,
             disabled=not self.puede_editar,
-            width=350
+            value="10",  # default
         )
 
-        mensaje_solo_lectura = ft.Text(
-            "Este pago ya fue confirmado o ya hay un pago pendiente para este préstamo.",
-            color=ft.colors.RED,
-            weight=ft.FontWeight.BOLD
-        ) if not self.puede_editar else ft.Container()
+        self.monto_input = ft.TextField(
+            label="Monto a pagar",
+            width=200,
+            on_change=self._recalcular_montos if self.puede_editar else None,
+            keyboard_type=ft.KeyboardType.NUMBER,
+            disabled=not self.puede_editar,
+            autofocus=self.puede_editar,
+        )
 
-        self.boton_guardar = ft.ElevatedButton("Guardar Detalle", icon=ft.icons.SAVE, on_click=self._guardar_detalle)
+        self.observaciones_input = ft.TextField(
+            label="Observaciones",
+            hint_text="Descripción adicional (opcional)",
+            multiline=True,
+            min_lines=2,
+            max_lines=3,
+            disabled=not self.puede_editar,
+        )
+
+        # En contexto "pagos" podrías querer permitir cambiar préstamo; en "prestamos" NO
+        if not self.es_desde_prestamos and self.puede_editar:
+            self.prestamo_dropdown = ft.Dropdown(
+                label="Préstamo",
+                value=str(self.id_prestamo),
+                options=[
+                    ft.dropdown.Option(str(p["id_prestamo"]), f"ID {p['id_prestamo']} - Saldo: ${float(p['saldo_prestamo']):.2f}")
+                    for p in self.prestamos_disponibles
+                ],
+                on_change=lambda e: self._set_prestamo(int(e.control.value)),
+                width=360,
+            )
+        else:
+            self.prestamo_dropdown = ft.Container()
+
+        # Mensaje de modo/estado
+        mensaje_modo = ft.Container()
+        if not self.puede_editar:
+            mensaje_modo = ft.Text("Vista de solo lectura.", color=ft.colors.RED, weight=ft.FontWeight.BOLD)
+        elif self.es_desde_prestamos and self.id_pago is None:
+            mensaje_modo = ft.Text(
+                "Modo Préstamos: simula y calcula. Para GUARDAR realmente, abre con un id_pago de nómina.",
+                color=ft.colors.AMBER_800,
+                weight=ft.FontWeight.BOLD,
+            )
+
+        # Guardar:
+        # - Desde Préstamos: solo si hay id_pago (FK válido) → guarda de verdad
+        # - Desde Nómina: guarda detalle
+        puede_guardar_en_este_contexto = self.puede_editar and ((not self.es_desde_prestamos) or (self.id_pago is not None))
+
+        self.boton_guardar = ft.ElevatedButton(
+            "Guardar",
+            icon=ft.icons.SAVE,
+            on_click=self._guardar if puede_guardar_en_este_contexto else None,
+            disabled=not puede_guardar_en_este_contexto,
+        )
 
         acciones = ft.Row(
             [
-                *( [self.boton_guardar] if self.puede_editar else [] ),
-                ft.TextButton("Cancelar", on_click=self._cerrar)
+                *( [self.boton_guardar] if puede_guardar_en_este_contexto else [] ),
+                ft.TextButton("Cerrar" if not self.puede_editar else "Cancelar", on_click=self._cerrar),
             ],
             alignment=ft.MainAxisAlignment.END,
-            spacing=20
+            spacing=18,
         )
 
         self.dialog.content = ft.Container(
             padding=20,
-            width=700,
+            width=760,
             content=ft.Column(
                 controls=[
-                    ft.Text(f"Pagos del préstamo de: {self.nombre_empleado} (ID: {self.numero_nomina})", style=ft.TextThemeStyle.TITLE_MEDIUM),
-                    mensaje_solo_lectura,
+                    ft.Text(
+                        f"Pago de préstamo • {self.nombre_empleado} (No. {self.numero_nomina})",
+                        style=ft.TextThemeStyle.TITLE_MEDIUM
+                    ),
+                    mensaje_modo,
                     self.prestamo_dropdown,
                     ft.Divider(),
-                    ft.Text("Últimos pagos realizados", weight=ft.FontWeight.BOLD),
+                    ft.Text("Historial reciente", weight=ft.FontWeight.BOLD),
                     tabla_historial,
                     ft.Divider(),
-                    ft.Text("Registrar nuevo pago", weight=ft.FontWeight.BOLD),
-                    ft.Row([self.monto_input, self.interes_dropdown, self.saldo_con_interes], spacing=20),
+                    ft.Text("Registrar / simular pago", weight=ft.FontWeight.BOLD),
+                    ft.Row([self.monto_input, self.interes_input], spacing=16),
+                    self.lbl_preview,
                     self.observaciones_input,
-                    self.resumen_text,
-                    acciones
+                    self._info_resumen(),
+                    acciones,
                 ],
-                spacing=15
-            )
+                spacing=14,
+            ),
         )
 
+    def _info_resumen(self) -> ft.Text:
+        self.resumen_text = ft.Text("", color=ft.colors.BLUE_GREY)
+        return self.resumen_text
+
+    # --------- Cálculo inline (preview) ----------
+    def _calc_preview(self, monto: float, interes_pct: float) -> dict:
+        # Tomamos saldo actual de BD por si cambió
+        try:
+            mx = self.pago_model.get_saldo_y_monto_prestamo(self.id_prestamo) or {}
+            saldo_actual = float(mx.get("saldo_prestamo", self.saldo_restante))
+        except Exception:
+            saldo_actual = float(self.saldo_restante)
+
+        interes_aplicado = round(saldo_actual * (interes_pct / 100.0), 2) if interes_pct > 0 else 0.0
+        saldo_con_interes = round(saldo_actual + interes_aplicado, 2)
+        pago_efectivo = min(max(monto, 0.0), saldo_con_interes)
+        nuevo_saldo = round(saldo_con_interes - pago_efectivo, 2)
+
+        # retraso (informativo)
+        try:
+            f_gen = datetime.strptime(self.fecha_generacion, "%Y-%m-%d")
+            f_pag = datetime.strptime(self.fecha_pago_base, "%Y-%m-%d")
+            dias_retraso = max((f_pag - f_gen).days, 0)
+        except Exception:
+            dias_retraso = 0
+
+        return dict(
+            saldo_actual=saldo_actual,
+            interes_aplicado=interes_aplicado,
+            saldo_con_interes=saldo_con_interes,
+            nuevo_saldo=nuevo_saldo,
+            dias_retraso=dias_retraso,
+        )
 
     def _recalcular_montos(self, _=None):
         try:
-            interes = int(self.interes_dropdown.value or "0")
-            saldo_actual = Decimal(str(self.saldo_restante)).quantize(Decimal("0.01"))
-            interes_aplicado = (saldo_actual * Decimal(interes) / 100).quantize(Decimal("0.01"))
-            saldo_total = saldo_actual + interes_aplicado
+            interes = float((self.interes_input.value or "0").replace(",", "."))
+        except Exception:
+            interes = 0.0
 
-            self.saldo_con_interes.value = f"Saldo + interés: ${saldo_total:.2f}"
+        try:
+            monto = float((self.monto_input.value or "0").replace(",", "."))
+        except Exception:
+            monto = 0.0
 
-            monto_valido = False
-            try:
-                monto = Decimal(str(self.monto_input.value)).quantize(Decimal("0.01"))
-                total_por_pagar = saldo_total - monto
+        prev = self._calc_preview(monto=monto, interes_pct=interes)
 
-                if monto <= 0 or monto > saldo_total or total_por_pagar < 0:
-                    self.monto_input.border_color = ft.colors.RED
-                else:
-                    self.monto_input.border_color = ft.colors.GREEN
-                    monto_valido = True
+        saldo_actual = prev["saldo_actual"]
+        interes_aplicado = prev["interes_aplicado"]
+        saldo_con_interes = prev["saldo_con_interes"]
+        nuevo_saldo = prev["nuevo_saldo"]
+        dias_retraso = prev["dias_retraso"]
 
-            except:
-                self.monto_input.border_color = ft.colors.RED
+        self.lbl_preview.value = (
+            f"Saldo: ${saldo_actual:.2f} + interés ${interes_aplicado:.2f} = ${saldo_con_interes:.2f} | "
+            f"Pago: ${monto:.2f} → saldo quedaría ${nuevo_saldo:.2f} (retraso: {dias_retraso} días)"
+        )
 
+        monto_valido = self.puede_editar and (monto > 0) and (monto <= saldo_con_interes)
+        if self.puede_editar:
+            self.monto_input.border_color = ft.colors.GREEN if monto_valido else ft.colors.RED
             if self.boton_guardar:
-                self.boton_guardar.disabled = not monto_valido
+                # solo habilita si el contexto permite guardar
+                puede_guardar_ctx = (not self.es_desde_prestamos) or (self.id_pago is not None)
+                self.boton_guardar.disabled = (not monto_valido) or (not puede_guardar_ctx)
 
-        except Exception as ex:
-            print(f"❌ Error al calcular interés: {ex}")
-            self.saldo_con_interes.value = "-"
-            self.monto_input.border_color = ft.colors.RED
-            if self.boton_guardar:
-                self.boton_guardar.disabled = True
+        # Resumen
+        try:
+            total_hist = Decimal(str(self.total_pagado or 0))
+            m = Decimal(str(monto or 0))
+            restante = Decimal(str(saldo_con_interes)) - m
+            self.resumen_text.value = f"💰 Total pagado: ${total_hist:.2f} | 💸 Este pago: ${m:.2f} | 🔚 Restante con interés: ${restante:.2f}"
+        except Exception:
+            self.resumen_text.value = f"💰 Total pagado: ${self.total_pagado:.2f} | 💸 Este pago: — | 🔚 Restante: —"
 
-        self.resumen_text.value = self._obtener_resumen()
         self.page.update()
 
-
-    def _obtener_resumen(self):
+    # --------------- Guardado ----------------
+    def _guardar(self, _):
+        # Cálculos vigentes
         try:
-            interes = int(self.interes_dropdown.value or "0")
-            saldo = Decimal(str(self.saldo_restante))
-            interes_aplicado = (saldo * Decimal(interes) / 100).quantize(Decimal("0.01"))
-            saldo_total = saldo + interes_aplicado
+            interes = float((self.interes_input.value or "0").replace(",", "."))
+        except Exception:
+            ModalAlert.mostrar_info("Error", "Interés inválido.")
+            return
 
-            monto_ingresado = Decimal(self.monto_input.value or "0").quantize(Decimal("0.01"))
-            total_pagado = self.total_pagado + monto_ingresado
-            total_por_pagar = saldo_total - monto_ingresado
-
-            return f"💰 Total pagado: ${total_pagado:.2f} | 💸 Total por pagar: ${total_por_pagar:.2f}"
-        except:
-            return f"💰 Total pagado: ${self.total_pagado:.2f} | 💸 Total por pagar: ---"
-
-    def _guardar_detalle(self, _):
         try:
-            monto = Decimal(str(self.monto_input.value or "0")).quantize(Decimal("0.01"))
-            interes = int(self.interes_dropdown.value)
-            observaciones = self.observaciones_input.value.strip()
+            monto = float((self.monto_input.value or "0").replace(",", "."))
+        except Exception:
+            ModalAlert.mostrar_info("Error", "Monto inválido.")
+            return
 
-            saldo_decimal = Decimal(str(self.saldo_restante)).quantize(Decimal("0.01"))
-            interes_aplicado = (saldo_decimal * Decimal(interes) / 100).quantize(Decimal("0.01"))
-            saldo_total = (saldo_decimal + interes_aplicado).quantize(Decimal("0.01"))
+        prev = self._calc_preview(monto=monto, interes_pct=interes)
+        saldo_con_interes = prev["saldo_con_interes"]
+        if monto <= 0 or monto > saldo_con_interes:
+            ModalAlert.mostrar_info("Error", "Monto fuera de rango.")
+            return
 
-            total_por_pagar = saldo_total - monto
-            if monto <= 0:
-                ModalAlert.mostrar_info("Error", "El monto debe ser mayor a 0.")
+        obs = (self.observaciones_input.value or "").strip()
+
+        if self.es_desde_prestamos:
+            # Guardar de verdad desde Préstamos solo si tenemos id_pago (FK a pagos)
+            if self.id_pago is None:
+                ModalAlert.mostrar_info(
+                    "Solo simulación",
+                    "Para guardar realmente desde Préstamos, abre el modal pasando un id_pago de nómina."
+                )
                 return
 
-            if monto > saldo_total:
-                ModalAlert.mostrar_info("Advertencia", f"El monto no puede ser mayor al saldo con interés (${saldo_total})")
-                return
-
-            if total_por_pagar < 0:
-                ModalAlert.mostrar_info("Error", "El total por pagar no puede quedar negativo.")
-                return
-
-            if self.detalle_guardado:
-                if (float(self.detalle_guardado["monto_guardado"]) == float(monto) and
-                    int(self.detalle_guardado["interes_guardado"]) == interes and
-                    (self.detalle_guardado["observaciones"] or "") == observaciones):
-                    ModalAlert.mostrar_info("Sin cambios", "No se detectaron cambios en el detalle.")
-                    return
-
-            resultado = self.detalles_model.upsert_detalle(
-                id_pago=self.id_pago,
+            # commit real a pagos_prestamo
+            res = self.pago_model.add_payment(
                 id_prestamo=self.id_prestamo,
-                monto=float(monto),
-                interes=interes,
-                observaciones=observaciones
+                id_pago_nomina=self.id_pago,
+                monto_pagado=monto,
+                fecha_pago=self.fecha_pago_base,
+                fecha_generacion=self.fecha_generacion,
+                interes_porcentaje=int(round(interes)),
+                aplicado=True,                 # puedes ajustar si quieres dejarlo pendiente
+                fecha_real_pago=self.fecha_pago_base,
+                observaciones=obs
             )
 
-            if resultado["status"] == "success":
-                ModalAlert.mostrar_info("Guardado", "El detalle fue almacenado correctamente.")
-                self.dialog.open = False
+        else:
+            # Desde Nómina: guardar/actualizar detalle (no aplica el pago todavía)
+            res = self.detalles_model.upsert_detalle(
+                id_pago=self.id_pago,
+                id_prestamo=self.id_prestamo,
+                monto=round(monto, 2),
+                interes=int(round(interes)),
+                observaciones=obs
+            )
+
+        if res.get("status") == "success":
+            ModalAlert.mostrar_info("Éxito", res.get("message", "Operación exitosa."))
+            self.dialog.open = False
+            try:
                 self.on_confirmar(None)
-            else:
-                ModalAlert.mostrar_info("Error", resultado["message"])
-
-        except Exception as ex:
-            ModalAlert.mostrar_info("Error", f"Error al guardar detalle: {ex}")
-
-        self.page.update()
+            finally:
+                self.page.update()
+        else:
+            ModalAlert.mostrar_info("Error", res.get("message", "No se pudo completar la operación."))
+            self.page.update()

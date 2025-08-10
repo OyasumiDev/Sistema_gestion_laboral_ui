@@ -1,4 +1,5 @@
 import flet as ft
+from datetime import date
 from app.core.app_state import AppState
 from app.models.loan_model import LoanModel
 from app.models.payment_model import PaymentModel
@@ -10,6 +11,9 @@ from app.helpers.prestamos_helper.prestamos_row_helper import PrestamosRowHelper
 from app.helpers.prestamos_helper.pagos_prestamos_row_helper import PagosPrestamosRowHelper
 from app.helpers.prestamos_helper.prestamos_validation_helper import PrestamosValidationHelper
 from app.helpers.prestamos_helper.prestamos_scroll_helper import PrestamosScrollHelper
+
+# 👇 modal nuevo
+from app.views.containers.modal_pagos_prestamos import ModalPrestamos
 
 
 class PrestamosContainer(ft.Container):
@@ -29,10 +33,10 @@ class PrestamosContainer(ft.Container):
         self.pago_helper = PagosPrestamosRowHelper()
 
         # Estado UI
-        self.datos_tabla: dict[str, list[ft.Control]] = {}   # filas temporales (ej. "prestamos_global")
+        self.datos_tabla: dict[str, list[ft.Control]] = {}
         self._pending_scroll_key: str | None = None
 
-        # Layout raíz del contenedor
+        # Layout raíz
         self.layout = ft.Column(expand=True)
         self._build()
         print("[PrestamosContainer] construido")
@@ -42,11 +46,7 @@ class PrestamosContainer(ft.Container):
     # UI base
     # ---------------------------------------------------------------------
     def _build(self):
-        # Column que SÍ está en el árbol visual; a este hay que asignarle .controls
-        self.tiles_column = ft.Column(
-            expand=True,
-            scroll=ft.ScrollMode.AUTO,
-        )
+        self.tiles_column = ft.Column(expand=True, scroll=ft.ScrollMode.AUTO)
 
         self.layout.controls = [
             ft.Text("Préstamos por empleado", style=ft.TextThemeStyle.TITLE_MEDIUM),
@@ -75,12 +75,12 @@ class PrestamosContainer(ft.Container):
             print(f"[PrestamosContainer._safe_refresh] page.update error: {ex}")
 
     # ---------------------------------------------------------------------
-    # Render jerárquico (+ scroll post-refresh)
+    # Render jerárquico
     # ---------------------------------------------------------------------
     def _actualizar_vista(self):
         print("[_actualizar_vista] reconstruyendo vista...")
 
-        tiles: list[ft.Control] = []  # construimos una lista NUEVA cada vez
+        tiles: list[ft.Control] = []
 
         resultado = self.loan_model.get_agrupado_por_empleado()
         print("[_actualizar_vista] status:", resultado.get("status"))
@@ -104,6 +104,16 @@ class PrestamosContainer(ft.Container):
                 )
             )
 
+        # Atajos enumerados
+        P = self.E
+        K_ID = P.PRESTAMO_ID.value
+        K_NUM = P.PRESTAMO_NUMERO_NOMINA.value
+        K_NOM = P.PRESTAMO_NOMBRE_EMPLEADO.value
+        K_MONTO = P.PRESTAMO_MONTO.value
+        K_SALDO = P.PRESTAMO_SALDO.value
+        K_ESTADO = P.PRESTAMO_ESTADO.value
+        K_FECHA = P.PRESTAMO_FECHA_SOLICITUD.value
+
         for grupo in grupos:
             numero = grupo.get("numero_nomina")
             nombre = grupo.get("nombre_empleado", "")
@@ -111,44 +121,67 @@ class PrestamosContainer(ft.Container):
             print(f"  - Empleado {numero} '{nombre}': {len(prestamos)} préstamo(s)")
 
             prestamos_tiles = []
-            for prestamo in prestamos:
-                pagos_res = self.loan_payment_model.get_by_id_prestamo(prestamo["id_prestamo"])
+            for p in prestamos:
+                id_prestamo = p.get(K_ID)
+
+                # Pagos del préstamo
+                pagos_res = self.loan_payment_model.get_by_prestamo(id_prestamo)
                 pagos_filas = []
+                total_pagado = 0.0
                 if pagos_res.get("status") == "success":
-                    for p in (pagos_res.get("data", []) or []):
+                    pagos_raw = pagos_res.get("data", []) or []
+                    for row in pagos_raw:
+                        try:
+                            # si quieres solo aplicados, descomenta la siguiente línea y usa "if row.get('aplicado')"
+                            # if not row.get('aplicado'): continue
+                            total_pagado += float(row.get("monto_pagado", 0) or 0)
+                        except Exception:
+                            pass
                         pagos_filas.append(
                             self.pago_helper.build_fila_pago(
-                                pago=p,
-                                editable=(prestamo.get("estado", "").lower() != "terminado"),
+                                pago=row,
+                                editable=(str(p.get(K_ESTADO, "")).lower() != "terminado"),
                             )
                         )
 
                 tabla_pagos = ft.DataTable(
                     columns=self.pago_helper.get_columnas(),
                     rows=pagos_filas,
-                    expand=True,
                 )
+                tabla_wrap = ft.Container(
+                    content=tabla_pagos,
+                    border=ft.border.all(1, ft.colors.GREY_200),
+                    border_radius=8,
+                    padding=10,
+                    clip_behavior=ft.ClipBehavior.ANTI_ALIAS,
+                )
+
+                # Registro normalizado para row_helper
+                registro_ui = {
+                    "id_prestamo": id_prestamo,
+                    "numero_nomina": p.get(K_NUM),
+                    "nombre_empleado": p.get(K_NOM, nombre) or nombre,
+                    "monto": p.get(K_MONTO, ""),
+                    "saldo": p.get(K_SALDO, "0.00"),
+                    "pagado": f"{total_pagado:.2f}",
+                    "estado": p.get(K_ESTADO, ""),
+                    "fecha_solicitud": p.get(K_FECHA, ""),
+                }
 
                 fila_prestamo = self.row_helper.build_fila_lectura(
-                    registro=prestamo,
-                    on_edit=lambda p=prestamo: self._editar_prestamo(p),
-                    on_delete=lambda p=prestamo: self._eliminar_prestamo(p["id_prestamo"]),
-                    on_pagos=lambda p=prestamo: self._ver_pagos_de_prestamo(p),
+                    registro=registro_ui,
+                    on_edit=lambda pr=p: self._editar_prestamo(pr),
+                    on_delete=lambda pr=p: self._eliminar_prestamo(pr[K_ID]),
+                    # 👇 Ahora abrimos SIEMPRE el modal desde aquí
+                    on_pagos=lambda pr=p, num=numero: self._ver_pagos_de_prestamo(pr, num),
                 )
 
-                hijos = [fila_prestamo, tabla_pagos]
-                if prestamo.get("estado", "").lower() != "terminado":
-                    hijos.append(
-                        ft.ElevatedButton(
-                            "Agregar pago",
-                            icon=ft.icons.ADD,
-                            on_click=lambda e, p=prestamo: self._agregar_pago(p),
-                        )
-                    )
+                # 👇 Eliminamos el botón "Agregar pago"; el acceso será por "Ver pagos"
+                hijos = [fila_prestamo, tabla_wrap]
 
                 prestamos_tiles.append(
                     ft.ExpansionTile(
-                        title=ft.Text(f"Préstamo ID {prestamo['id_prestamo']}"),
+                        title=ft.Text(f"Préstamo ID {id_prestamo}"),
                         maintain_state=True,
                         controls=hijos,
                     )
@@ -168,7 +201,7 @@ class PrestamosContainer(ft.Container):
                 )
             )
 
-        # Sección de “préstamo global” en edición (si existe)
+        # Tile temporal de “préstamo global”
         if self.datos_tabla.get("prestamos_global"):
             print("[_actualizar_vista] filas en prestamos_global:", len(self.datos_tabla["prestamos_global"]))
             tiles.append(
@@ -182,10 +215,7 @@ class PrestamosContainer(ft.Container):
         else:
             print("[_actualizar_vista] no hay filas temporales en prestamos_global")
 
-        # Asignamos la lista nueva al Column montado
         self.tiles_column.controls = tiles
-
-        # Refresco + scroll
         self._safe_refresh()
 
         scroll_key = self._pending_scroll_key
@@ -197,7 +227,7 @@ class PrestamosContainer(ft.Container):
             self._pending_scroll_key = None
 
     # ---------------------------------------------------------------------
-    # Crear / Guardar
+    # Crear / Guardar préstamo
     # ---------------------------------------------------------------------
     def _agregar_prestamo_global(self, _=None):
         print("[_agregar_prestamo_global] click")
@@ -214,7 +244,6 @@ class PrestamosContainer(ft.Container):
             "saldo": "0.00",
             "pagado": "0.00",
             "estado": "pendiente",
-            # "grupo_empleado": "GLOBAL",  # ya no se pinta; se calculará al guardar
             "fecha_solicitud": "",
         }
 
@@ -241,7 +270,6 @@ class PrestamosContainer(ft.Container):
             campos_ref=campos_ref,
             grupo_empleado=None,
         )
-        print("[_agregar_prestamo_global] tipo fila_nueva:", type(fila_nueva))
 
         self.datos_tabla[grupo].append(fila_nueva)
         self._pending_scroll_key = scroll_key
@@ -260,7 +288,6 @@ class PrestamosContainer(ft.Container):
             "saldo": "0.00",
             "pagado": "0.00",
             "estado": "pendiente",
-            # "grupo_empleado": str(numero_nomina),  # ya no se pinta; se calculará al guardar
             "fecha_solicitud": "",
         }
 
@@ -281,9 +308,7 @@ class PrestamosContainer(ft.Container):
             campos_ref=campos_ref,
             grupo_empleado=None,
         )
-        print("[_agregar_prestamo_a_empleado] tipo fila_nueva:", type(fila_nueva))
 
-        # Inserta el tile temporal en el Column REAL que está montado
         self.tiles_column.controls.insert(
             0,
             ft.ExpansionTile(
@@ -296,9 +321,6 @@ class PrestamosContainer(ft.Container):
         self._pending_scroll_key = scroll_key
         self._safe_refresh()
 
-    # ---------------------------------------------------------------------
-    # Guardado
-    # ---------------------------------------------------------------------
     def _guardar_fila_desde_campos(self, grupo_key: str, fila_widget: ft.Control, campos_ref: dict):
         numero = (campos_ref.get("numero_nomina").value or "").strip()
         monto_txt = (campos_ref.get("monto").value or "").strip().replace(",", ".")
@@ -320,11 +342,9 @@ class PrestamosContainer(ft.Container):
 
         fecha_sql = self.validador.convertir_fecha_mysql(fecha_txt)
 
-        # 🔹 Calcular grupo_empleado automáticamente (ya no viene desde campos_ref)
         if grupo_key == "prestamos_global":
             grupo_empleado = "GLOBAL"
         elif grupo_key.startswith("nuevo_"):
-            # cuando agregas para un empleado específico
             grupo_empleado = numero
         else:
             grupo_empleado = numero or "GLOBAL"
@@ -351,17 +371,50 @@ class PrestamosContainer(ft.Container):
         else:
             ModalAlert.mostrar_info("Error", res.get("message", "No se pudo guardar."))
 
+    def _insertar_prestamo(self, datos: dict) -> dict:
+        try:
+            numero = int(datos["numero_nomina"])
+            monto = float(datos["monto"])
+            fecha = datos.get("fecha_solicitud")
+
+            res = self.loan_model.add(
+                numero_nomina=numero,
+                monto_prestamo=monto,
+                saldo_prestamo=None,
+                estado="pagando",
+                fecha_solicitud=fecha,
+            )
+            return res if isinstance(res, dict) else {"status": "success", "data": res}
+        except Exception as ex:
+            return {"status": "error", "message": f"Error al insertar préstamo: {ex}"}
+
     # ---------------------------------------------------------------------
     # Otras acciones
     # ---------------------------------------------------------------------
     def _editar_prestamo(self, prestamo: dict):
         ModalAlert.mostrar_info("Editar", "Edición no implementada aún en esta vista.")
 
-    def _agregar_pago(self, prestamo: dict):
-        ModalAlert.mostrar_info("Agregar pago", f"Agregar pago al préstamo {prestamo.get('id_prestamo')}")
+    def _ver_pagos_de_prestamo(self, prestamo: dict, numero_nomina: int):
+        # si quieres modo simulación (sin guardar real):
+        pago_data = {
+            "numero_nomina": int(numero_nomina),
+            "id_pago": None,                  # ← None => simulación (no guarda en BD)
+            "estado": "pendiente",
+            "fecha_generacion": date.today().strftime("%Y-%m-%d"),
+            "fecha_pago": date.today().strftime("%Y-%m-%d"),
+            "contexto": "prestamos",
+            "id_prestamo": int(prestamo.get("id_prestamo")),
+        }
 
-    def _ver_pagos_de_prestamo(self, prestamo: dict):
-        ModalAlert.mostrar_info("Pagos", f"Mostrando pagos del préstamo {prestamo.get('id_prestamo')}")
+        # si quieres que GUARDE realmente desde préstamos:
+        # pago_data["id_pago"] = <id_pago_nomina_valido>
+
+        def on_confirmar(_):
+            self._actualizar_vista()
+
+        modal = ModalPrestamos(pago_data=pago_data, on_confirmar=on_confirmar)
+        modal.mostrar()
+
 
     def _importar(self, _):
         ModalAlert.mostrar_info("Importar", "Importación no implementada.")
@@ -376,44 +429,3 @@ class PrestamosContainer(ft.Container):
         else:
             ModalAlert.mostrar_info("Error", res.get("message", "No se pudo eliminar."))
         self._actualizar_vista()
-
-
-    def _insertar_prestamo(self, datos: dict) -> dict:
-        """
-        Compat layer para distintos nombres de método en LoanModel.
-        Intenta varios candidatos y retorna {status, message, data?}.
-        """
-        candidatos = [
-            "insert", "insert_prestamo",
-            "create", "create_prestamo",
-            "add", "add_prestamo",
-            "save", "save_prestamo",
-            "insert_one", "upsert",  # por si acaso
-        ]
-
-        for nombre in candidatos:
-            metodo = getattr(self.loan_model, nombre, None)
-            if callable(metodo):
-                try:
-                    # Preferimos pasar el dict completo
-                    res = metodo(datos)
-                except TypeError:
-                    # Si el método espera kwargs
-                    res = metodo(**datos)
-
-                # Normalizamos respuestas "vacías"
-                if res is None:
-                    return {"status": "error", "message": f"LoanModel.{nombre} devolvió None"}
-                if isinstance(res, dict) and "status" in res:
-                    return res
-
-                # Si devolvió algo distinto, lo convertimos
-                return {"status": "success", "data": res}
-
-        return {
-            "status": "error",
-            "message": (
-                "LoanModel no expone un método de inserción compatible. "
-                "Probados: " + ", ".join(candidatos)
-            ),
-        }
