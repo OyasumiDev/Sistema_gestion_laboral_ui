@@ -1,8 +1,9 @@
 import flet as ft
+
 from app.views.window_main_view import window_main
 from app.core.app_state import AppState
 
-# Importar modelos
+# Modelos (solo import, la creación va en bootstrap siguiendo el orden correcto)
 from app.models.employes_model import EmployesModel
 from app.models.user_model import UserModel
 from app.models.assistance_model import AssistanceModel
@@ -14,45 +15,62 @@ from app.models.discount_model import DiscountModel
 from app.models.performance_model import PerformanceModel
 from app.models.weekly_report_model import WeeklyReportModel
 
+
+def _safe_create(label: str, fn):
+    print(f"🔄 Creando {label}...")
+    try:
+        obj = fn()
+        print(f"✔️ {label.capitalize()} ya existe." if getattr(obj, "_exists_table", True) else f"✔️ {label.capitalize()} ok.")
+        return obj
+    except Exception as ex:
+        print(f"❌ Error verificando/creando {label}: {ex}")
+        raise
+
+
+def bootstrap_db():
+    """
+    Crea/verifica todas las tablas y objetos de BD en el orden correcto.
+    IMPORTANTE: respeta FKs para evitar errores de referencia.
+    """
+    # 1) Base
+    _safe_create("tabla empleados", EmployesModel)
+    _safe_create("tabla usuarios_app", UserModel)
+
+    # 2) Asistencias (depende de empleados) + triggers internos del propio modelo
+    asistencia = _safe_create("tabla asistencias", AssistanceModel)
+
+    # 3) Pagos (depende de empleados) -> requerido por descuentos y pagos_prestamo
+    pagos = _safe_create("tabla pagos", PaymentModel)
+
+    # 4) Préstamos (depende de empleados)
+    _safe_create("tabla prestamos", LoanModel)
+
+    # 5) Pagos de préstamo (depende de prestamos y pagos)
+    _safe_create("tabla pagos_prestamo", LoanPaymentModel)
+
+    # 6) Staging de pagos de préstamo (si aplica)
+    _safe_create("tabla detalles_pagos_prestamo", DetallesPagosPrestamoModel)
+
+    # 7) Descuentos (depende de pagos y empleados)
+    _safe_create("tabla descuentos", DiscountModel)
+
+    # 8) Otros módulos
+    _safe_create("tabla desempeño", PerformanceModel)
+    _safe_create("tabla reportes_semanales", WeeklyReportModel)
+
+    # 9) Stored Procedure (depende de asistencias y empleados). Se crea al final.
+    try:
+        print("⚙️  Verificando Stored Procedure 'horas_trabajadas_para_pagos'...")
+        pagos.crear_sp_horas_trabajadas_para_pagos()
+    except Exception as ex:
+        print(f"❌ Error creando SP 'horas_trabajadas_para_pagos': {ex}")
+
+
 def iniciar_aplicacion():
-    """
-    Método central que inicializa la base de datos
-    creando todas las tablas requeridas desde sus modelos.
-    """
+    # Inicializa BD en orden correcto
+    bootstrap_db()
 
-    # Tablas base
-    print("🔄 Creando tabla empleados...")
-    EmployesModel()
-
-    print("🔄 Creando tabla usuarios_app...")
-    UserModel()
-
-    # Tablas dependientes de empleados
-    print("🔄 Creando tabla asistencias...")
-    AssistanceModel()
-
-    print("🔄 Creando tabla pagos...")
-    PaymentModel()  # Se necesita antes de descuentos y pagos_prestamo
-
-    print("🔄 Creando tabla prestamos...")
-    LoanModel()
-
-    print("🔄 Creando tabla pagos_prestamo...")
-    LoanPaymentModel()
-
-    print("🔄 Creando tabla detalles_pagos_prestamo...")
-    DetallesPagosPrestamoModel()
-
-    print("🔄 Creando tabla descuentos...")
-    DiscountModel()
-
-    print("🔄 Creando tabla desempeño...")
-    PerformanceModel()
-
-    print("🔄 Creando tabla reportes_semanales...")
-    WeeklyReportModel()
-
-    # Lanzar la app
+    # Lanza Flet
     print("🚀 Lanzando aplicación...")
     ft.app(target=window_main, assets_dir="assets")
 

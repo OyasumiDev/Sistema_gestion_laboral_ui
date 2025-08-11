@@ -4,6 +4,7 @@ from datetime import date, datetime, timedelta
 from typing import Optional
 import pandas as pd 
 from datetime import time
+from typing import List
 
 class AssistanceModel:
     def __init__(self):
@@ -705,3 +706,58 @@ class AssistanceModel:
             return datetime.strptime(fecha_sql, "%Y-%m-%d").strftime("%d/%m/%Y")
         except Exception:
             return fecha_sql
+
+
+    def get_fechas_disponibles_para_pago(self) -> List[date]:
+        """
+        Fechas (DISTINCT) con asistencias completas y que aún NO se han usado
+        para nómina (fecha_generada IS NULL). Sirve para el DateModalSelector.
+        """
+        try:
+            q = """
+                SELECT DISTINCT fecha
+                FROM asistencias
+                WHERE estado = 'completo'
+                AND fecha_generada IS NULL
+                ORDER BY fecha ASC
+            """
+            rows = self.db.get_data_list(q, (), dictionary=True) or []
+            out: List[date] = []
+            for r in rows:
+                f = r.get("fecha")
+                if isinstance(f, date):
+                    out.append(f)
+                elif isinstance(f, str):
+                    out.append(datetime.strptime(f, "%Y-%m-%d").date())
+            return out
+        except Exception as ex:
+            print(f"❌ Error al obtener fechas disponibles para pago: {ex}")
+            return []
+
+
+    def get_fechas_disponibles_para_pago_por_empleado(self, numero_nomina: int) -> List[date]:
+        """
+        Igual que el anterior, pero filtrando por empleado.
+        Útil si más adelante quieres generar por empleado específico.
+        """
+        try:
+            q = """
+                SELECT DISTINCT fecha
+                FROM asistencias
+                WHERE numero_nomina = %s
+                AND estado = 'completo'
+                AND fecha_generada IS NULL
+                ORDER BY fecha ASC
+            """
+            rows = self.db.get_data_list(q, (numero_nomina,), dictionary=True) or []
+            out: List[date] = []
+            for r in rows:
+                f = r.get("fecha")
+                if isinstance(f, date):
+                    out.append(f)
+                elif isinstance(f, str):
+                    out.append(datetime.strptime(f, "%Y-%m-%d").date())
+            return out
+        except Exception as ex:
+            print(f"❌ Error al obtener fechas disponibles por empleado: {ex}")
+            return []
