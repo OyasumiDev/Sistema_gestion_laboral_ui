@@ -1,18 +1,28 @@
+# app/views/containers/prestamos_container.py
 import flet as ft
 from datetime import date
+from typing import List
+
 from app.core.app_state import AppState
 from app.models.loan_model import LoanModel
 from app.models.payment_model import PaymentModel
 from app.models.loan_payment_model import LoanPaymentModel
 from app.views.containers.modal_alert import ModalAlert
 from app.core.enums.e_prestamos_model import E_PRESTAMOS
+from app.core.enums.e_pagos_prestamos import E_PAGOS_PRESTAMO as EP
 
 from app.helpers.prestamos_helper.prestamos_row_helper import PrestamosRowHelper
 from app.helpers.prestamos_helper.pagos_prestamos_row_helper import PagosPrestamosRowHelper
 from app.helpers.prestamos_helper.prestamos_validation_helper import PrestamosValidationHelper
 from app.helpers.prestamos_helper.prestamos_scroll_helper import PrestamosScrollHelper
 
-# 👇 modal nuevo
+# BotonFactory (uniformidad con Empleados)
+from app.helpers.boton_factory import (
+    crear_boton_importar,
+    crear_boton_exportar,
+)
+
+# Modal universal de préstamos
 from app.views.containers.modal_pagos_prestamos import ModalPrestamos
 
 
@@ -33,70 +43,89 @@ class PrestamosContainer(ft.Container):
         self.pago_helper = PagosPrestamosRowHelper()
 
         # Estado UI
-        self.datos_tabla: dict[str, list[ft.Control]] = {}
+        self.datos_tabla: dict[str, List[ft.Control]] = {}   # filas temporales (ej. "prestamos_global")
         self._pending_scroll_key: str | None = None
 
         # Layout raíz
         self.layout = ft.Column(expand=True)
         self._build()
-        print("[PrestamosContainer] construido")
         self._actualizar_vista()
 
     # ---------------------------------------------------------------------
     # UI base
     # ---------------------------------------------------------------------
     def _build(self):
+        # Columna scrollable donde se insertan los tiles
         self.tiles_column = ft.Column(expand=True, scroll=ft.ScrollMode.AUTO)
 
+        # Barra superior (uniforme con Empleados)
+        top_bar = ft.Row(
+            spacing=10,
+            alignment=ft.MainAxisAlignment.START,
+            controls=[
+                crear_boton_importar(self._importar),
+                crear_boton_exportar(self._exportar),
+                self._build_add_global_button(),
+            ],
+        )
+
         self.layout.controls = [
-            ft.Text("Préstamos por empleado", style=ft.TextThemeStyle.TITLE_MEDIUM),
-            ft.Row(
-                [
-                    ft.ElevatedButton("Importar", icon=ft.icons.FILE_UPLOAD, on_click=self._importar),
-                    ft.ElevatedButton("Exportar", icon=ft.icons.FILE_DOWNLOAD, on_click=self._exportar),
-                    ft.ElevatedButton("Agregar préstamo global", icon=ft.icons.ADD, on_click=self._agregar_prestamo_global),
-                ],
-                spacing=10,
-            ),
+            ft.Text("ÁREA DE PRÉSTAMOS", style=ft.TextThemeStyle.TITLE_MEDIUM),
+            top_bar,
+            ft.Divider(height=1),
             self.tiles_column,
         ]
         self.content = self.layout
+
+    def _build_add_global_button(self) -> ft.GestureDetector:
+        return ft.GestureDetector(
+            on_tap=lambda _: self._agregar_prestamo_global(),
+            content=ft.Container(
+                padding=8,
+                border_radius=12,
+                bgcolor=ft.colors.SURFACE_VARIANT,
+                content=ft.Row(
+                    [
+                        ft.Icon(ft.icons.ADD_CIRCLE_OUTLINED, size=20),
+                        ft.Text("Agregar préstamo global", size=11, weight="bold"),
+                    ],
+                    alignment=ft.MainAxisAlignment.CENTER,
+                    spacing=5,
+                ),
+            ),
+        )
 
     def _safe_refresh(self):
         try:
             if getattr(self.layout, "page", None) is not None:
                 self.layout.update()
-        except Exception as ex:
-            print(f"[PrestamosContainer._safe_refresh] layout.update error: {ex}")
+        except Exception:
+            pass
         try:
             if self.page is not None:
                 self.page.update()
-        except Exception as ex:
-            print(f"[PrestamosContainer._safe_refresh] page.update error: {ex}")
+        except Exception:
+            pass
 
     # ---------------------------------------------------------------------
     # Render jerárquico
     # ---------------------------------------------------------------------
     def _actualizar_vista(self):
-        print("[_actualizar_vista] reconstruyendo vista...")
-
-        tiles: list[ft.Control] = []
+        tiles: List[ft.Control] = []
 
         resultado = self.loan_model.get_agrupado_por_empleado()
-        print("[_actualizar_vista] status:", resultado.get("status"))
         if resultado.get("status") != "success":
             ModalAlert.mostrar_info("Error", resultado.get("message", "No se pudieron cargar los préstamos"))
             self._safe_refresh()
             return
 
         grupos = resultado.get("data", []) or []
-        print("[_actualizar_vista] grupos recibidos:", len(grupos))
 
         if not grupos:
             tiles.append(
                 ft.Container(
                     content=ft.Text(
-                        "No hay préstamos registrados. Usa el botón 'Agregar préstamo global' o agrega por empleado.",
+                        "No hay préstamos registrados. Usa 'Agregar préstamo global' o agrega desde el empleado.",
                         size=12,
                         color=ft.colors.GREY_700,
                     ),
@@ -104,7 +133,7 @@ class PrestamosContainer(ft.Container):
                 )
             )
 
-        # Atajos enumerados
+        # Aliases del enum
         P = self.E
         K_ID = P.PRESTAMO_ID.value
         K_NUM = P.PRESTAMO_NUMERO_NOMINA.value
@@ -118,45 +147,33 @@ class PrestamosContainer(ft.Container):
             numero = grupo.get("numero_nomina")
             nombre = grupo.get("nombre_empleado", "")
             prestamos = grupo.get("prestamos", []) or []
-            print(f"  - Empleado {numero} '{nombre}': {len(prestamos)} préstamo(s)")
 
-            prestamos_tiles = []
+            prestamos_tiles: List[ft.Control] = []
             for p in prestamos:
                 id_prestamo = p.get(K_ID)
 
-                # Pagos del préstamo
+                # Historial de pagos del préstamo
                 pagos_res = self.loan_payment_model.get_by_prestamo(id_prestamo)
-                pagos_filas = []
+                pagos = pagos_res.get("data", []) if (isinstance(pagos_res, dict) and pagos_res.get("status") == "success") else []
                 total_pagado = 0.0
-                if pagos_res.get("status") == "success":
-                    pagos_raw = pagos_res.get("data", []) or []
-                    for row in pagos_raw:
-                        try:
-                            # si quieres solo aplicados, descomenta la siguiente línea y usa "if row.get('aplicado')"
-                            # if not row.get('aplicado'): continue
-                            total_pagado += float(row.get("monto_pagado", 0) or 0)
-                        except Exception:
-                            pass
-                        pagos_filas.append(
-                            self.pago_helper.build_fila_pago(
-                                pago=row,
-                                editable=(str(p.get(K_ESTADO, "")).lower() != "terminado"),
-                            )
-                        )
+                for row in pagos:
+                    try:
+                        total_pagado += float(row.get(EP.PAGO_MONTO_PAGADO.value, row.get("monto_pagado", 0)) or 0)
+                    except Exception:
+                        pass
 
-                tabla_pagos = ft.DataTable(
-                    columns=self.pago_helper.get_columnas(),
-                    rows=pagos_filas,
-                )
-                tabla_wrap = ft.Container(
-                    content=tabla_pagos,
-                    border=ft.border.all(1, ft.colors.GREY_200),
-                    border_radius=8,
-                    padding=10,
-                    clip_behavior=ft.ClipBehavior.ANTI_ALIAS,
+                editable_pagos = (str(p.get(K_ESTADO, "")).lower() != "terminado")
+
+                # Lista estable (sin DataTable)
+                lista_pagos = self.pago_helper.build_list(
+                    pagos=pagos,
+                    editable=editable_pagos,
+                    on_edit=None,  # no se edita historial por ahora
+                    on_delete=lambda pago, pid=id_prestamo, num=numero: self._confirmar_eliminar_pago(pago, pid, num),
+                    max_height=260,
                 )
 
-                # Registro normalizado para row_helper
+                # Registro para la fila resumen del préstamo
                 registro_ui = {
                     "id_prestamo": id_prestamo,
                     "numero_nomina": p.get(K_NUM),
@@ -170,27 +187,33 @@ class PrestamosContainer(ft.Container):
 
                 fila_prestamo = self.row_helper.build_fila_lectura(
                     registro=registro_ui,
-                    on_edit=lambda pr=p: self._editar_prestamo(pr),
-                    on_delete=lambda pr=p: self._eliminar_prestamo(pr[K_ID]),
-                    # 👇 Ahora abrimos SIEMPRE el modal desde aquí
-                    on_pagos=lambda pr=p, num=numero: self._ver_pagos_de_prestamo(pr, num),
+                    on_edit=(lambda pr=p: self._editar_prestamo(pr)),
+                    on_delete=(lambda pr=p: self._eliminar_prestamo(pr[K_ID])),
+                    # Abrimos el modal desde “Ver pagos”
+                    on_pagos=(lambda pr=p, num=numero: self._ver_pagos_de_prestamo(pr, num)),
                 )
-
-                # 👇 Eliminamos el botón "Agregar pago"; el acceso será por "Ver pagos"
-                hijos = [fila_prestamo, tabla_wrap]
 
                 prestamos_tiles.append(
                     ft.ExpansionTile(
                         title=ft.Text(f"Préstamo ID {id_prestamo}"),
                         maintain_state=True,
-                        controls=hijos,
+                        controls=[fila_prestamo, lista_pagos],
                     )
                 )
 
-            btn_agregar_prestamo = ft.ElevatedButton(
-                "Agregar préstamo",
-                icon=ft.icons.ADD,
-                on_click=lambda e, num=numero: self._agregar_prestamo_a_empleado(num),
+            # Acción “Agregar préstamo” para el empleado
+            btn_agregar_prestamo = ft.GestureDetector(
+                on_tap=lambda _, num=numero: self._agregar_prestamo_a_empleado(num),
+                content=ft.Container(
+                    padding=6,
+                    border_radius=10,
+                    bgcolor=ft.colors.SURFACE_VARIANT,
+                    content=ft.Row(
+                        [ft.Icon(ft.icons.ADD, size=18), ft.Text("Agregar préstamo", size=11, weight="bold")],
+                        spacing=6,
+                        alignment=ft.MainAxisAlignment.CENTER,
+                    ),
+                ),
             )
 
             tiles.append(
@@ -203,7 +226,6 @@ class PrestamosContainer(ft.Container):
 
         # Tile temporal de “préstamo global”
         if self.datos_tabla.get("prestamos_global"):
-            print("[_actualizar_vista] filas en prestamos_global:", len(self.datos_tabla["prestamos_global"]))
             tiles.append(
                 ft.ExpansionTile(
                     title=ft.Text("Nuevo préstamo global"),
@@ -212,17 +234,15 @@ class PrestamosContainer(ft.Container):
                     controls=self.datos_tabla["prestamos_global"],
                 )
             )
-        else:
-            print("[_actualizar_vista] no hay filas temporales en prestamos_global")
 
         self.tiles_column.controls = tiles
         self._safe_refresh()
 
+        # Scroll post-refresh
         scroll_key = self._pending_scroll_key
         if not scroll_key and self.datos_tabla.get("prestamos_global"):
             scroll_key = "grupo_prestamos_global"
         if scroll_key:
-            print(f"[_actualizar_vista] solicitando scroll a: {scroll_key}")
             PrestamosScrollHelper.scroll_to_group_after_build(self.page, scroll_key, delay=0.1, retries=30)
             self._pending_scroll_key = None
 
@@ -230,7 +250,6 @@ class PrestamosContainer(ft.Container):
     # Crear / Guardar préstamo
     # ---------------------------------------------------------------------
     def _agregar_prestamo_global(self, _=None):
-        print("[_agregar_prestamo_global] click")
         grupo = "prestamos_global"
         scroll_key = f"grupo_{grupo}"
         page = self.page
@@ -250,11 +269,9 @@ class PrestamosContainer(ft.Container):
         campos_ref = {}
 
         def on_save():
-            print("[_agregar_prestamo_global.on_save] guardando...")
             self._guardar_fila_desde_campos(grupo, fila_nueva, campos_ref)
 
         def on_cancel():
-            print("[_agregar_prestamo_global.on_cancel] cancelado")
             try:
                 self.datos_tabla[grupo].remove(fila_nueva)
             except ValueError:
@@ -276,7 +293,6 @@ class PrestamosContainer(ft.Container):
         self._actualizar_vista()
 
     def _agregar_prestamo_a_empleado(self, numero_nomina: int):
-        print(f"[_agregar_prestamo_a_empleado] click empleado {numero_nomina}")
         scroll_key = f"prestamos_{numero_nomina}"
         page = self.page
         campos_ref = {}
@@ -292,11 +308,9 @@ class PrestamosContainer(ft.Container):
         }
 
         def on_save():
-            print(f"[_agregar_prestamo_a_empleado.on_save] guardando prestamo de {numero_nomina}...")
             self._guardar_fila_desde_campos(f"nuevo_{numero_nomina}", fila_nueva, campos_ref)
 
         def on_cancel():
-            print(f"[_agregar_prestamo_a_empleado.on_cancel] cancelado prestamo de {numero_nomina}")
             self._actualizar_vista()
 
         fila_nueva = self.row_helper.build_fila_nueva(
@@ -309,6 +323,7 @@ class PrestamosContainer(ft.Container):
             grupo_empleado=None,
         )
 
+        # Insertamos arriba para que sea visible inmediato
         self.tiles_column.controls.insert(
             0,
             ft.ExpansionTile(
@@ -342,6 +357,7 @@ class PrestamosContainer(ft.Container):
 
         fecha_sql = self.validador.convertir_fecha_mysql(fecha_txt)
 
+        # grupo_empleado automático
         if grupo_key == "prestamos_global":
             grupo_empleado = "GLOBAL"
         elif grupo_key.startswith("nuevo_"):
@@ -356,9 +372,7 @@ class PrestamosContainer(ft.Container):
             "grupo_empleado": grupo_empleado,
         }
 
-        print("[_guardar_fila_desde_campos] insertando:", datos)
         res = self._insertar_prestamo(datos)
-        print("[_guardar_fila_desde_campos] resultado insert:", res)
 
         if res.get("status") == "success":
             ModalAlert.mostrar_info("Éxito", "Préstamo guardado correctamente.")
@@ -395,19 +409,21 @@ class PrestamosContainer(ft.Container):
         ModalAlert.mostrar_info("Editar", "Edición no implementada aún en esta vista.")
 
     def _ver_pagos_de_prestamo(self, prestamo: dict, numero_nomina: int):
-        # si quieres modo simulación (sin guardar real):
+        pid = prestamo.get("id_prestamo") or prestamo.get(self.E.PRESTAMO_ID.value)
+        if not pid:
+            ModalAlert.mostrar_info("Error", "Préstamo inválido.")
+            return
+
+        hoy = date.today().strftime("%Y-%m-%d")
         pago_data = {
             "numero_nomina": int(numero_nomina),
-            "id_pago": None,                  # ← None => simulación (no guarda en BD)
+            "id_pago": None,                 # el modal creará un pago de nómina si es necesario
             "estado": "pendiente",
-            "fecha_generacion": date.today().strftime("%Y-%m-%d"),
-            "fecha_pago": date.today().strftime("%Y-%m-%d"),
+            "fecha_generacion": hoy,
+            "fecha_pago": hoy,
             "contexto": "prestamos",
-            "id_prestamo": int(prestamo.get("id_prestamo")),
+            "id_prestamo": int(pid),
         }
-
-        # si quieres que GUARDE realmente desde préstamos:
-        # pago_data["id_pago"] = <id_pago_nomina_valido>
 
         def on_confirmar(_):
             self._actualizar_vista()
@@ -415,6 +431,25 @@ class PrestamosContainer(ft.Container):
         modal = ModalPrestamos(pago_data=pago_data, on_confirmar=on_confirmar)
         modal.mostrar()
 
+    def _confirmar_eliminar_pago(self, pago: dict, id_prestamo: int, numero_nomina: int):
+        pid = pago.get(EP.ID_PAGO_PRESTAMO.value) or pago.get("id_pago_prestamo")
+        if not pid:
+            ModalAlert.mostrar_info("Error", "No se pudo determinar el ID del pago.")
+            return
+
+        def on_confirm():
+            res = self.loan_payment_model.delete_by_id_pago(int(pid))
+            if res.get("status") == "success":
+                ModalAlert.mostrar_info("Eliminado", f"Pago ID {pid} eliminado correctamente.")
+                self._actualizar_vista()
+            else:
+                ModalAlert.mostrar_info("Error", res.get("message", "No se pudo eliminar el pago."))
+
+        ModalAlert(
+            title_text="¿Eliminar pago?",
+            message=f"Esta acción no se puede deshacer.\nPago ID: {pid}",
+            on_confirm=on_confirm,
+        ).mostrar()
 
     def _importar(self, _):
         ModalAlert.mostrar_info("Importar", "Importación no implementada.")

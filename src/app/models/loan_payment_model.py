@@ -452,3 +452,182 @@ class LoanPaymentModel:
             return {"status": "success", "message": f"Pago ID {id_pago} eliminado correctamente."}
         except Exception as ex:
             return {"status": "error", "message": f"Error al eliminar el pago: {ex}"}
+
+
+    # --- NUEVO: info completa de columnas de 'pagos'
+    def _pagos_columns_info(self) -> dict:
+        """
+        Devuelve un dict {col: {data_type, is_nullable, column_default}} para la tabla 'pagos'.
+        """
+        try:
+            rows = self.db.get_data_list(
+                """
+                SELECT COLUMN_NAME, DATA_TYPE, IS_NULLABLE, COLUMN_DEFAULT
+                FROM information_schema.COLUMNS
+                WHERE TABLE_SCHEMA=%s AND TABLE_NAME='pagos'
+                """,
+                (self.db.database,),
+                dictionary=True,
+            ) or []
+            info = {}
+            for r in rows:
+                info[r["COLUMN_NAME"]] = {
+                    "data_type": (r["DATA_TYPE"] or "").lower(),
+                    "is_nullable": (r["IS_NULLABLE"] or "").upper() == "YES",
+                    "column_default": r["COLUMN_DEFAULT"],
+                }
+            return info
+        except Exception as ex:
+            print(f"❌ _pagos_columns_info error: {ex}")
+            return {}
+
+
+    def ensure_id_pago_nomina(self, numero_nomina: int, fecha: str, extra_values: dict | None = None) -> int | None:
+        """
+        Devuelve un id_pago_nomina válido. Si no existe para ese empleado (y fecha),
+        crea un registro mínimo en 'pagos' rellenando TODAS las columnas NOT NULL
+        sin default con valores sensatos. Puedes forzar valores con extra_values.
+        """
+        try:
+            from datetime import datetime as _dt
+            info = self._pagos_columns_info()
+            cols = set(info.keys())
+            extra_values = extra_values or {}
+
+            # 1) Reutilizar uno pendiente del día (si existen esas columnas)
+            where_parts = ["numero_nomina=%s"] if "numero_nomina" in cols else []
+            params = [numero_nomina] if "numero_nomina" in cols else []
+
+            # elegir columna de fecha disponible
+            fecha_col = None
+            for c in ("fecha_pago", "fecha", "fecha_nomina"):
+                if c in cols:
+                    fecha_col = c
+                    break
+            if fecha_col:
+                where_parts.append(f"{fecha_col}=%s")
+                params.append(fecha)
+
+            if "estado" in cols:
+                where_parts.append("estado='pendiente'")
+
+            if where_parts:
+                q_sel = f"SELECT id_pago_nomina FROM pagos WHERE {' AND '.join(where_parts)} ORDER BY id_pago_nomina DESC LIMIT 1"
+                row = self.db.get_data(q_sel, tuple(params), dictionary=True)
+                if row and row.get("id_pago_nomina"):
+                    return int(row["id_pago_nomina"])
+
+            # 2) Crear uno nuevo: preparar valores
+            insert_vals: dict = {}
+
+            # siempre que exista:
+            if "numero_nomina" in cols:
+                insert_vals["numero_nomina"] = numero_nomina
+
+            if fecha_col:
+                insert_vals[fecha_col] = fecha
+
+            if "estado" in cols:
+                insert_vals["estado"] = "pendiente"
+
+            if "observaciones" in cols:
+                insert_vals["observaciones"] = "Creado automáticamente para registrar pago de préstamo"
+
+            # mes / año si existen:
+            try:
+                d = _dt.strptime(fecha, "%Y-%m-%d")
+                if "mes" in cols and "mes" not in insert_vals:
+                    insert_vals["mes"] = d.month
+                if {"anio", "año", "year"} & cols:
+                    if "anio" in cols and "anio" not in insert_vals:
+                        insert_vals["anio"] = d.year
+                    if "año" in cols and "año" not in insert_vals:
+                        insert_vals["año"] = d.year
+                    if "year" in cols and "year" not in insert_vals:
+                        insert_vals["year"] = d.year
+            except Exception:
+                pass
+
+            # Rellenar TODAS las NOT NULL sin default que falten
+            for col, meta in info.items():
+                if col in ("id_pago_nomina",):  # PK autoincrement
+                    continue
+                if col in insert_vals:
+                    continue
+                if col in extra_values:
+                    insert_vals[col] = extra_values[col]
+                    continue
+
+                is_nullable = meta["is_nullable"]
+                has_default = meta["column_default"] is not None
+                if is_nullable or has_default:
+                    continue  # no necesitamos setearlo
+
+                dt = meta["data_type"]
+
+                # Heurísticas por nombre
+                if col == "estado":
+                    insert_vals[col] = "pendiente"
+                elif "obs" in col or "nota" in col:
+                    insert_vals[col] = ""
+                elif col in {"mes", "month"}:
+                    try:
+                        insert_vals[col] = d.month
+                    except Exception:
+                        insert_vals[col] = 0
+                elif col in {"anio", "año", "year"}:
+                    try:
+                        insert_vals[col] = d.year
+                    except Exception:
+                        insert_vals[col] = 0
+                # Fechas
+                elif dt in {"date"}:
+                    insert_vals[col] = fecha
+                elif dt in {"datetime", "timestamp"}:
+                    insert_vals[col] = f"{fecha} 00:00:00"
+                # Numéricos → 0 (incluye DECIMAL, INT, BIGINT, DOUBLE, FLOAT)
+                elif dt in {"decimal", "int", "bigint", "double", "float", "tinyint", "smallint", "mediumint"}:
+                    insert_vals[col] = 0
+                # Default texto vacío para VARCHAR/CHAR
+                elif dt in {"varchar", "char", "text", "mediumtext", "longtext"}:
+                    insert_vals[col] = ""
+                else:
+                    # fallback general
+                    insert_vals[col] = 0
+
+            # Mezclar overrides del caller
+            for k, v in extra_values.items():
+                insert_vals[k] = v
+
+            # Armar INSERT
+            if not insert_vals:
+                # como mínimo necesitamos algo; si no hay columnas coincidentes, abortar
+                print("⚠️ ensure_id_pago_nomina: no hay columnas compatibles para insertar.")
+                return None
+
+            cols_sql = ", ".join(insert_vals.keys())
+            ph = ", ".join(["%s"] * len(insert_vals))
+            q_ins = f"INSERT INTO pagos ({cols_sql}) VALUES ({ph})"
+            self.db.run_query(q_ins, tuple(insert_vals.values()))
+
+            # ID recién creado
+            last = self.db.get_data("SELECT LAST_INSERT_ID() AS id", dictionary=True)
+            if last and last.get("id"):
+                return int(last["id"])
+
+            # Fallback si la conexión no comparte sesión
+            where_back = []
+            params_back = []
+            if "numero_nomina" in cols:
+                where_back.append("numero_nomina=%s")
+                params_back.append(numero_nomina)
+            q_last = "SELECT id_pago_nomina FROM pagos"
+            if where_back:
+                q_last += " WHERE " + " AND ".join(where_back)
+            q_last += " ORDER BY id_pago_nomina DESC LIMIT 1"
+            row2 = self.db.get_data(q_last, tuple(params_back), dictionary=True)
+            return int(row2["id_pago_nomina"]) if row2 and row2.get("id_pago_nomina") else None
+
+        except Exception as ex:
+            print(f"❌ ensure_id_pago_nomina error: {ex}")
+            return None

@@ -1,107 +1,158 @@
 import flet as ft
 from typing import Callable, Optional, List
 from app.core.enums.e_pagos_prestamos import E_PAGOS_PRESTAMO as E
-from app.helpers.boton_factory import crear_boton_editar, crear_boton_eliminar
-
-
-# --------------------- Columnas (homogeneizadas) ---------------------
-
-class PagosPrestamosColumnHelper:
-    """
-    Columnas estándar para la DataTable de pagos de préstamos.
-    - `get_columnas()` es alias de `construir_columnas_tabla()` para compatibilidad.
-    - `include_acciones`: mostrar/ocultar columna de acciones.
-    """
-
-    @staticmethod
-    def get_columnas(include_acciones: bool = True) -> List[ft.DataColumn]:
-        return PagosPrestamosColumnHelper.construir_columnas_tabla(include_acciones=include_acciones)
-
-    @staticmethod
-    def construir_columnas_tabla(include_acciones: bool = True) -> List[ft.DataColumn]:
-        cols: List[ft.DataColumn] = [
-            ft.DataColumn(ft.Text("ID"), numeric=True, tooltip="ID del pago"),
-            ft.DataColumn(ft.Text("Fecha programada"), tooltip="Fecha programada (DD/MM/YYYY)"),
-            ft.DataColumn(ft.Text("Fecha real"), tooltip="Fecha real (DD/MM/YYYY)"),
-            ft.DataColumn(ft.Text("Pagado"), numeric=True, tooltip="Monto pagado"),
-            ft.DataColumn(ft.Text("Saldo restante"), numeric=True, tooltip="Saldo restante después del pago"),
-            ft.DataColumn(ft.Text("Saldo + interés"), numeric=True, tooltip="Saldo restante más interés aplicado"),
-            ft.DataColumn(ft.Text("Interés (%)"), numeric=True, tooltip="Porcentaje de interés aplicado"),
-            ft.DataColumn(ft.Text("Observaciones"), tooltip="Notas u observaciones del pago"),
-        ]
-        if include_acciones:
-            cols.append(ft.DataColumn(ft.Text("Acciones"), tooltip="Editar / Eliminar"))
-        return cols
-
-
-# --------------------- Filas (UI de pagos) ---------------------
+from app.helpers.boton_factory import (
+    crear_boton_editar,
+    crear_boton_eliminar,
+)
 
 class PagosPrestamosRowHelper:
+    """
+    Helper para listar pagos de préstamo sin DataTable (compatible Flet 0.24.0).
+    - Mantiene API amigable con tu contenedor: build_fila_pago(...) y get_columnas().
+    - Recomendado usar build_list(...) para render completo (header + filas).
+    """
+
+    # Anchos de “columnas” (alineados al estilo de PrestamosRowHelper)
+    W_ID = 80
+    W_FECHA = 120
+    W_NUM = 110
+    W_SALDO = 120
+    W_SALDOI = 130
+    W_INTERES = 90
+    W_OBS = 340
+    W_ACC = 130
+
+    def _fmt_float(self, v, d=0.0) -> float:
+        try:
+            return float(v)
+        except Exception:
+            return float(d)
+
+    def _cell(self, text: str, w: int | None = None, bold: bool = False, tooltip: str | None = None) -> ft.Control:
+        t = ft.Text(text, weight=ft.FontWeight.BOLD if bold else None, size=12, no_wrap=True)
+        c = ft.Container(t, width=w, padding=ft.padding.symmetric(horizontal=4, vertical=8))
+        if tooltip:
+            return ft.Tooltip(message=tooltip, content=c)
+        return c
+
+    # ------------------ Cabecera ------------------
+
+    def build_header(self) -> ft.Control:
+        return ft.Container(
+            bgcolor=ft.colors.SURFACE_VARIANT,
+            border_radius=10,
+            padding=4,
+            content=ft.Row(
+                [
+                    self._cell("ID", self.W_ID, True),
+                    self._cell("Fecha prog.", self.W_FECHA, True),
+                    self._cell("Fecha real", self.W_FECHA, True),
+                    self._cell("Pagado", self.W_NUM, True),
+                    self._cell("Saldo", self.W_SALDO, True),
+                    self._cell("Saldo + interés", self.W_SALDOI, True),
+                    self._cell("Interés (%)", self.W_INTERES, True),
+                    self._cell("Observaciones", self.W_OBS, True),
+                    ft.Container(width=self.W_ACC),
+                ],
+                spacing=0,
+                alignment=ft.MainAxisAlignment.START,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                wrap=False,
+            ),
+        )
+
+    # --------------- Fila individual ----------------
+
     def build_fila_pago(
         self,
         pago: dict,
         editable: bool,
-        on_edit: Optional[Callable] = None,
-        on_delete: Optional[Callable] = None,
-    ) -> ft.DataRow:
+        on_edit: Optional[Callable[[dict], None]] = None,
+        on_delete: Optional[Callable[[dict], None]] = None,
+    ) -> ft.Control:
         """
-        Construye una fila visual para un pago de préstamo.
-        Si `editable` es True, se muestran botones de editar y/o eliminar.
+        Devuelve una fila visual de pago (Container) lista para insertar en un Column.
+        Mantiene firma usada por tu contenedor.
         """
-
-        def _to_float(v, default=0.0) -> float:
-            try:
-                return float(v)
-            except Exception:
-                return float(default)
-
-        def _to_text(v, default="-") -> str:
-            return str(v) if (v is not None and v != "") else default
-
-        # Parseo con fallback
-        try:
-            pago_id = pago.get(E.ID_PAGO_PRESTAMO.value, "-")
-            fecha_gen = pago.get(E.PAGO_FECHA_PAGO.value, "-")
-            fecha_real = pago.get(E.PAGO_FECHA_REAL.value, "-")
-            monto_pagado = _to_float(pago.get(E.PAGO_MONTO_PAGADO.value, 0))
-            interes_aplicado = _to_float(pago.get(E.PAGO_INTERES_APLICADO.value, 0))
-            interes_porcentaje = _to_text(pago.get(E.PAGO_INTERES_PORCENTAJE.value, "0"))
-            saldo_restante = _to_float(pago.get(E.PAGO_SALDO_RESTANTE.value, 0))
-            observaciones = _to_text(pago.get(E.PAGO_OBSERVACIONES.value, ""))
-            saldo_con_interes = saldo_restante + interes_aplicado
-        except Exception as ex:
-            print(f"❌ Error al construir fila de pago: {ex}")
-            pago_id = "-"
-            fecha_gen = fecha_real = "-"
-            monto_pagado = 0.0
-            interes_aplicado = 0.0
-            interes_porcentaje = "0"
-            saldo_restante = 0.0
-            saldo_con_interes = 0.0
-            observaciones = "-"
+        # Lectura segura de campos
+        pid = pago.get(E.ID_PAGO_PRESTAMO.value, "-")
+        fecha_prog = str(pago.get(E.PAGO_FECHA_PAGO.value, "-"))
+        fecha_real = str(pago.get(E.PAGO_FECHA_REAL.value, "-"))
+        pagado = self._fmt_float(pago.get(E.PAGO_MONTO_PAGADO.value, 0))
+        interes_apl = self._fmt_float(pago.get(E.PAGO_INTERES_APLICADO.value, 0))
+        interes_pct = str(pago.get(E.PAGO_INTERES_PORCENTAJE.value, "0") or "0")
+        saldo_rest = self._fmt_float(pago.get(E.PAGO_SALDO_RESTANTE.value, 0))
+        obs_raw = str(pago.get(E.PAGO_OBSERVACIONES.value, "") or "")
+        obs_short = obs_raw if len(obs_raw) <= 60 else obs_raw[:57] + "…"
+        saldo_mas_interes = saldo_rest + interes_apl
 
         # Acciones
-        acciones: List[ft.Control] = []
+        acciones: list[ft.Control] = []
         if editable:
             if on_edit:
-                acciones.append(crear_boton_editar(lambda e: on_edit(pago)))
+                acciones.append(crear_boton_editar(lambda e, p=pago: on_edit(p)))
             if on_delete:
-                acciones.append(crear_boton_eliminar(lambda e: on_delete(pago)))
+                acciones.append(crear_boton_eliminar(lambda e, p=pago: on_delete(p)))
 
-        return ft.DataRow(
-            cells=[
-                ft.DataCell(ft.Text(str(pago_id))),
-                ft.DataCell(ft.Text(_to_text(fecha_gen))),
-                ft.DataCell(ft.Text(_to_text(fecha_real))),
-                ft.DataCell(ft.Text(f"${monto_pagado:.2f}")),
-                ft.DataCell(ft.Text(f"${saldo_restante:.2f}")),
-                ft.DataCell(ft.Text(f"${saldo_con_interes:.2f}")),
-                ft.DataCell(ft.Text(f"{interes_porcentaje}%")),
-                ft.DataCell(ft.Text(_to_text(observaciones))),
-                ft.DataCell(ft.Row(acciones, spacing=5)),
-            ]
+        return ft.Container(
+            border=ft.border.only(bottom=ft.border.BorderSide(1, ft.colors.GREY_200)),
+            padding=0,
+            content=ft.Row(
+                [
+                    self._cell(str(pid), self.W_ID),
+                    self._cell(fecha_prog, self.W_FECHA),
+                    self._cell(fecha_real, self.W_FECHA),
+                    self._cell(f"${pagado:.2f}", self.W_NUM),
+                    self._cell(f"${saldo_rest:.2f}", self.W_SALDO),
+                    self._cell(f"${saldo_mas_interes:.2f}", self.W_SALDOI),
+                    self._cell(f"{interes_pct}%", self.W_INTERES),
+                    self._cell(obs_short, self.W_OBS, tooltip=obs_raw if obs_short.endswith("…") else None),
+                    ft.Container(ft.Row(acciones, spacing=6), width=self.W_ACC, alignment=ft.alignment.center_right),
+                ],
+                spacing=0,
+                alignment=ft.MainAxisAlignment.START,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                wrap=False,
+            ),
         )
 
-    # Back-compat con tu contenedor actual
+    # --------------- Lista completa ----------------
+
+    def build_list(
+        self,
+        pagos: List[dict],
+        editable: bool,
+        on_edit: Optional[Callable[[dict], None]] = None,
+        on_delete: Optional[Callable[[dict], None]] = None,
+        max_height: int | None = 260,
+    ) -> ft.Control:
+        filas: list[ft.Control] = [self.build_header()]
+        for p in pagos:
+            filas.append(self.build_fila_pago(p, editable=editable, on_edit=on_edit, on_delete=on_delete))
+
+        body = ft.Column(filas, spacing=0)
+        if max_height:
+            return ft.Container(
+                content=body,
+                height=max_height,
+                clip_behavior=ft.ClipBehavior.HARD_EDGE,
+                expand=False,
+                bgcolor=ft.colors.TRANSPARENT,
+            )
+        return body
+
+    # --------- Compat: API antigua de columnas ---------
     def get_columnas(self) -> List[ft.DataColumn]:
-        return PagosPrestamosColumnHelper.get_columnas(include_acciones=True)
+        # Conservado para no romper imports existentes, aunque ya no usamos DataTable.
+        return [
+            ft.DataColumn(ft.Text("ID")),
+            ft.DataColumn(ft.Text("Fecha prog.")),
+            ft.DataColumn(ft.Text("Fecha real")),
+            ft.DataColumn(ft.Text("Pagado")),
+            ft.DataColumn(ft.Text("Saldo")),
+            ft.DataColumn(ft.Text("Saldo + interés")),
+            ft.DataColumn(ft.Text("Interés (%)")),
+            ft.DataColumn(ft.Text("Observaciones")),
+            ft.DataColumn(ft.Text("Acciones")),
+        ]
