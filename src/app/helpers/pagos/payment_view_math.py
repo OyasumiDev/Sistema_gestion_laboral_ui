@@ -1,8 +1,6 @@
 # helpers/pagos/payment_view_math.py
-from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Optional, Tuple, Dict, Any
+from typing import Optional, Tuple, Dict, Any, TypedDict
 
 from app.models.discount_model import DiscountModel
 from app.models.descuento_detalles_model import DescuentoDetallesModel
@@ -10,15 +8,14 @@ from app.models.loan_payment_model import LoanPaymentModel
 from app.models.detalles_pagos_prestamo_model import DetallesPagosPrestamoModel
 
 
-@dataclass
-class RowCalc:
+class RowCalcDict(TypedDict):
     """
-    Resultado estándar para pintar una fila en la tabla:
-    - descuentos_view: lo que se debe mostrar (confirmados si existen; si no, borrador)
-    - prestamos_view: confirmados + pendientes (detalles)
-    - total_vista: monto_base - descuentos_view - prestamos_view
-    - efectivo: efectivo resultante tras depósito_ui y redondeo a 50
-    - saldo_ajuste: diferencia introducida por el redondeo (puede ser +/-) o base negativa
+    Estructura simple para pintar fila:
+      - descuentos_view: total de descuentos para mostrar
+      - prestamos_view: total de préstamos (aplicados + pendientes)
+      - total_vista: monto_base - descuentos_view - prestamos_view (>= 0)
+      - efectivo: efectivo tras depósito_ui (con o sin redondeo a 50)
+      - saldo_ajuste: ajuste por redondeo (±) o remanente si depósito cubre todo
     """
     descuentos_view: float
     prestamos_view: float
@@ -30,16 +27,16 @@ class RowCalc:
 class PaymentViewMath:
     """
     Helper matemático para el área de Pagos:
-    - Calcula descuentos/préstamos a MOSTRAR en la UI (sin tocar BD de pagos).
-    - Recalcula en tiempo real el efectivo/ajustes con redondeo a 50.
-    - Evita “doble descuento/préstamo” (siempre parte de monto_base).
+      - Calcula lo que la UI debe mostrar sin tocar BD de pagos.
+      - Recalcula en tiempo real efectivo/ajustes con redondeo a 50 (opcional).
+      - Evita “doble resta” partiendo SIEMPRE de monto_base.
 
     Reglas:
-    - Descuentos a mostrar:
-        - Si hay confirmados (tabla 'descuentos') -> usar confirmados
-        - Si no hay confirmados -> usar borrador (tabla 'descuento_detalles')
-    - Préstamos a mostrar:
-        - Confirmados (pagos_prestamo por id_pago_nomina) + pendientes (detalles de préstamos)
+      - Descuentos (view):
+          * Si existen confirmados -> usar confirmados
+          * Si no, usar borrador (descuento_detalles)
+      - Préstamos (view):
+          * Aplicados (pagos_prestamo) + Pendientes (detalles_pagos_prestamo)
     """
 
     def __init__(
@@ -54,8 +51,7 @@ class PaymentViewMath:
         self.loan_payment_model = loan_payment_model
         self.detalles_prestamo_model = detalles_prestamo_model
 
-        # Para acceder a nombres de columnas del borrador sin hardcodear strings
-        # (los definimos en el modelo de detalles que rehicimos).
+        # Columnas del borrador (por si tienes alias en el modelo)
         self._col_imss = getattr(detalles_desc_model, "COL_MONTO_IMSS", "monto_imss")
         self._col_trans = getattr(detalles_desc_model, "COL_MONTO_TRANSPORTE", "monto_transporte")
         self._col_extra = getattr(detalles_desc_model, "COL_MONTO_EXTRA", "monto_extra")
@@ -66,8 +62,8 @@ class PaymentViewMath:
     def total_descuentos_view(self, id_pago_nomina: int) -> float:
         """
         Total de descuentos a mostrar por pago:
-        - Confirmados si existen (tabla 'descuentos')
-        - Si no, valores del borrador (tabla 'descuento_detalles')
+          - Confirmados si existen (tabla 'descuentos')
+          - Si no, valores del borrador (tabla 'descuento_detalles')
         """
         try:
             if self.discount_model.tiene_descuentos_guardados(id_pago_nomina):
@@ -75,9 +71,9 @@ class PaymentViewMath:
 
             det = self.detalles_desc_model.obtener_por_id_pago(id_pago_nomina) or {}
             return (
-                self._to_float(det.get(self._col_imss)) +
-                self._to_float(det.get(self._col_trans)) +
-                self._to_float(det.get(self._col_extra))
+                self._to_float(det.get(self._col_imss))
+                + self._to_float(det.get(self._col_trans))
+                + self._to_float(det.get(self._col_extra))
             )
         except Exception:
             return 0.0
@@ -85,7 +81,7 @@ class PaymentViewMath:
     def total_prestamos_view(self, id_pago_nomina: int) -> float:
         """
         Total de préstamos a mostrar por pago:
-        - Confirmados (pagos_prestamo) + Pendientes (detalles_pagos_prestamo)
+          - Confirmados (pagos_prestamo) + Pendientes (detalles_pagos_prestamo)
         """
         try:
             confirmados = float(self.loan_payment_model.get_total_prestamos_por_pago(id_pago_nomina) or 0.0)
@@ -103,9 +99,9 @@ class PaymentViewMath:
     @staticmethod
     def redondear_a_50(valor: float) -> Tuple[float, float]:
         """
-        Redondea al múltiplo de 50 más cercano con tu regla:
-        - Si sobra >= 25, sube; si no, baja.
-        Retorna (valor_redondeado, ajuste) donde ajuste es la diferencia aplicada (puede ser +/-).
+        Redondea al múltiplo de 50 más cercano:
+          - Si sobrante >= 25, sube; si no, baja.
+        Retorna (valor_redondeado, ajuste_aplicado).
         """
         try:
             v = float(valor)
@@ -130,12 +126,12 @@ class PaymentViewMath:
         prestamos_view: float,
         deposito_ui: float,
         aplicar_redondeo_50: bool = True,
-    ) -> RowCalc:
+    ) -> RowCalcDict:
         """
-        Recalcula los valores para la UI partiendo SIEMPRE de monto_base (evita doble resta).
-        - total_vista = max(0, monto_base - descuentos_view - prestamos_view)
-        - efectivo = round50(max(0, total_vista - deposito_ui))
-        - saldo_ajuste = ajuste por redondeo (o el remanente negativo sin redondeo)
+        Recalcula valores para UI partiendo de monto_base:
+          - total_vista = max(0, monto_base - descuentos_view - prestamos_view)
+          - efectivo = round50(max(0, total_vista - deposito_ui)) (opcional)
+          - saldo_ajuste = ajuste por redondeo o remanente si depósito >= total_vista
         """
         try:
             mb = float(monto_base)
@@ -143,15 +139,13 @@ class PaymentViewMath:
             prest = float(prestamos_view)
             dep = max(0.0, float(deposito_ui))
         except Exception:
-            # si algo falla, no truenes la UI
             mb, desc, prest, dep = 0.0, 0.0, 0.0, 0.0
 
         total_vista = max(0.0, mb - desc - prest)
         base_efectivo = total_vista - dep
 
         if base_efectivo <= 0:
-            # No hay efectivo; saldo_ajuste es el remanente (negativo o cero)
-            return RowCalc(
+            return RowCalcDict(
                 descuentos_view=round(desc, 2),
                 prestamos_view=round(prest, 2),
                 total_vista=round(total_vista, 2),
@@ -161,7 +155,7 @@ class PaymentViewMath:
 
         if aplicar_redondeo_50:
             efectivo, ajuste = self.redondear_a_50(base_efectivo)
-            return RowCalc(
+            return RowCalcDict(
                 descuentos_view=round(desc, 2),
                 prestamos_view=round(prest, 2),
                 total_vista=round(total_vista, 2),
@@ -169,8 +163,7 @@ class PaymentViewMath:
                 saldo_ajuste=round(ajuste, 2),
             )
         else:
-            # Sin redondeo
-            return RowCalc(
+            return RowCalcDict(
                 descuentos_view=round(desc, 2),
                 prestamos_view=round(prest, 2),
                 total_vista=round(total_vista, 2),
@@ -189,17 +182,20 @@ class PaymentViewMath:
         key_monto_base: str = "monto_base",
         key_id_pago: str = "id_pago_nomina",
         aplicar_redondeo_50: bool = True,
-    ) -> RowCalc:
+    ) -> RowCalcDict:
         """
-        Calcula todo lo necesario para renderizar una fila dado un registro tal cual
-        lo devuelve PaymentModel.get_all_pagos().
+        Calcula todo lo necesario para renderizar una fila dado un registro
+        como lo devuelve PaymentModel.get_all_pagos().
+        """
+        try:
+            id_pago_nomina = int(pago_row.get(key_id_pago))
+        except Exception:
+            id_pago_nomina = 0
 
-        - Obtiene descuentos_view y prestamos_view vía modelos.
-        - Usa SIEMPRE 'monto_base' del row (no 'monto_total') para evitar doble resta.
-        - Aplica depósito temporal de la UI y (opcional) redondeo a 50.
-        """
-        id_pago_nomina = int(pago_row.get(key_id_pago))
-        monto_base = float(pago_row.get(key_monto_base, 0) or 0)
+        try:
+            monto_base = float(pago_row.get(key_monto_base, 0) or 0)
+        except Exception:
+            monto_base = 0.0
 
         desc_view = self.total_descuentos_view(id_pago_nomina)
         prest_view = self.total_prestamos_view(id_pago_nomina)

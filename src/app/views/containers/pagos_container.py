@@ -1,3 +1,4 @@
+# views/containers/pagos_container.py
 from __future__ import annotations
 
 from datetime import datetime, date
@@ -22,7 +23,8 @@ from app.models.detalles_pagos_prestamo_model import DetallesPagosPrestamoModel
 # Helpers
 from app.helpers.pagos.payment_view_math import PaymentViewMath
 from app.helpers.pagos.pagos_repo import PagosRepo
-from app.helpers.pagos.row_refresh import RowRefresh
+from app.helpers.pagos.row_refresh import PaymentRowRefresh  # tu helper actual de filas
+from app.helpers.pagos.scroll_pagos_helper import PagosScrollHelper  # NUEVO
 
 # Button factory
 from app.helpers.boton_factory import (
@@ -36,7 +38,7 @@ class PagosContainer(ft.Container):
     def __init__(self):
         super().__init__(expand=True, padding=0, alignment=ft.alignment.top_center)
         self.page = AppState().page
-        self._resize_registered = False
+
         # Modelos
         self.payment_model = PaymentModel()
         self.payment_model.crear_sp_horas_trabajadas_para_pagos()
@@ -55,7 +57,8 @@ class PagosContainer(ft.Container):
             loan_payment_model=self.loan_payment_model,
             detalles_prestamo_model=self.detalles_prestamo_model,
         )
-        self.rowui = RowRefresh()
+        self.rowui = PaymentRowRefresh()
+        self.scroll = PagosScrollHelper()   # << scroll helper modular
 
         # Estado UI
         self.depositos_temporales: dict[int, float] = {}
@@ -77,30 +80,13 @@ class PagosContainer(ft.Container):
         self.tabla_pagos = ft.DataTable(columns=[], rows=[], expand=False)
         self.resumen_pagos = ft.Text(value="", weight=ft.FontWeight.BOLD, size=14)
 
-        # ancho mínimo forzado para provocar overflow horizontal
-        self._forced_min_width = max(1720, int(getattr(self.page, "window_width", 1200) or 1200) + 80)
-
         self._build()
         self._cargar_pagos()
 
     # ---------------- UI ----------------
     def _build(self):
-        # ===== 0) Preparación =====
-        # Bandera para no registrar el handler más de una vez
-        if not hasattr(self, "_resize_registered"):
-            self._resize_registered = False
-
-        # ===== 1) Calcular ancho mínimo para overflow horizontal real =====
-        required_min_width = 1780  # suma aprox. de columnas + margen
-        try:
-            win_w = int(self.page.window_width or self.page.width or 1200)
-        except Exception:
-            win_w = 1200
-        # Siempre mayor que el viewport para garantizar overflow H
-        self._forced_min_width = max(required_min_width, win_w + 80)
-
-        # ===== 2) Configuración de la DataTable =====
-        self.tabla_pagos.expand = False           # ¡no expand! permite overflow horizontal
+        # ===== 1) Configuración de la DataTable =====
+        self.tabla_pagos.expand = False           # no expand -> permite overflow horizontal real
         self.tabla_pagos.column_spacing = 12
         self.tabla_pagos.heading_row_height = 40
         self.tabla_pagos.data_row_min_height = 38
@@ -110,7 +96,6 @@ class PagosContainer(ft.Container):
             # Encabezados con ancho fijo para layout estable
             return ft.DataColumn(label=ft.Container(ft.Text(text), width=w))
 
-        # Nombre >= 120 (puedes subirlo a 150 si lo deseas)
         self.tabla_pagos.columns = [
             H("ID Pago",       70),
             H("ID Empleado",   90),
@@ -129,7 +114,7 @@ class PagosContainer(ft.Container):
             H("Estado",        90),
         ]
 
-        # ===== 3) Header / Footer =====
+        # ===== 2) Header / Footer =====
         header_bar = ft.Row(
             controls=[
                 crear_boton_importar(lambda: self._no_impl("Importar")),
@@ -148,64 +133,14 @@ class PagosContainer(ft.Container):
         )
         footer = ft.Container(self.resumen_pagos, padding=10, alignment=ft.alignment.center)
 
-        # ===== 4) Viewport horizontal que LLEGA HASTA ABAJO =====
-        # Contenedor ancho (provoca overflow horizontal) — lo guardamos para actualizar su width en el resize
-        self._wide_table = ft.Container(
-            content=self.tabla_pagos,
-            width=self._forced_min_width,
-            clip_behavior=ft.ClipBehavior.HARD_EDGE,
+        # ===== 3) Scaffold con scroll ALWAYS vía helper (horizontal y vertical) =====
+        self.content = self.scroll.build_scaffold(
+            page=self.page,
+            datatable=self.tabla_pagos,
+            header=header,
+            footer=footer,
+            required_min_width=1780,
         )
-
-        # Viewport horizontal con barra H persistente cuando hay overflow
-        horiz_scroller = ft.Row(
-            controls=[self._wide_table],
-            scroll=ft.ScrollMode.ALWAYS,   # barra H aparece siempre que haya overflow
-            expand=True,                   # ocupa todo el ancho disponible
-        )
-
-        # Área que se EXTIENDE hasta abajo de la pantalla (tomará el espacio remanente del Column)
-        horizontal_area = ft.Container(
-            content=horiz_scroller,
-            expand=True,                   # << CLAVE: crece para llenar la altura restante
-        )
-
-        # ===== 5) Scaffold con scroll V persistente =====
-        self.content = ft.Container(
-            expand=True,
-            padding=20,
-            content=ft.Column(
-                controls=[
-                    header,
-                    ft.Divider(height=1),
-                    horizontal_area,  # ocupa todo el alto restante -> la tabla llega "hasta abajo"
-                    footer,
-                ],
-                expand=True,
-                spacing=12,
-                scroll=ft.ScrollMode.ALWAYS,  # barra vertical persistente
-            ),
-        )
-
-        # ===== 6) Handler de resize SEGURO (sin llamar update a controles no montados) =====
-        def _on_resize(e):
-            try:
-                ww = int(self.page.window_width or self.page.width or 1200)
-            except Exception:
-                ww = 1200
-            new_min = max(required_min_width, ww + 80)
-            self._forced_min_width = new_min
-
-            # Solo tocar el control cuando ya está agregado a la page
-            if getattr(self, "_wide_table", None) is not None and self._wide_table.page is not None:
-                self._wide_table.width = new_min
-                # No es necesario self._wide_table.update(); el page.update() basta
-            if self.page:
-                self.page.update()
-
-        # Registrar una sola vez
-        if not self._resize_registered:
-            self.page.on_resized = _on_resize
-            self._resize_registered = True
 
     def _no_impl(self, what: str):
         ModalAlert.mostrar_info("Próximamente", f"La acción '{what}' se implementará más adelante.")
@@ -235,11 +170,13 @@ class PagosContainer(ft.Container):
                 else:
                     deposito_ui = float(self.depositos_temporales.get(id_pago, p.get("pago_deposito", 0.0) or 0.0))
 
+                # ⬇️ IMPORTANTE: payment_view_math ahora retorna dict
                 calc = self.math.recalc_from_pago_row(p, deposito_ui)
 
-                # handlers depósito (escritura libre; re-cálculo en blur/enter)
+                # handlers depósito (escritura libre; re-cálculo se dispara en blur/enter)
                 def _make_on_change(pid: int):
                     def _handler(value: str):
+                        # buffer local: no recalcula ni formatea, solo guarda texto
                         self._deposito_buffer[pid] = value or ""
                     return _handler
 
@@ -251,7 +188,7 @@ class PagosContainer(ft.Container):
                         except Exception:
                             val = 0.0
                         self.depositos_temporales[pid] = val
-                        self._actualizar_fila_pago(pid)
+                        self._actualizar_fila_pago(pid)  # recalcula y pinta solo esa fila
                     return _handler
 
                 # ¿Tiene préstamo activo? (para habilitar / deshabilitar botón)
@@ -259,12 +196,12 @@ class PagosContainer(ft.Container):
 
                 row = self.rowui.build_row(
                     p,
-                    descuentos_value=calc.descuentos_view,
-                    prestamos_value=calc.prestamos_view,
-                    saldo_value=calc.saldo_ajuste,
+                    descuentos_value=calc["descuentos_view"],
+                    prestamos_value=calc["prestamos_view"],
+                    saldo_value=calc["saldo_ajuste"],
                     deposito_value=deposito_ui,
-                    efectivo_value=calc.efectivo,
-                    total_value=calc.total_vista,
+                    efectivo_value=calc["efectivo"],
+                    total_value=calc["total_vista"],
                     esta_pagado=(str(p.get("estado", "")).lower() == "pagado"),
                     on_confirmar=self._guardar_pago_confirmado,
                     on_eliminar=self._eliminar_pago,
@@ -307,18 +244,18 @@ class PagosContainer(ft.Container):
 
             calc = self.math.recalc_from_pago_row(p_db, deposito_ui)
 
-            self.rowui.set_descuentos(row, calc.descuentos_view)
-            self.rowui.set_prestamos(row, calc.prestamos_view)
-            self.rowui.set_saldo(row, calc.saldo_ajuste)
-            self.rowui.set_efectivo(row, calc.efectivo)
-            self.rowui.set_total(row, calc.total_vista)
-            self.rowui.set_deposito_border_color(row, ft.colors.RED if calc.saldo_ajuste < -25 else ft.colors.BLUE)
+            # pintar solo la fila (no perder foco del TextField en edición)
+            self.rowui.set_descuentos(row, calc["descuentos_view"])
+            self.rowui.set_prestamos(row, calc["prestamos_view"])
+            self.rowui.set_saldo(row, calc["saldo_ajuste"])
+            self.rowui.set_efectivo(row, calc["efectivo"])
+            self.rowui.set_total(row, calc["total_vista"])
+            # Borde depósito: rojo si depósito excede el total actual
+            self.rowui.set_deposito_border_color(row, ft.colors.RED if deposito_ui > calc["total_vista"] else None)
 
-            # actualizar SOLO la fila -> no perder foco del TextField
             row.update()
         except Exception as ex:
             print(f"❌ Error al actualizar fila: {ex}")
-
 
     # ------------- Acciones -------------
     def _guardar_pago_confirmado(self, id_pago_nomina: int):
@@ -331,9 +268,12 @@ class PagosContainer(ft.Container):
                 )
 
             if res.get("status") == "success":
+                # Actualiza solo la fila y resumen global
                 row = self.rowui.get_row(self.tabla_pagos, id_pago_nomina)
                 if row:
                     self.rowui.set_estado_pagado(row)
+                    row.update()
+
                 total_pagado = self.repo.total_pagado_confirmado()
                 self.resumen_pagos.value = f"Total pagado: ${float(total_pagado):.2f}"
                 ModalAlert.mostrar_info("Éxito", res.get("message", "Pago confirmado."))
