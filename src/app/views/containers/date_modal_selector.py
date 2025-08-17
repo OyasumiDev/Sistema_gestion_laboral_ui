@@ -17,9 +17,8 @@ class DateModalSelector:
     Selector de fechas para pagos.
     - Solo días DISPONIBLES son clicables.
     - Selección 1..N días sueltos.
-    - Autorrango: si haces dos clics distintos, llena SOLO los días disponibles entre ambos.
-      (si ya estaban todos, hace toggle para des-seleccionar el bloque).
-    - Guardar -> callback on_dates_confirmed(List[date]) con las fechas ORDENADAS.
+    - Autorrango: segundo clic llena los días disponibles del intervalo.
+    - Guardar -> callback on_dates_confirmed(List[date]) con fechas ORDENADAS.
     """
 
     def __init__(
@@ -29,42 +28,47 @@ class DateModalSelector:
         cell_size: int = 40,
         dialog_width: int = 480,
         dialog_height: int = 560,
-        auto_range: bool = True,   # autocompletar intervalo inteligente (sin botón visible)
+        auto_range: bool = True,
     ):
         self.page = AppState().page
         self.on_dates_confirmed = on_dates_confirmed
         self.dialog = ft.AlertDialog(modal=True)
 
-        # Ajustes de UI
         self.cell_size = int(cell_size)
         self.dialog_width = int(dialog_width)
         self.dialog_height = int(dialog_height)
         self.auto_range = bool(auto_range)
 
-        # Estado de calendario
         hoy = datetime.now()
         self.year = hoy.year
         self.month = hoy.month
 
-        # Sets externos
-        self.fechas_bloqueadas: set[date] = set()   # no clicables (gris medio)
-        self.fechas_disponibles: set[date] = set()  # únicas clicables
+        self.fechas_bloqueadas: set[date] = set()
+        self.fechas_disponibles: set[date] = set()
 
-        # Selección
         self.seleccionadas: set[date] = set()
-        self._anchor: date | None = None  # último clic para autorrango
+        self._anchor: date | None = None
 
     # ------------------ API pública ------------------
 
     def set_fechas_bloqueadas(self, fechas):
-        """Lista/iterable de date o 'YYYY-MM-DD' que se muestran en gris y no se pueden elegir."""
         self.fechas_bloqueadas = set(self._normalize_dates(fechas))
+        self._sanitize_selection()   # ← limpia verdes fuera de reglas
 
     def set_fechas_disponibles(self, fechas):
-        """Lista/iterable de date o 'YYYY-MM-DD' que SÍ se pueden pagar (clicables)."""
         self.fechas_disponibles = set(self._normalize_dates(fechas))
+        self._sanitize_selection()   # ← limpia verdes fuera de reglas
 
-    def abrir_dialogo(self):
+    def reset(self):
+        """Limpia selección y ancla (útil al reabrir)."""
+        self.seleccionadas.clear()
+        self._anchor = None
+
+    def abrir_dialogo(self, *, reset_selection: bool = True):
+        # ← Limpia selección al abrir, para no arrastrar verdes del uso anterior
+        if reset_selection:
+            self.reset()
+
         if self.dialog not in self.page.overlay:
             self.page.overlay.append(self.dialog)
         self._reconstruir()
@@ -104,21 +108,20 @@ class DateModalSelector:
 
                 f_actual = date(self.year, self.month, dia)
 
-                clickable = False
-                bgcolor = None
-                text_color = ft.colors.BLACK
+                # REGLA NUEVA: clicable = disponible Y NO bloqueada
+                is_disponible = f_actual in self.fechas_disponibles
+                is_bloqueada = f_actual in self.fechas_bloqueadas
+                clickable = is_disponible and not is_bloqueada
 
-                if f_actual in self.fechas_bloqueadas:
+                if is_bloqueada:
                     bgcolor = ft.colors.GREY_300
                     text_color = ft.colors.BLACK45
-                    clickable = False
-                elif not self.fechas_disponibles or (f_actual in self.fechas_disponibles):
-                    clickable = True
+                elif clickable:
                     bgcolor = ft.colors.GREEN if f_actual in self.seleccionadas else None
+                    text_color = ft.colors.BLACK
                 else:
                     bgcolor = ft.colors.GREY_100
                     text_color = ft.colors.BLACK38
-                    clickable = False
 
                 box = ft.Container(
                     width=self.cell_size,
@@ -146,7 +149,7 @@ class DateModalSelector:
 
         botones = ft.Row(
             [
-                ft.TextButton("Cancelar", on_click=lambda e: self.cerrar_dialogo()),
+                ft.TextButton("Cancelar", on_click=lambda e: self._on_cancel()),
                 ft.ElevatedButton("Guardar", on_click=lambda e: self._guardar_fechas()),
             ],
             alignment="end",
@@ -164,31 +167,33 @@ class DateModalSelector:
 
     # ------------------ Interacción ------------------
 
+    def _on_cancel(self):
+        # Limpia selección al cerrar para que no queden verdes “pegados”
+        self.reset()
+        self.cerrar_dialogo()
+
     def _toggle_fecha(self, f: date):
-        # 1) toggle single
+        # seguridad extra: solo permitir toggle si sigue siendo clicable
+        if not (f in self.fechas_disponibles and f not in self.fechas_bloqueadas):
+            return
+
         if not self.auto_range or self._anchor is None or f == self._anchor:
             if f in self.seleccionadas:
                 self.seleccionadas.remove(f)
-                # si quitamos el anchor actual, resetea anchor
                 if self._anchor == f:
                     self._anchor = None
             else:
                 self.seleccionadas.add(f)
-                self._anchor = f  # guarda como último clic
+                self._anchor = f
         else:
-            # 2) autorrango: segundo clic distinto =>
             f1, f2 = (self._anchor, f) if self._anchor < f else (f, self._anchor)
-            intervalo = [d for d in self._daterange(f1, f2) if d in self.fechas_disponibles]
+            intervalo = [d for d in self._daterange(f1, f2) if d in self.fechas_disponibles and d not in self.fechas_bloqueadas]
             faltantes = [d for d in intervalo if d not in self.seleccionadas]
             if faltantes:
-                # completa los que faltan
                 self.seleccionadas.update(faltantes)
             else:
-                # si ya estaban todos, hace "unselect" del bloque
                 for d in intervalo:
-                    if d in self.seleccionadas:
-                        self.seleccionadas.remove(d)
-            # ancla se mantiene en el último clic para permitir ampliar/reducir
+                    self.seleccionadas.discard(d)
             self._anchor = f
 
         self._reconstruir()
@@ -203,6 +208,8 @@ class DateModalSelector:
         try:
             self.on_dates_confirmed(fechas)
         finally:
+            # Limpia selección después de guardar
+            self.reset()
             self.cerrar_dialogo()
 
     def _cambiar_mes(self, delta: int):
@@ -213,9 +220,8 @@ class DateModalSelector:
         elif self.month < 1:
             self.month = 12
             self.year -= 1
-        # reposiciona anchor si quedó fuera de mes
-        if self._anchor and (self._anchor.year != self.year or self._anchor.month != self.month):
-            self._anchor = None
+        # sanea selección al cambiar de mes (por si verdes quedaron fuera o bloqueados)
+        self._sanitize_selection()
         self._reconstruir()
         if self.page:
             self.page.update()
@@ -243,3 +249,11 @@ class DateModalSelector:
         while cur <= d2:
             yield cur
             cur = date.fromordinal(cur.toordinal() + 1)
+
+    def _sanitize_selection(self):
+        """Quita seleccionadas que no sean disponibles o estén bloqueadas."""
+        if not self.seleccionadas:
+            return
+        validas = {d for d in self.seleccionadas if (d in self.fechas_disponibles and d not in self.fechas_bloqueadas)}
+        if validas != self.seleccionadas:
+            self.seleccionadas = validas

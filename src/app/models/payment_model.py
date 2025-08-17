@@ -200,34 +200,190 @@ class PaymentModel:
         except Exception:
             return False
 
-    # ---------------------------------------------------------------------
-    # Generación de pagos
-    # ---------------------------------------------------------------------
     def generar_pagos_por_rango(self, fecha_inicio: str, fecha_fin: str) -> Dict[str, Any]:
+        """
+        Genera/actualiza UN ÚNICO pago PENDIENTE por empleado para el rango [fecha_inicio, fecha_fin].
+        - Consolida (update) si ya existen pendientes en el rango y elimina los duplicados.
+        - Si hay un 'pagado' en el rango, omite ese empleado (no se reabre).
+        - Fecha de pago del registro consolidado: fecha_fin.
+        """
         try:
-            empleados = self.employee_model.get_all()
-            if not empleados or empleados.get("status") != "success":
-                return {"status": "error", "message": "No se pudieron cargar los empleados."}
+            # 1) Horas agregadas por empleado (SP en modo "todos")
+            horas_rs = self.get_total_horas_trabajadas(fecha_inicio, fecha_fin, None)
+            if horas_rs.get("status") != "success":
+                return {"status": "error", "message": "No fue posible obtener horas del SP."}
+            horas_rows = horas_rs.get("data") or []
+            if not horas_rows:
+                return {"status": "success", "message": "No hay horas registradas en el rango."}
 
-            pagos_generados, errores = 0, 0
-            for emp in empleados["data"]:
-                numero_nomina = emp.get("numero_nomina")
-                if not numero_nomina:
-                    continue
+            # Índice de empleados (para sueldo_por_hora / sueldo_diario)
+            empleados_idx = {}
+            try:
+                all_emps = self.employee_model.get_all()
+                if all_emps and all_emps.get("status") == "success":
+                    for e in all_emps["data"]:
+                        num = int(e.get("numero_nomina", 0) or 0)
+                        if num > 0:
+                            empleados_idx[num] = e
+            except Exception:
+                pass
 
-                # Evita duplicar pagos confirmados en el mismo rango de cierre (fecha_fin)
-                if self.existe_pago_para_fecha(numero_nomina, fecha_fin, incluir_pendientes=False):
-                    continue
+            def _get_sueldo_hora(num: int) -> float:
+                emp = empleados_idx.get(num)
+                if not emp:
+                    try:
+                        emp = self.employee_model.get_by_numero_nomina(num) or {}
+                    except Exception:
+                        emp = {}
+                sh = float(emp.get("sueldo_por_hora", 0) or 0)
+                if sh <= 0:
+                    # fallback: sueldo_diario / 8
+                    try:
+                        sd = float(emp.get("sueldo_diario", 0) or 0)
+                        if sd > 0:
+                            sh = round(sd / 8.0, 2)
+                    except Exception:
+                        pass
+                return max(0.0, sh)
 
-                res = self.generar_pago_por_empleado(numero_nomina, fecha_inicio, fecha_fin)
-                if res.get("status") != "success":
+            def _to_hours_dec(hhmmss: str) -> float:
+                try:
+                    h, m, s = map(int, str(hhmmss or "0:0:0").split(":"))
+                    return round(h + m/60.0 + s/3600.0, 2)
+                except Exception:
+                    return 0.0
+
+            generados, actualizados, eliminados, omitidos_pagados, sin_horas_sueldo, errores = 0, 0, 0, 0, 0, 0
+
+            for r in horas_rows:
+                try:
+                    numero_nomina = int(r.get("numero_nomina", 0) or 0)
+                    if numero_nomina <= 0:
+                        continue
+
+                    horas_dec = _to_hours_dec(r.get("total_horas_trabajadas", "00:00:00"))
+                    if horas_dec <= 0:
+                        sin_horas_sueldo += 1
+                        continue
+
+                    sueldo_hora = _get_sueldo_hora(numero_nomina)
+                    if sueldo_hora <= 0:
+                        sin_horas_sueldo += 1
+                        continue
+
+                    monto_base = round(sueldo_hora * horas_dec, 2)
+
+                    # 2) Buscar pagos existentes del empleado en el RANGO
+                    q_exist = f"""
+                        SELECT {self.E.ID_PAGO_NOMINA.value} AS id_pago,
+                            {self.E.FECHA_PAGO.value} AS fecha_pago,
+                            {self.E.ESTADO.value} AS estado
+                        FROM {self.E.TABLE.value}
+                        WHERE {self.E.NUMERO_NOMINA.value}=%s
+                        AND {self.E.FECHA_PAGO.value} BETWEEN %s AND %s
+                        ORDER BY {self.E.FECHA_PAGO.value} ASC, {self.E.ID_PAGO_NOMINA.value} ASC
+                    """
+                    existentes = self.db.get_data_list(q_exist, (numero_nomina, fecha_inicio, fecha_fin), dictionary=True) or []
+
+                    # Si hay algún pagado en el rango -> omitir (no tocamos cierres ya confirmados)
+                    if any(str(x.get("estado", "")).lower() == "pagado" for x in existentes):
+                        omitidos_pagados += 1
+                        continue
+
+                    id_pago_target = None
+
+                    if existentes:
+                        # Prefiere el que ya esté en fecha_fin; sino el más reciente
+                        en_fin = [x for x in existentes if str(x.get("fecha_pago")) == str(fecha_fin)]
+                        if en_fin:
+                            id_pago_target = int(en_fin[-1]["id_pago"])
+                            to_delete = [x for x in existentes if int(x["id_pago"]) != id_pago_target]
+                        else:
+                            id_pago_target = int(existentes[-1]["id_pago"])
+                            to_delete = [x for x in existentes[:-1]]
+
+                        # Eliminar duplicados pendientes del rango (salvo el target)
+                        if to_delete:
+                            ids = tuple(int(x["id_pago"]) for x in to_delete)
+                            # elimina detalles de préstamos pendientes ligados a esos pagos
+                            dq = f"DELETE FROM detalles_pagos_prestamo WHERE {E_DET.ID_PAGO.value} IN ({', '.join(['%s']*len(ids))})"
+                            self.db.run_query(dq, ids)
+                            # elimina pagos
+                            del_q = f"DELETE FROM {self.E.TABLE.value} WHERE {self.E.ID_PAGO_NOMINA.value} IN ({', '.join(['%s']*len(ids))})"
+                            self.db.run_query(del_q, ids)
+                            eliminados += len(ids)
+
+                        # UPDATE del pago target con la base consolidada
+                        self.update_pago(id_pago_target, {
+                            self.E.FECHA_PAGO.value: fecha_fin,
+                            self.E.TOTAL_HORAS_TRABAJADAS.value: horas_dec,
+                            self.E.MONTO_BASE.value: monto_base,
+                            self.E.MONTO_TOTAL.value: monto_base,
+                            self.D.MONTO_DESCUENTO.value: 0.0,
+                            self.P.PRESTAMO_MONTO.value: 0.0,
+                            self.E.SALDO.value: 0.0,
+                            self.E.PAGO_DEPOSITO.value: 0.0,
+                            self.E.PAGO_EFECTIVO.value: monto_base,
+                            self.E.ESTADO.value: "pendiente",
+                        })
+                        actualizados += 1
+
+                    else:
+                        # INSERT único con fecha_fin
+                        ins_q = f"""
+                            INSERT INTO {self.E.TABLE.value} (
+                                {self.E.NUMERO_NOMINA.value},
+                                {self.E.FECHA_PAGO.value},
+                                {self.E.TOTAL_HORAS_TRABAJADAS.value},
+                                {self.E.MONTO_BASE.value},
+                                {self.E.MONTO_TOTAL.value},
+                                {self.D.MONTO_DESCUENTO.value},
+                                {self.P.PRESTAMO_MONTO.value},
+                                {self.E.SALDO.value},
+                                {self.E.PAGO_DEPOSITO.value},
+                                {self.E.PAGO_EFECTIVO.value},
+                                {self.E.ESTADO.value}
+                            ) VALUES (%s, %s, %s, %s, %s, 0, 0, 0, 0, %s, 'pendiente')
+                        """
+                        self.db.run_query(ins_q, (numero_nomina, fecha_fin, horas_dec, monto_base, monto_base, monto_base))
+                        id_pago_target = self.db.get_last_insert_id()
+                        generados += 1
+
+                    # 3) Reaplicar descuentos y préstamos al pago target resultante
+                    try:
+                        self.discount_model.agregar_descuentos_opcionales(
+                            numero_nomina=numero_nomina,
+                            id_pago=id_pago_target,
+                            aplicar_imss=True,
+                            aplicar_transporte=True,
+                            aplicar_comida=True,
+                            estado_comida="media",
+                        )
+                    except Exception:
+                        pass
+
+                    total_desc = float(self.discount_model.get_total_descuentos_por_pago(id_pago_target) or 0.0)
+                    total_prest = self._get_prestamos_totales_para_pago(
+                        id_pago=id_pago_target, numero_nomina=numero_nomina, fecha_fin=fecha_fin
+                    )
+                    monto_final = max(0.0, round(monto_base - total_desc - total_prest, 2))
+
+                    self.update_pago(id_pago_target, {
+                        self.E.MONTO_TOTAL.value: monto_final,
+                        self.D.MONTO_DESCUENTO.value: total_desc,
+                        self.P.PRESTAMO_MONTO.value: total_prest,
+                        self.E.PAGO_EFECTIVO.value: monto_final,  # depósito=0
+                        self.E.SALDO.value: 0.0,
+                    })
+
+                except Exception:
                     errores += 1
-                else:
-                    pagos_generados += 1
+                    continue
 
-            msg = f"{pagos_generados} pagos generados del {fecha_inicio} al {fecha_fin}."
-            if errores:
-                msg += f" {errores} empleados sin horas válidas o con error."
+            msg = (
+                f"{generados} creados, {actualizados} actualizados, {eliminados} duplicados pendientes eliminados, "
+                f"{omitidos_pagados} omitidos (ya pagados), {sin_horas_sueldo} sin horas/sueldo válido."
+            )
             return {"status": "success", "message": msg}
 
         except Exception as ex:
@@ -627,3 +783,179 @@ class PaymentModel:
         except Exception as ex:
             # Log y continuar (no romper confirmación si falla 1 detalle)
             print(f"❌ Error aplicando detalle de préstamo: {ex}")
+
+
+# Dentro de app/models/payment_model.py  (clase PaymentModel)
+
+    def update_pago_completo(
+        self,
+        *,
+        id_pago: int,
+        descuentos: dict | None = None,
+        estado: str | None = None,
+        deposito: float | None = None,
+    ) -> dict:
+        """
+        Persiste cambios del pago de forma atómica (si hay conexión):
+        - Si se provee `descuentos`, confirma los montos en tabla `descuentos`
+            para `id_pago_nomina = id_pago` (delete + insert).
+        - Actualiza `estado` y, si viene, `pago_deposito` en `pagos_nomina`.
+        Retorna: {"status": "success" | "error", "message": str}
+        """
+        # ---- 0) Helpers internos para portabilidad ----
+        def _to_float(v):
+            try:
+                return float(v or 0)
+            except Exception:
+                return 0.0
+
+        def _get_conn_and_cursor():
+            # soporta self.conn / self.db / self._conn (sqlite3/pyodbc/etc.)
+            conn = getattr(self, "conn", None) or getattr(self, "db", None) or getattr(self, "_conn", None)
+            cur = None
+            if conn is not None:
+                try:
+                    cur = conn.cursor()
+                except Exception:
+                    cur = None
+            return conn, cur
+
+        def _execute_direct(cur, sql, params=()):
+            cur.execute(sql, params)
+
+        # Intento 1: usar SQL directo si hay conexión/cursor
+        conn, cur = _get_conn_and_cursor()
+        if cur is not None:
+            try:
+                # BEGIN (algunos drivers requieren manejo manual)
+                try:
+                    _execute_direct(cur, "BEGIN")
+                except Exception:
+                    pass  # muchos drivers inician transacción implícitamente
+
+                # ---- 1) Confirmar descuentos si se proveen ----
+                if descuentos is not None:
+                    # Mapea claves típicas
+                    imss = _to_float(
+                        descuentos.get("monto_imss",
+                        descuentos.get("imss", 0))
+                    )
+                    transporte = _to_float(
+                        descuentos.get("monto_transporte",
+                        descuentos.get("transporte", 0))
+                    )
+                    extra = _to_float(
+                        descuentos.get("monto_extra",
+                        descuentos.get("extra", 0))
+                    )
+                    total_desc = round(imss + transporte + extra, 2)
+
+                    # delete + insert para ser agnóstico del motor
+                    _execute_direct(cur, "DELETE FROM descuentos WHERE id_pago_nomina = ?", (id_pago,))
+                    _execute_direct(
+                        cur,
+                        """
+                        INSERT INTO descuentos
+                            (id_pago_nomina, monto_imss, monto_transporte, monto_extra, total_descuentos, updated_at)
+                        VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                        """,
+                        (id_pago, imss, transporte, extra, total_desc),
+                    )
+
+                # ---- 2) Actualizar estado / depósito en pagos_nomina ----
+                if estado is not None and deposito is not None:
+                    _execute_direct(
+                        cur,
+                        """
+                        UPDATE pagos_nomina
+                        SET estado = ?,
+                            pago_deposito = ?,
+                            updated_at = CURRENT_TIMESTAMP
+                        WHERE id_pago_nomina = ?
+                        """,
+                        (estado, float(deposito), id_pago),
+                    )
+                elif estado is not None:
+                    _execute_direct(
+                        cur,
+                        """
+                        UPDATE pagos_nomina
+                        SET estado = ?,
+                            updated_at = CURRENT_TIMESTAMP
+                        WHERE id_pago_nomina = ?
+                        """,
+                        (estado, id_pago),
+                    )
+                elif deposito is not None:
+                    _execute_direct(
+                        cur,
+                        """
+                        UPDATE pagos_nomina
+                        SET pago_deposito = ?,
+                            updated_at = CURRENT_TIMESTAMP
+                        WHERE id_pago_nomina = ?
+                        """,
+                        (float(deposito), id_pago),
+                    )
+
+                # COMMIT
+                try:
+                    conn.commit()
+                except Exception:
+                    pass
+
+                return {"status": "success", "message": "Pago actualizado correctamente."}
+
+            except Exception as ex:
+                # ROLLBACK si algo falló
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                return {"status": "error", "message": f"Error al actualizar pago: {ex}"}
+
+        # Intento 2: si no hay conexión directa pero existe helper `execute`
+        if hasattr(self, "execute") and callable(getattr(self, "execute")):
+            try:
+                # No podemos garantizar transacción aquí; hacemos operaciones básicas.
+                if descuentos is not None:
+                    imss = _to_float(descuentos.get("monto_imss", descuentos.get("imss", 0)))
+                    transporte = _to_float(descuentos.get("monto_transporte", descuentos.get("transporte", 0)))
+                    extra = _to_float(descuentos.get("monto_extra", descuentos.get("extra", 0)))
+                    total_desc = round(imss + transporte + extra, 2)
+
+                    self.execute("DELETE FROM descuentos WHERE id_pago_nomina = ?", (id_pago,))
+                    self.execute(
+                        """
+                        INSERT INTO descuentos
+                            (id_pago_nomina, monto_imss, monto_transporte, monto_extra, total_descuentos, updated_at)
+                        VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                        """,
+                        (id_pago, imss, transporte, extra, total_desc),
+                    )
+
+                if estado is not None and deposito is not None:
+                    self.execute(
+                        "UPDATE pagos_nomina SET estado=?, pago_deposito=?, updated_at=CURRENT_TIMESTAMP WHERE id_pago_nomina=?",
+                        (estado, float(deposito), id_pago),
+                    )
+                elif estado is not None:
+                    self.execute(
+                        "UPDATE pagos_nomina SET estado=?, updated_at=CURRENT_TIMESTAMP WHERE id_pago_nomina=?",
+                        (estado, id_pago),
+                    )
+                elif deposito is not None:
+                    self.execute(
+                        "UPDATE pagos_nomina SET pago_deposito=?, updated_at=CURRENT_TIMESTAMP WHERE id_pago_nomina=?",
+                        (float(deposito), id_pago),
+                    )
+
+                return {"status": "success", "message": "Pago actualizado correctamente."}
+            except Exception as ex:
+                return {"status": "error", "message": f"Error al actualizar pago: {ex}"}
+
+        # Si no hay forma de escribir, reportamos no-op claro
+        return {
+            "status": "error",
+            "message": "No hay conexión/cursor ni helper 'execute' disponibles en PaymentModel.",
+        }

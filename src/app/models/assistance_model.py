@@ -1,14 +1,17 @@
 from app.core.enums.e_assistance_model import E_ASSISTANCE
 from app.core.interfaces.database_mysql import DatabaseMysql
+from app.models.payment_model import PaymentModel
 from datetime import date, datetime, timedelta
 from typing import Optional
 import pandas as pd 
 from datetime import time
-from typing import List
-
+from datetime import datetime, date
+from typing import List, Tuple
+    
 class AssistanceModel:
     def __init__(self):
         self.db = DatabaseMysql()
+        self.payment_model = PaymentModel()
         self._exists_table = self.check_table()
         self.verificar_o_crear_triggers()
 
@@ -761,3 +764,49 @@ class AssistanceModel:
         except Exception as ex:
             print(f"❌ Error al obtener fechas disponibles por empleado: {ex}")
             return []
+
+
+
+    def _get_fechas_disponibles(self) -> Tuple[List[date], List[date]]:
+        """
+        Devuelve (bloqueadas, disponibles) como listas de datetime.date ordenadas.
+        - bloqueadas: fechas ya usadas en nómina (pagadas o pendientes).
+        - disponibles: fechas con asistencias completas y NO usadas aún.
+        """
+        # 1) Bloqueadas desde pagos (string -> date)
+        try:
+            usadas = self.payment_model.get_fechas_utilizadas() or []
+        except Exception:
+            usadas = []
+        bloqueadas_set = set()
+        for f in usadas:
+            if isinstance(f, date):
+                bloqueadas_set.add(f)
+            elif isinstance(f, str):
+                try:
+                    bloqueadas_set.add(datetime.strptime(f, "%Y-%m-%d").date())
+                except Exception:
+                    pass
+
+        # 2) Disponibles desde asistencias (ya vienen como date o str)
+        try:
+            disp_raw = self.get_fechas_disponibles_para_pago() or []
+        except Exception:
+            disp_raw = []
+
+        disponibles_set = set()
+        for f in disp_raw:
+            if isinstance(f, date):
+                disponibles_set.add(f)
+            elif isinstance(f, str):
+                try:
+                    disponibles_set.add(datetime.strptime(f, "%Y-%m-%d").date())
+                except Exception:
+                    pass
+
+        # 3) Quita las bloqueadas de las disponibles
+        disponibles_set -= bloqueadas_set
+
+        bloqueadas = sorted(bloqueadas_set)
+        disponibles = sorted(disponibles_set)
+        return bloqueadas, disponibles
