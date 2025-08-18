@@ -20,17 +20,17 @@ from app.helpers.boton_factory import crear_boton_importar, crear_boton_exportar
 
 class AsistenciasContainer(ft.Container):
     """
-    - Scroll H/V por PANEL (grupo) con barras siempre visibles dentro de su viewport.
-    - Viewport por panel ajusta su altura según la ventana para mantener visible la barra horizontal.
-    - Menos updates y tamaños compactos para mejorar la fluidez.
+    - Scroll H/V por PANEL (grupo) con barras siempre visibles.
+    - Conserva la posición del scroll al editar/guardar/refrescar.
+    - Compacto y con menos updates para más fluidez.
     """
 
     # ---- Config UI / rendimiento ----
-    _BASE_MIN_WIDTH = 1280   # ancho lógico “ancho” de la tabla (provoca H-scroll)
-    _PAGE_MARGIN_W = 80      # margen para calcular ancho útil
-    _HEADER_ESTIMATE = 160   # alto estimado de header + botones
-    _PANEL_MIN_H = 300       # alto mínimo del viewport de cada panel
-    _PANEL_MAX_H = 520       # alto máximo para no ocupar toda la pantalla
+    _BASE_MIN_WIDTH = 1280   # ancho lógico para provocar H-scroll
+    _PAGE_MARGIN_W = 80      # margen lateral aproximado
+    _HEADER_ESTIMATE = 160   # alto estimado de encabezados/botones
+    _PANEL_MIN_H = 300       # alto mínimo del viewport de panel
+    _PANEL_MAX_H = 520       # alto máximo del viewport
 
     def __init__(self):
         super().__init__(expand=True, padding=16, alignment=ft.alignment.top_center)
@@ -47,6 +47,9 @@ class AsistenciasContainer(ft.Container):
         self.editando: dict = {}
         self.datos_por_grupo: dict = {}
         self.grupos_expandido: dict = {}
+
+        # ⛳ Estado de scroll por grupo: {grupo: {"v": float, "h": float}}
+        self._scroll_state: dict[str, dict[str, float]] = {}
 
         # alias para evitar AttributeError en TableColumnBuilder
         self.activar_edicion = self._activar_edicion
@@ -86,7 +89,7 @@ class AsistenciasContainer(ft.Container):
         self.import_button = crear_boton_importar(on_click=lambda: self.import_controller.file_invoker.open())
         self.export_button = crear_boton_exportar(on_click=lambda: self.save_invoker.open_save())
 
-        # Contenedor principal (scroll exterior AUTO; el trabajo lo hacen los paneles)
+        # Contenedor principal (el trabajo de scroll lo hacen los paneles)
         self._root_column = ft.Column(
             scroll=ft.ScrollMode.AUTO,
             alignment=ft.MainAxisAlignment.START,
@@ -96,12 +99,12 @@ class AsistenciasContainer(ft.Container):
                 ft.Text("Registro de Asistencias", size=22, weight="bold"),
                 ft.Row([self.import_button, self.export_button],
                        spacing=10, alignment=ft.MainAxisAlignment.START),
-                # aquí van los paneles
+                # aquí inyectamos los paneles
             ],
         )
         self.content = ft.Container(expand=True, content=self._root_column)
 
-        # caches de ancho/alto
+        # caches de ancho/alto calculados
         self._page_w = 0
         self._page_h = 0
         self._panel_scroll_w = self._BASE_MIN_WIDTH
@@ -119,7 +122,6 @@ class AsistenciasContainer(ft.Container):
     # --------------------- Layout helpers ---------------------
     def _on_page_resize(self, _e: ft.ControlEvent | None):
         self._recompute_layout_sizes()
-        # actualizar SOLO paneles (no reconstruir toda la data)
         self._update_panels_viewport_sizes()
 
     def _recompute_layout_sizes(self):
@@ -127,7 +129,10 @@ class AsistenciasContainer(ft.Container):
             self._page_w = int(self.page.width or 0) if self.page else 0
             self._page_h = int(self.page.height or 0) if self.page else 0
 
-            usable_w = max(self._BASE_MIN_WIDTH, (self._page_w - self._PAGE_MARGIN_W) if self._page_w > 0 else self._BASE_MIN_WIDTH)
+            usable_w = max(
+                self._BASE_MIN_WIDTH,
+                (self._page_w - self._PAGE_MARGIN_W) if self._page_w > 0 else self._BASE_MIN_WIDTH,
+            )
             self._panel_scroll_w = usable_w
 
             usable_h = (self._page_h - self._HEADER_ESTIMATE) if self._page_h > 0 else 480
@@ -137,17 +142,14 @@ class AsistenciasContainer(ft.Container):
             pass
 
     def _update_panels_viewport_sizes(self):
-        """Recorre los paneles ya creados y actualiza ancho/alto del viewport."""
+        """Actualiza ancho/alto del viewport de cada panel sin reconstruir todo."""
         for ctrl in self._root_column.controls:
-            # ExpansionPanelList
             if isinstance(ctrl, ft.ExpansionPanelList):
                 for p in ctrl.controls:
                     if isinstance(p, ft.ExpansionPanel) and isinstance(p.content, ft.Column):
-                        # p.content.controls = [Container(key=grupo), <viewport-horizontal>]
                         if len(p.content.controls) >= 2 and isinstance(p.content.controls[1], ft.Container):
                             viewport_h_container: ft.Container = p.content.controls[1]
                             viewport_h_container.height = self._panel_viewport_h
-                            # dentro de ese contenedor: Row scroll H -> [inner_w_container]
                             if viewport_h_container.content and isinstance(viewport_h_container.content, ft.Row):
                                 hrow: ft.Row = viewport_h_container.content
                                 if hrow.controls and isinstance(hrow.controls[0], ft.Container):
@@ -169,11 +171,8 @@ class AsistenciasContainer(ft.Container):
         datos = res["data"]
         self.datos_por_grupo = self._agrupar_por_grupo_importacion(datos)
 
-        # Limpia solo el bloque de paneles (deja título/botones)
-        # _root_column: [Titulo, Row botones, panel_list]
-        # Si ya hay panel_list, la reemplazamos; si no, la añadimos.
+        # Reemplaza solo la lista de paneles (deja título/botones)
         new_panel_list = self._construir_paneles()
-        # quitar panel_list anterior si existe
         self._root_column.controls = self._root_column.controls[:2] + [new_panel_list]
 
     def _construir_paneles(self) -> ft.ExpansionPanelList:
@@ -267,23 +266,25 @@ class AsistenciasContainer(ft.Container):
                 spacing=6,
             )
 
-            # -------- Viewport por PANEL con scrolls siempre visibles --------
-            # vertical: contenido de la tabla (si hay muchas filas)
+            # -------- Viewport por PANEL con scrolls SIEMPRE visibles --------
+            # vertical: tabla (si muchas filas)
             vertical_scroll_column = ft.Column(
                 controls=[tabla],
                 expand=True,
                 scroll=ft.ScrollMode.ALWAYS,         # barra vertical del panel
                 spacing=0,
             )
+            # guarda pos. vertical en tiempo real
+            self._bind_vertical_scroll_memory(vertical_scroll_column, grupo)
 
-            # inner ancho (provoca scroll horizontal local al panel)
+            # inner ancho (provoca scroll H local)
             inner_w_container = ft.Container(
                 content=vertical_scroll_column,
-                width=self._panel_scroll_w,          # se recalcula en on_resize
+                width=self._panel_scroll_w,          # recalculado on_resize
                 alignment=ft.alignment.top_left,
             )
 
-            # fila que activa scroll horizontal local
+            # fila que activa scroll H local (barra SIEMPRE visible)
             horizontal_row = ft.Row(
                 controls=[inner_w_container],
                 expand=True,
@@ -291,17 +292,19 @@ class AsistenciasContainer(ft.Container):
                 vertical_alignment=ft.CrossAxisAlignment.START,
                 scroll=ft.ScrollMode.ALWAYS,         # barra horizontal del panel
             )
+            # guarda pos. horizontal en tiempo real
+            self._bind_horizontal_scroll_memory(horizontal_row, grupo)
 
             # viewport que mantiene visible la barra horizontal
             viewport_container = ft.Container(
-                height=self._panel_viewport_h,       # se recalcula en on_resize
+                height=self._panel_viewport_h,       # recalculado on_resize
                 expand=False,
                 content=horizontal_row,
             )
 
             panel_content = ft.Column(
                 controls=[
-                    ft.Container(key=grupo),          # ancla para auto-scroll al expandir
+                    ft.Container(key=grupo),          # ancla por si quieres saltar al grupo
                     viewport_container,               # <<< barras H/V SIEMPRE visibles aquí
                 ],
                 spacing=8,
@@ -314,9 +317,112 @@ class AsistenciasContainer(ft.Container):
                 expanded=expandido,
             )
             panel.on_expansion_changed = lambda e, g=grupo: self._toggle_expansion(g)
+
             paneles.append(panel)
 
-        return ft.ExpansionPanelList(expand=True, controls=paneles)
+        epl = ft.ExpansionPanelList(expand=True, controls=paneles)
+
+        # 🔁 Tras construir paneles, restaurar scrolls previamente guardados
+        self._restore_all_scroll_positions(epl)
+
+        return epl
+
+    # --------------------- Memoria/restauración de scroll ---------------------
+    def _event_px(self, e, axis: str) -> float | None:
+        """
+        Intenta extraer el pixel offset del evento de scroll.
+        'axis' = 'v' o 'h'
+        """
+        try:
+            # flet suele exponer .pixels; en algunos casos .pixels_y / .pixels_x
+            if hasattr(e, "pixels"):
+                return float(e.pixels)
+            if axis == "v":
+                for attr in ("pixels_y", "offset_y", "dy"):
+                    if hasattr(e, attr):
+                        return float(getattr(e, attr))
+            else:
+                for attr in ("pixels_x", "offset_x", "dx"):
+                    if hasattr(e, attr):
+                        return float(getattr(e, attr))
+        except Exception:
+            pass
+        return None
+
+    def _bind_vertical_scroll_memory(self, col: ft.Column, grupo: str):
+        def _on_scroll(e):
+            px = self._event_px(e, "v")
+            if px is None:
+                return
+            st = self._scroll_state.setdefault(grupo, {})
+            st["v"] = px
+        # si la versión soporta on_scroll
+        try:
+            col.on_scroll = _on_scroll
+            col.on_scroll_interval = 40
+        except Exception:
+            pass
+
+    def _bind_horizontal_scroll_memory(self, row: ft.Row, grupo: str):
+        def _on_scroll(e):
+            px = self._event_px(e, "h")
+            if px is None:
+                return
+            st = self._scroll_state.setdefault(grupo, {})
+            st["h"] = px
+        try:
+            row.on_scroll = _on_scroll
+            row.on_scroll_interval = 40
+        except Exception:
+            pass
+
+    def _restore_all_scroll_positions(self, epl: ft.ExpansionPanelList):
+        """Restaura los offsets H/V por grupo tras reconstruir paneles."""
+        for p in epl.controls:
+            if not isinstance(p, ft.ExpansionPanel) or not isinstance(p.content, ft.Column):
+                continue
+            # content.controls = [anchor, viewport_container]
+            if len(p.content.controls) < 2:
+                continue
+            viewport_container: ft.Container = p.content.controls[1]
+            if not isinstance(viewport_container, ft.Container):
+                continue
+            if not isinstance(viewport_container.content, ft.Row):
+                continue
+            hrow: ft.Row = viewport_container.content
+            if not hrow.controls or not isinstance(hrow.controls[0], ft.Container):
+                continue
+            inner_w_container: ft.Container = hrow.controls[0]
+            if not isinstance(inner_w_container.content, ft.Column):
+                continue
+            vcol: ft.Column = inner_w_container.content
+
+            grupo = None
+            # el anchor está en content.controls[0]
+            anchor = p.content.controls[0]
+            if isinstance(anchor, ft.Container) and anchor.key:
+                grupo = str(anchor.key)
+            if not grupo:
+                continue
+
+            st = self._scroll_state.get(grupo, {})
+            v = st.get("v", None)
+            h = st.get("h", None)
+
+            # restaurar vertical
+            try:
+                if v is not None:
+                    # si la API soporta offset:
+                    vcol.scroll_to(offset=v, duration=1)
+            except Exception:
+                pass
+
+            # restaurar horizontal
+            try:
+                if h is not None:
+                    hrow.scroll_to(offset=h, duration=1)
+            except Exception:
+                pass
 
     # --------------------- Acciones / edición ---------------------
     def _recalcular_horas_fila(self, grupo):
@@ -336,6 +442,7 @@ class AsistenciasContainer(ft.Container):
 
     def _on_click_editar(self, numero_nomina, fecha):
         self.activar_edicion(numero_nomina, fecha)
+        # 🔇 no desplazamos el scroll: se conservará al reconstruir
         self._actualizar_tabla()
         if self.page:
             self.page.update()
@@ -433,9 +540,9 @@ class AsistenciasContainer(ft.Container):
     def _toggle_expansion(self, grupo):
         self.grupos_expandido = {k: False for k in self.datos_por_grupo.keys()}
         self.grupos_expandido[grupo] = True
+        # 🔇 No hacemos scroll-to-top del grupo; conservamos offset almacenado
         self._actualizar_tabla()
         if self.page:
-            AsistenciasScrollHelper.scroll_to_group_after_build(self.page, group_id=grupo)
             self.page.update()
 
     def _es_editando(self, registro):
@@ -603,10 +710,10 @@ class AsistenciasContainer(ft.Container):
         if grupo_encontrado:
             self.grupos_expandido = {k: False for k in self.datos_por_grupo.keys()}
             self.grupos_expandido[grupo_encontrado] = True
+            # 🔇 No hacemos scroll-to-top ni a ancla; se conservará offset
             self._actualizar_tabla()
             if self.page:
                 self.page.update()
-                AsistenciasScrollHelper.scroll_to_group_after_build(self.page, group_id=grupo_encontrado)
         else:
             self._actualizar_tabla()
             if self.page:
