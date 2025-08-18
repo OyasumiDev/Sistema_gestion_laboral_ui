@@ -1,7 +1,6 @@
 import flet as ft
 from datetime import datetime, timedelta, date
 import pandas as pd
-import asyncio
 
 from app.models.assistance_model import AssistanceModel
 from app.controllers.asistencias_import_controller import AsistenciasImportController
@@ -16,37 +15,43 @@ from app.helpers.table_column_builder import TableColumnBuilder
 from app.helpers.asistencias_scroll_helper import AsistenciasScrollHelper
 from app.helpers.asistencias_row_helper import AsistenciasRowHelper
 from app.helpers.calculo_horas_helper import CalculoHorasHelper
-from app.helpers.boton_factory import (
-    crear_boton_importar,
-    crear_boton_exportar
-)
+from app.helpers.boton_factory import crear_boton_importar, crear_boton_exportar
 
 
 class AsistenciasContainer(ft.Container):
     """
-    Área de asistencias con:
-      - Scroll vertical (ya existente vía self.scroll_column).
-      - Scroll horizontal para pantallas pequeñas (wrapper con Row(scroll=ALWAYS)).
-      - Ancho dinámico del lienzo interno para maximizar lectura en pantallas grandes,
-        pero conservar un mínimo que habilite el scroll lateral en pantallas pequeñas.
+    Vista de asistencias con:
+      - Scroll vertical dentro de la tabla.
+      - Scroll horizontal SIEMPRE visible (viewport con altura fija ajustada al alto de ventana).
+      - Fix robusto: alias self.activar_edicion -> self._activar_edicion.
     """
 
     def __init__(self):
         super().__init__(expand=True, padding=20, alignment=ft.alignment.top_center)
+
+        # Core / helpers
         self.page = AppState().page
         self.asistencia_model = AssistanceModel()
         self.theme_ctrl = ThemeController()
         self.sort_helper = SortHelper(default_key="numero_nomina")
         self.calculo_helper = CalculoHorasHelper()
+        self.window_snackbar = WindowSnackbar(self.page)
+
+        # Estado UI
+        self.editando: dict = {}
+        self.datos_por_grupo: dict = {}
+        self.grupos_expandido: dict = {}
+
+        # Alias para evitar AttributeError al pasarlo al builder
+        self.activar_edicion = self._activar_edicion
+
+        # Row helper
         self.row_helper = AsistenciasRowHelper(
             recalcular_callback=self._recalcular_horas_fila,
             actualizar_callback=self._actualizar_valor_fila
         )
-        self.editando = {}
-        self.datos_por_grupo = {}
-        self.grupos_expandido = {}
 
-        # ≈ Columnas visibles (no se fija ancho por columna; el ancho total lo maneja el wrapper)
+        # Columnas
         self.columnas_definidas = [
             ("Nómina", "numero_nomina"),
             ("Nombre", "nombre_completo"),
@@ -64,89 +69,79 @@ class AsistenciasContainer(ft.Container):
             on_delete=lambda reg: self._confirmar_eliminacion(reg["numero_nomina"], reg["fecha"])
         )
 
-        self.import_controller = AsistenciasImportController(
-            page=self.page,
-            on_success=self._actualizar_tabla
-        )
-
+        # Import / Export
+        self.import_controller = AsistenciasImportController(page=self.page, on_success=self._actualizar_tabla)
         self.save_invoker = FileSaveInvoker(
             page=self.page,
             on_save=self._exportar_asistencias,
             save_dialog_title="Exportar asistencias como Excel",
             file_name="asistencias_exportadas.xlsx",
-            allowed_extensions=["xlsx"]
+            allowed_extensions=["xlsx"],
         )
+        self.import_button = crear_boton_importar(on_click=lambda: self.import_controller.file_invoker.open())
+        self.export_button = crear_boton_exportar(on_click=lambda: self.save_invoker.open_save())
 
-        self.window_snackbar = WindowSnackbar(self.page)
-
-        # ===== Scroll vertical (contenido)
+        # ---- Scroll vertical (contenido) ----
         self.scroll_anchor = ft.Container(height=1, key="bottom-anchor")
         self.scroll_column = ft.Column(
             controls=[],
             expand=True,
-            scroll=ft.ScrollMode.ALWAYS,
+            scroll=ft.ScrollMode.ALWAYS,     # vertical
             spacing=10,
             alignment=ft.MainAxisAlignment.START,
         )
 
-        # ===== Acciones (Importar / Exportar)
-        self.import_button = crear_boton_importar(
-            on_click=lambda: self.import_controller.file_invoker.open()
-        )
-        self.export_button = crear_boton_exportar(
-            on_click=lambda: self.save_invoker.open_save()
-        )
-
-        # ===== Scroll horizontal (nuevo)
-        # Base mínima que asegura scroll lateral en pantallas chicas.
-        # Puedes ajustar este número si tu tabla crece.
-        self._base_min_width = 1280
+        # ---- Scroll horizontal (siempre visible) ----
+        self._base_min_width = 1280          # ancho mínimo del área “ancha”
         self._current_scroll_width = self._base_min_width
 
-        # Contenedor interno que se ensancha/encoge dinámicamente
+        # Contenido ancho que se desplaza horizontalmente
         self._hscroll_inner = ft.Container(
             content=self.scroll_column,
             width=self._current_scroll_width,
             alignment=ft.alignment.top_center,
         )
 
-        # Row con scroll horizontal que envuelve todo el contenido "ancho"
+        # Fila que activa scroll horizontal
         self._hscroll_row = ft.Row(
             controls=[self._hscroll_inner],
             expand=True,
             vertical_alignment=ft.CrossAxisAlignment.START,
             alignment=ft.MainAxisAlignment.START,
-            scroll=ft.ScrollMode.ALWAYS,  # ← clave para scroll lateral
+            scroll=ft.ScrollMode.ALWAYS,      # HORIZONTAL SIEMPRE
+        )
+
+        # ---- Viewport con altura fija (para que la barra horizontal quede SIEMPRE a la vista) ----
+        self._viewport_height = 480  # valor inicial; se ajusta en on_resize
+        self._viewport_container = ft.Container(
+            height=self._viewport_height,
+            expand=False,
+            content=self._hscroll_row,
         )
 
         # Build UI
         self.content = self._build_content()
 
-        # Suscribir a resize para ajustar ancho dinámico
+        # Eventos de ventana
         if self.page:
             self.page.on_resize = self._on_page_resize
 
-        # Cargar datos
+        # Cargar datos y ajustar medidas
         self._actualizar_tabla()
-        # Ajuste inicial
         self._update_scroll_area_width()
+        self._update_viewport_height()
 
-    # ---------------- UI ----------------
+    # ---------------- UI scaffolding ----------------
     def _build_content(self) -> ft.Control:
         return ft.Container(
             expand=True,
             content=ft.Column(
-                scroll=ft.ScrollMode.AUTO,
+                scroll=ft.ScrollMode.AUTO,  # scroll del layout exterior si hace falta
                 alignment=ft.MainAxisAlignment.START,
                 horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-                spacing=20,
+                spacing=16,
                 controls=[
-                    ft.Text(
-                        "Registro de Asistencias",
-                        size=24,
-                        weight="bold",
-                        text_align=ft.TextAlign.CENTER,
-                    ),
+                    ft.Text("Registro de Asistencias", size=24, weight="bold", text_align=ft.TextAlign.CENTER),
                     ft.Container(
                         alignment=ft.alignment.center_left,
                         padding=ft.padding.only(left=60),
@@ -156,28 +151,40 @@ class AsistenciasContainer(ft.Container):
                             controls=[self.import_button, self.export_button],
                         ),
                     ),
-                    # ====== Aquí va el wrapper con scroll horizontal ======
+                    # <<< Este viewport mantiene visible la barra horizontal en su borde inferior >>>
                     ft.Container(
                         alignment=ft.alignment.top_center,
                         padding=ft.padding.symmetric(horizontal=10),
-                        content=self._hscroll_row,
+                        content=self._viewport_container,
                     ),
                 ],
             ),
         )
 
-    def _on_page_resize(self, e: ft.ControlEvent | None):
+    # ---------------- Resize handlers ----------------
+    def _on_page_resize(self, _e: ft.ControlEvent | None):
+        self._update_viewport_height()
         self._update_scroll_area_width()
 
+    def _update_viewport_height(self):
+        """Mantiene un viewport con altura fija para que la barra horizontal quede SIEMPRE visible."""
+        try:
+            page_h = int(self.page.height or 0) if self.page else 0
+            # Estimación razonable del alto ocupado por título + botones + márgenes
+            header_estimate = 160
+            target = max(320, (page_h - header_estimate) if page_h > 0 else 480)
+            if abs(target - self._viewport_height) >= 8:
+                self._viewport_height = target
+                self._viewport_container.height = self._viewport_height
+                if self.page:
+                    self.page.update()
+        except Exception:
+            pass
+
     def _update_scroll_area_width(self):
-        """
-        Ajusta el ancho del lienzo interno para:
-          - No bajar de _base_min_width (para forzar scroll lateral en pantallas pequeñas).
-          - Usar el ancho disponible en pantallas grandes (evitar márgenes vacíos grandes).
-        """
+        """Ajusta el ancho del área horizontal en función del ancho de la ventana."""
         try:
             page_w = int(self.page.width or 0) if self.page else 0
-            # margen lateral estimado (botones / padding); ajusta si lo deseas
             margin = 80
             target = max(self._base_min_width, (page_w - margin) if page_w > 0 else self._base_min_width)
             if abs(target - self._current_scroll_width) >= 8:
@@ -188,44 +195,10 @@ class AsistenciasContainer(ft.Container):
         except Exception:
             pass
 
-    # ---------------- Helpers de tabla ----------------
+    # ---------------- Tabla ----------------
     def crear_columnas(self):
         return self.column_builder.build_columns(self.columnas_definidas)
 
-    # ------------- Acciones de UI -------------
-    def _recalcular_horas_fila(self, grupo):
-        # Si es nueva fila en edición -> refresca
-        if ("nuevo", grupo) in self.editando:
-            self._actualizar_tabla()
-            return
-
-        # Si hay edición activa en ese grupo -> refresca
-        for (numero_nomina, fecha), edit_flag in self.editando.items():
-            if edit_flag is True:
-                for registros in self.datos_por_grupo.get(grupo, []):
-                    if registros["numero_nomina"] == numero_nomina and str(registros["fecha"]) == str(fecha):
-                        self._actualizar_tabla()
-                        return
-
-    def _on_click_editar(self, numero_nomina, fecha):
-        self.activar_edicion(numero_nomina, fecha)
-        self._actualizar_tabla()
-
-    def _actualizar_valor_fila(self, grupo, campo, valor):
-        # Nueva fila
-        if ("nuevo", grupo) in self.editando:
-            self.editando[("nuevo", grupo)][campo] = valor
-            return
-
-        # Edición activa
-        for (numero_nomina, fecha), edit_flag in self.editando.items():
-            if edit_flag is True:
-                for registros in self.datos_por_grupo.get(grupo, []):
-                    if registros["numero_nomina"] == numero_nomina and str(registros["fecha"]) == str(fecha):
-                        registros[campo] = valor
-                        return
-
-    # ---------------- Construcción dinámica ----------------
     def _actualizar_tabla(self):
         resultado = self.asistencia_model.get_all()
         if resultado["status"] != "success":
@@ -279,7 +252,6 @@ class AsistenciasContainer(ft.Container):
                         )
                     )
 
-            # Fila nueva (si corresponde)
             if ("nuevo", grupo) in self.editando:
                 nueva_fila = self.row_helper.build_fila_nueva(
                     grupo_importacion=grupo,
@@ -329,7 +301,34 @@ class AsistenciasContainer(ft.Container):
                 AsistenciasScrollHelper.scroll_to_group_after_build(self.page, group_id=grupo_expandido)
             self.page.update()
 
-    # ------ Nueva fila / edición / eliminación ------
+    # ---------------- Acciones fila ----------------
+    def _recalcular_horas_fila(self, grupo):
+        if ("nuevo", grupo) in self.editando:
+            self._actualizar_tabla()
+            return
+        for (numero_nomina, fecha), edit_flag in self.editando.items():
+            if edit_flag is True:
+                for registros in self.datos_por_grupo.get(grupo, []):
+                    if registros["numero_nomina"] == numero_nomina and str(registros["fecha"]) == str(fecha):
+                        self._actualizar_tabla()
+                        return
+
+    def _on_click_editar(self, numero_nomina, fecha):
+        self.activar_edicion(numero_nomina, fecha)
+        self._actualizar_tabla()
+
+    def _actualizar_valor_fila(self, grupo, campo, valor):
+        if ("nuevo", grupo) in self.editando:
+            self.editando[("nuevo", grupo)][campo] = valor
+            return
+        for (numero_nomina, fecha), edit_flag in self.editando.items():
+            if edit_flag is True:
+                for registros in self.datos_por_grupo.get(grupo, []):
+                    if registros["numero_nomina"] == numero_nomina and str(registros["fecha"]) == str(fecha):
+                        registros[campo] = valor
+                        return
+
+    # ---------------- Nueva fila / edición / eliminar ----------------
     def _agregar_fila_en_grupo(self, grupo_importacion):
         self.editando[("nuevo", grupo_importacion)] = {
             "numero_nomina": "",
@@ -340,7 +339,6 @@ class AsistenciasContainer(ft.Container):
             "tiempo_trabajo": "0.00",
             "estado": "PENDIENTE",
         }
-
         self.grupos_expandido = {k: False for k in self.datos_por_grupo.keys()}
         self.grupos_expandido[grupo_importacion] = True
 
@@ -351,7 +349,6 @@ class AsistenciasContainer(ft.Container):
     def _guardar_fila_nueva(self, grupo: str):
         try:
             fila = self.editando.get(("nuevo", grupo), {})
-
             numero = str(fila.get("numero_nomina", "")).strip()
             if not numero.isdigit():
                 self.window_snackbar.show_error("❌ Número de nómina inválido.")
@@ -391,7 +388,6 @@ class AsistenciasContainer(ft.Container):
                 descanso={"SN": 0, "MD": 1, "CMP": 2}.get(descanso, 0),
                 grupo_importacion=grupo,
             )
-
             if not resultado_db or resultado_db.get("status") != "success":
                 self.window_snackbar.show_error("❌ Error al guardar en la base de datos.")
                 return
@@ -400,7 +396,7 @@ class AsistenciasContainer(ft.Container):
             self.editando.pop(("nuevo", grupo), None)
             self._actualizar_tabla()
 
-        except Exception as e:
+        except Exception:
             self.window_snackbar.show_error("⚠️ Error inesperado al guardar.")
 
     def _cancelar_fila_nueva(self, grupo):
@@ -443,7 +439,7 @@ class AsistenciasContainer(ft.Container):
             registro_actualizado["fecha"] = fecha_obj.strftime("%Y-%m-%d")
         except Exception:
             self.window_snackbar.show_error("⚠️ Fecha inválida. Usa el formato YYYY-MM-DD.")
-        # Convertir horas
+
         def convertir(t):
             if isinstance(t, timedelta):
                 return (datetime.min + t).time().strftime("%H:%M:%S")
@@ -478,7 +474,7 @@ class AsistenciasContainer(ft.Container):
         self._actualizar_tabla()
         self.window_snackbar.show_success("ℹ️ Edición cancelada.")
 
-    # --------- Agrupaciones ---------
+    # ---------------- Utilidades ----------------
     def _agrupar_por_grupo_importacion(self, datos: list) -> dict:
         agrupado = {}
         for reg in datos:
@@ -506,7 +502,6 @@ class AsistenciasContainer(ft.Container):
         except:
             return date.min
 
-    # --------- Eliminación ---------
     def _eliminar_grupo(self, grupo):
         confirmacion = ModalAlert(
             title_text="¿Eliminar grupo?",
@@ -546,7 +541,6 @@ class AsistenciasContainer(ft.Container):
 
         self._actualizar_tabla()
 
-    # --------- Exportación ---------
     def _exportar_asistencias(self, ruta_guardado: str):
         try:
             resultado = self.asistencia_model.get_all()
@@ -560,31 +554,23 @@ class AsistenciasContainer(ft.Container):
         except Exception as e:
             self.window_snackbar.show_error(f"❌ Error al exportar asistencias: {str(e)}")
 
-    # --------- Agrupación semanal (no usada directamente en UI principal) ---------
-    def _agrupar_por_periodo(self, datos: list) -> dict:
-        agrupado = {}
-        for reg in datos:
-            fecha = reg.get("fecha")
-            if not fecha:
-                continue
+    # Alias real usado por la UI
+    def _activar_edicion(self, numero_nomina, fecha):
+        self.editando.clear()
+        self.editando[(numero_nomina, str(fecha))] = True
 
-            if isinstance(fecha, str):
-                try:
-                    if "/" in fecha:
-                        fecha = datetime.strptime(fecha, "%d/%m/%Y").date()
-                    else:
-                        fecha = datetime.strptime(fecha, "%Y-%m-%d").date()
-                except Exception:
-                    continue
-            elif isinstance(fecha, datetime):
-                fecha = fecha.date()
+        grupo_encontrado = None
+        for grupo, registros in self.datos_por_grupo.items():
+            if any(reg["numero_nomina"] == numero_nomina and str(reg["fecha"]) == str(fecha) for reg in registros):
+                grupo_encontrado = grupo
+                break
 
-            inicio_semana = fecha - timedelta(days=fecha.weekday())
-            fin_semana = inicio_semana + timedelta(days=6)
-            periodo_str = f"{inicio_semana.strftime('%d/%m/%Y')} - {fin_semana.strftime('%d/%m/%Y')}"
-
-            if periodo_str not in agrupado:
-                agrupado[periodo_str] = []
-            agrupado[periodo_str].append(reg)
-
-        return agrupado
+        if grupo_encontrado:
+            self.grupos_expandido = {k: False for k in self.datos_por_grupo.keys()}
+            self.grupos_expandido[grupo_encontrado] = True
+            self._actualizar_tabla()
+            if self.page:
+                self.page.update()
+                AsistenciasScrollHelper.scroll_to_group_after_build(self.page, group_id=grupo_encontrado)
+        else:
+            self._actualizar_tabla()
