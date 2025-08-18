@@ -8,7 +8,7 @@ class LoginView(ft.View):
             controls=[LoginContainer()],
             appbar=ft.AppBar(
                 title=ft.Text("Inicio de sesión"),
-                bgcolor=ft.Colors.ON_SURFACE_VARIANT
+                bgcolor=ft.colors.ON_SURFACE_VARIANT
             ),
             vertical_alignment=ft.MainAxisAlignment.CENTER,
             horizontal_alignment=ft.CrossAxisAlignment.CENTER

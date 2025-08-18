@@ -32,7 +32,7 @@ class LoginContainer(ft.Container):
         )
 
         self.login_message = ft.Text(
-            color=ft.Colors.BLACK
+            color=ft.colors.BLACK
         )
 
         self.content = ft.Column(

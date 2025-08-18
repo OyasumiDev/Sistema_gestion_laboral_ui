@@ -5,7 +5,6 @@ from typing import List
 
 from app.core.app_state import AppState
 from app.models.loan_model import LoanModel
-from app.models.payment_model import PaymentModel
 from app.models.loan_payment_model import LoanPaymentModel
 from app.views.containers.modal_alert import ModalAlert
 from app.core.enums.e_prestamos_model import E_PRESTAMOS
@@ -22,7 +21,7 @@ from app.helpers.boton_factory import (
     crear_boton_exportar,
 )
 
-# Modal universal de préstamos
+# Modal de pagos de préstamos (solo pagos reales)
 from app.views.containers.modal_pagos_prestamos import ModalPrestamos
 
 
@@ -33,7 +32,6 @@ class PrestamosContainer(ft.Container):
         # Estado / modelos
         self.page = AppState().page
         self.loan_model = LoanModel()
-        self.payment_model = PaymentModel()
         self.loan_payment_model = LoanPaymentModel()
         self.E = E_PRESTAMOS
 
@@ -155,10 +153,15 @@ class PrestamosContainer(ft.Container):
                 # Historial de pagos del préstamo
                 pagos_res = self.loan_payment_model.get_by_prestamo(id_prestamo)
                 pagos = pagos_res.get("data", []) if (isinstance(pagos_res, dict) and pagos_res.get("status") == "success") else []
+
+                # Total pagado robusto (acepta float/str con coma/punto)
                 total_pagado = 0.0
                 for row in pagos:
+                    raw = row.get(EP.PAGO_MONTO_PAGADO.value, row.get("monto_pagado", 0))
                     try:
-                        total_pagado += float(row.get(EP.PAGO_MONTO_PAGADO.value, row.get("monto_pagado", 0)) or 0)
+                        if isinstance(raw, str):
+                            raw = raw.strip().replace(",", ".")
+                        total_pagado += float(raw or 0)
                     except Exception:
                         pass
 
@@ -415,14 +418,13 @@ class PrestamosContainer(ft.Container):
             return
 
         hoy = date.today().strftime("%Y-%m-%d")
+
+        # Modal de pagos REALES (sin lógica de nómina)
         pago_data = {
             "numero_nomina": int(numero_nomina),
-            "id_pago": None,                 # el modal creará un pago de nómina si es necesario
-            "estado": "pendiente",
+            "id_prestamo": int(pid),
             "fecha_generacion": hoy,
             "fecha_pago": hoy,
-            "contexto": "prestamos",
-            "id_prestamo": int(pid),
         }
 
         def on_confirmar(_):
