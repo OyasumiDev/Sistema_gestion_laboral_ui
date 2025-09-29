@@ -106,21 +106,34 @@ class EmployesModel:
         except Exception:
             return 0
 
-    def update(self, numero_nomina, sueldo_por_hora):
+    def update(self, numero_nomina, nombre_completo=None, sueldo_por_hora=None):
         """
-        Actualiza el sueldo por hora de un empleado.
+        Actualiza los datos de un empleado (nombre y/o sueldo).
         """
         try:
+            campos = []
+            valores = []
+
+            if nombre_completo is not None:
+                campos.append(f"{E_EMPLOYE.NOMBRE_COMPLETO.value} = %s")
+                valores.append(nombre_completo)
+
+            if sueldo_por_hora is not None:
+                campos.append(f"{E_EMPLOYE.SUELDO_POR_HORA.value} = %s")
+                valores.append(sueldo_por_hora)
+
+            if not campos:
+                return {"status": "error", "message": "No se proporcionaron campos para actualizar"}
+
             query = f"""
                 UPDATE {E_EMPLOYE.TABLE.value}
-                SET
-                    {E_EMPLOYE.SUELDO_POR_HORA.value} = %s
+                SET {", ".join(campos)}
                 WHERE {E_EMPLOYE.NUMERO_NOMINA.value} = %s
             """
-            self.db.run_query(query, (
-                sueldo_por_hora,
-                numero_nomina
-            ))
+            valores.append(numero_nomina)
+
+            self.db.run_query(query, tuple(valores))
             return {"status": "success", "message": "Empleado actualizado correctamente"}
         except Exception as ex:
             return {"status": "error", "message": f"Error al actualizar el empleado: {ex}"}
+
