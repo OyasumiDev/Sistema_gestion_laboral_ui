@@ -4,26 +4,27 @@ from app.models.employes_model import EmployesModel
 from app.views.containers.modal_alert import ModalAlert
 from app.views.containers.window_snackbar import WindowSnackbar
 from app.core.invokers.safe_scroll_invoker import SafeScrollInvoker
+from app.controllers.employes_import_controller import EmpleadosImportController
 
 
 class EmpleadosContainer(ft.Container):
     def __init__(self):
         super().__init__()
 
+        # Core
         self.page = AppState().page
         self.window_snackbar = WindowSnackbar(self.page)
         self.empleado_model = EmployesModel()
+
+        # Estado
         self.fila_editando = None
         self.fila_nueva_en_proceso = False
+        self.sort_id_filter: str | None = None
+        self.sort_name_filter: str | None = None
+        self.orden_actual = {"numero_nomina": None, "sueldo_por_hora": None}
 
-        self.orden_actual = {
-            "numero_nomina": None,
-            "sueldo_por_hora": None
-        }
-
+        # Tabla y scroll
         self.table = None
-        self.expand = True
-
         self.table_container = ft.Container(
             expand=True,
             alignment=ft.alignment.top_center,
@@ -31,25 +32,112 @@ class EmpleadosContainer(ft.Container):
                 controls=[],
                 alignment=ft.MainAxisAlignment.START,
                 horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-                expand=True
-            )
+                expand=True,
+            ),
         )
 
         self.scroll_column_ref = ft.Ref[ft.Column]()
         self.scroll_anchor = ft.Container(height=1, key="bottom-anchor")
-
         self.scroll_column = ft.Column(
             ref=self.scroll_column_ref,
             alignment=ft.MainAxisAlignment.START,
             horizontal_alignment=ft.CrossAxisAlignment.CENTER,
             scroll=ft.ScrollMode.ALWAYS,
             expand=True,
-            controls=[
-                self.table_container,
-                self.scroll_anchor
-            ]
+            controls=[self.table_container, self.scroll_anchor],
         )
 
+        # ---- Import / Export (controlador dedicado) ----
+        self.emp_import_ctrl = EmpleadosImportController(
+            page=self.page,
+            on_success=self._actualizar_tabla,
+            on_export=lambda ruta: self.window_snackbar.show_success(f"✅ Exportado: {ruta}")
+        )
+
+        # Botón Importar
+        self.import_button = ft.GestureDetector(
+            on_tap=lambda e: self.emp_import_ctrl.file_invoker.open(),
+            content=ft.Container(
+                padding=10,
+                border_radius=20,
+                bgcolor=ft.colors.SURFACE_VARIANT,
+                content=ft.Row(
+                    [
+                        ft.Icon(name=ft.icons.FILE_DOWNLOAD_OUTLINED, size=18),
+                        ft.Text("Importar", size=12, weight="bold"),
+                    ],
+                    alignment=ft.MainAxisAlignment.CENTER,
+                    spacing=6,
+                ),
+            ),
+        )
+
+        # Botón Exportar (usa el save_invoker para abrir ventana Guardar como…)
+        self.export_button = ft.GestureDetector(
+            on_tap=lambda e: self.emp_import_ctrl.save_invoker.open_save(),
+            content=ft.Container(
+                padding=10,
+                border_radius=20,
+                bgcolor=ft.colors.SURFACE_VARIANT,
+                content=ft.Row(
+                    [
+                        ft.Icon(name=ft.icons.FILE_UPLOAD_OUTLINED, size=18),
+                        ft.Text("Exportar", size=12, weight="bold"),
+                    ],
+                    alignment=ft.MainAxisAlignment.CENTER,
+                    spacing=6,
+                ),
+            ),
+        )
+
+        # Botón Agregar
+        self.add_button = ft.GestureDetector(
+            on_tap=lambda e: self._insertar_fila_editable(),
+            content=ft.Container(
+                padding=10,
+                border_radius=20,
+                bgcolor=ft.colors.SURFACE_VARIANT,
+                content=ft.Row(
+                    [
+                        ft.Icon(name=ft.icons.ADD, size=18),
+                        ft.Text("Agregar", size=12, weight="bold"),
+                    ],
+                    alignment=ft.MainAxisAlignment.CENTER,
+                    spacing=6,
+                ),
+            ),
+        )
+
+
+        # ---- Toolbar (filtros) ----
+        self.sort_id_input = ft.TextField(
+            label="Ordenar por ID",
+            hint_text="Escribe un ID y presiona Enter",
+            width=180,
+            keyboard_type=ft.KeyboardType.NUMBER,
+            on_submit=self._aplicar_sort_id,
+            on_change=self._id_on_change_auto_reset,
+        )
+        self.sort_id_clear_btn = ft.IconButton(
+            icon=ft.icons.CLEAR,
+            tooltip="Limpiar ID",
+            on_click=lambda e: self._limpiar_sort_id(),
+        )
+
+        self.sort_name_input = ft.TextField(
+            label="Buscar por Nombre",
+            hint_text="Escribe nombre y presiona Enter",
+            width=260,
+            on_submit=self._aplicar_sort_nombre,
+            on_change=self._nombre_on_change_auto_reset,
+        )
+        self.sort_name_clear_btn = ft.IconButton(
+            icon=ft.icons.CLEAR,
+            tooltip="Limpiar nombre",
+            on_click=lambda e: self._limpiar_sort_nombre(),
+        )
+
+        # Content
         self.content = ft.Container(
             expand=True,
             padding=20,
@@ -61,23 +149,82 @@ class EmpleadosContainer(ft.Container):
                     ft.Row(
                         spacing=10,
                         alignment=ft.MainAxisAlignment.START,
+                        controls=[self.add_button, self.import_button, self.export_button],
+                    ),
+                    ft.Row(
+                        spacing=10,
+                        alignment=ft.MainAxisAlignment.START,
                         controls=[
-                            self._build_add_button()
-                        ]
+                            self.sort_id_input,
+                            self.sort_id_clear_btn,
+                            self.sort_name_input,
+                            self.sort_name_clear_btn,
+                        ],
                     ),
                     ft.Divider(height=1),
                     ft.Container(
                         alignment=ft.alignment.top_center,
                         padding=ft.padding.only(top=10),
                         expand=True,
-                        content=self.scroll_column
-                    )
-                ]
-            )
+                        content=self.scroll_column,
+                    ),
+                ],
+            ),
         )
 
         self._actualizar_tabla()
 
+    # -----------------------------------------------------------------
+    # Filtros globales
+    # -----------------------------------------------------------------
+    def _aplicar_sort_id(self, e=None):
+        v = (self.sort_id_input.value or "").strip()
+        if v and not v.isdigit():
+            self.window_snackbar.show_error("❌ ID inválido. Usa solo números.")
+            return
+        self.sort_id_filter = v if v else None
+        self._actualizar_tabla()
+
+    def _limpiar_sort_id(self):
+        self.sort_id_input.value = ""
+        self.sort_id_filter = None
+        self._actualizar_tabla()
+
+    def _id_on_change_auto_reset(self, e: ft.ControlEvent):
+        if (e.control.value or "").strip() == "" and self.sort_id_filter is not None:
+            self.sort_id_filter = None
+            self._actualizar_tabla()
+
+    def _aplicar_sort_nombre(self, e=None):
+        texto = (self.sort_name_input.value or "").strip()
+        if not texto:
+            self.sort_name_filter = None
+            self._actualizar_tabla()
+            return
+
+        res = self.empleado_model.get_all()
+        data = res.get("data", [])
+        hay = any(texto.lower() in (r.get("nombre_completo", "").lower()) for r in data)
+        if not hay:
+            self.window_snackbar.show_error("esta busqueda no esta disponible")
+            return
+
+        self.sort_name_filter = texto
+        self._actualizar_tabla()
+
+    def _limpiar_sort_nombre(self):
+        self.sort_name_input.value = ""
+        self.sort_name_filter = None
+        self._actualizar_tabla()
+
+    def _nombre_on_change_auto_reset(self, e: ft.ControlEvent):
+        if (e.control.value or "").strip() == "" and self.sort_name_filter is not None:
+            self.sort_name_filter = None
+            self._actualizar_tabla()
+
+    # -----------------------------------------------------------------
+    # Ordenamiento por columnas
+    # -----------------------------------------------------------------
     def _icono_orden(self, columna):
         if self.orden_actual.get(columna) == "asc":
             return "▲"
@@ -93,24 +240,52 @@ class EmpleadosContainer(ft.Container):
 
         empleados_result = self.empleado_model.get_all()
         empleados = empleados_result.get("data", [])
-
-        if columna in ("numero_nomina", "sueldo_por_hora"):
-            empleados.sort(key=lambda x: float(x[columna]), reverse=not ascendente)
-        else:
-            empleados.sort(key=lambda x: x[columna], reverse=not ascendente)
-
+        empleados = self._ordenar_lista(empleados, columna, ascendente)
         self._refrescar_tabla(empleados)
 
+    def _ordenar_lista(self, datos: list, columna=None, asc=True) -> list:
+        ordered = list(datos)
+
+        # Prioridad por ID (si coincide exacto va primero)
+        if self.sort_id_filter:
+            id_str = str(self.sort_id_filter)
+            ordered = sorted(
+                ordered,
+                key=lambda r: 0 if str(r.get("numero_nomina")) == id_str else 1
+            )
+
+        # Prioridad por nombre (si contiene el texto va primero)
+        if self.sort_name_filter:
+            texto = self.sort_name_filter.lower()
+            ordered = sorted(
+                ordered,
+                key=lambda r: 0 if texto in r.get("nombre_completo", "").lower() else 1
+            )
+
+        # Orden por columna
+        if columna:
+            if columna in ("numero_nomina", "sueldo_por_hora"):
+                ordered.sort(key=lambda x: float(x[columna]), reverse=not asc)
+            else:
+                ordered.sort(key=lambda x: x[columna], reverse=not asc)
+
+        return ordered
+
+    # -----------------------------------------------------------------
+    # Tabla y datos
+    # -----------------------------------------------------------------
     def _refrescar_tabla(self, empleados: list):
         self.table = self._build_table(empleados)
         self.table_container.content.controls.clear()
         self.table_container.content.controls.append(self.table)
-        self.page.update()
+        if self.page:
+            self.page.update()
 
     def _actualizar_tabla(self, fila_en_edicion=None):
         empleados_result = self.empleado_model.get_all()
         empleados = empleados_result.get("data", [])
         self.fila_editando = fila_en_edicion
+        empleados = self._ordenar_lista(empleados)
         self._refrescar_tabla(empleados)
 
     def _build_table(self, empleados):
@@ -174,7 +349,7 @@ class EmpleadosContainer(ft.Container):
                     if sueldo_val < 0:
                         raise ValueError
                     sueldo_cell.border_color = None
-                except:
+                except Exception:
                     sueldo_cell.border_color = ft.colors.RED
                     errores.append("Sueldo inválido")
 
@@ -184,7 +359,6 @@ class EmpleadosContainer(ft.Container):
                     self.window_snackbar.show_error("❌ " + " / ".join(errores))
                     return
 
-                # 🚀 Guardar directo sin confirmación modal
                 resultado = self.empleado_model.update(
                     numero_nomina=id,
                     nombre_completo=nombre_val,
@@ -280,20 +454,6 @@ class EmpleadosContainer(ft.Container):
             rows=rows
         )
 
-    def _build_add_button(self):
-        return ft.GestureDetector(
-            on_tap=lambda _: self._insertar_fila_editable(),
-            content=ft.Container(
-                padding=8,
-                border_radius=12,
-                bgcolor=ft.colors.SURFACE_VARIANT,
-                content=ft.Row([
-                    ft.Icon(name=ft.icons.PERSON_ADD_ALT_1_OUTLINED, size=20),
-                    ft.Text("Agregar", size=11, weight="bold")
-                ], alignment=ft.MainAxisAlignment.CENTER, spacing=5)
-            )
-        )
-
     def _crear_textfield_sueldo(self, valor_inicial):
         sueldo = ft.TextField(
             value=str(valor_inicial),
@@ -309,7 +469,7 @@ class EmpleadosContainer(ft.Container):
                 if v < 0:
                     raise ValueError
                 sueldo.border_color = None
-            except:
+            except Exception:
                 sueldo.border_color = ft.colors.RED
             self.page.update()
 
@@ -354,7 +514,7 @@ class EmpleadosContainer(ft.Container):
             try:
                 valor = float(sueldo_input.value)
                 sueldo_input.border_color = None if valor >= 0 else ft.colors.RED
-            except:
+            except Exception:
                 sueldo_input.border_color = ft.colors.RED
             self.page.update()
 
@@ -371,7 +531,7 @@ class EmpleadosContainer(ft.Container):
                 sueldo = float(sueldo_input.value)
                 if sueldo < 0:
                     raise ValueError
-            except:
+            except Exception:
                 sueldo_input.border_color = ft.colors.RED
                 errores.append("Sueldo inválido (número positivo)")
 

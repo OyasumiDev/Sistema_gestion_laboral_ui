@@ -1,15 +1,18 @@
 import flet as ft
 import pandas as pd
 from app.core.invokers.file_open_invoker import FileOpenInvoker
+from app.core.invokers.file_save_invoker import FileSaveInvoker
 from app.core.interfaces.database_mysql import DatabaseMysql
 
 
 class EmpleadosImportController:
-    def __init__(self, page: ft.Page, on_success: callable = None):
+    def __init__(self, page: ft.Page, on_success: callable = None, on_export: callable = None):
         self.page = page
         self.db = DatabaseMysql()
         self.on_success = on_success
+        self.on_export = on_export
 
+        # ---- Importador
         self.file_invoker = FileOpenInvoker(
             page=self.page,
             on_select=self._on_file_selected,
@@ -17,9 +20,57 @@ class EmpleadosImportController:
             allowed_extensions=["xlsx", "xls", "xlsb"]
         )
 
-    def get_import_button(self, text="Importar Empleados", icon_path="assets/buttons/import_empleados-button.png"):
-        return self.file_invoker.get_open_button(text, icon_path)
+        # ---- Exportador
+        self.save_invoker = FileSaveInvoker(
+            page=self.page,
+            on_save=self._on_file_export,
+            save_dialog_title="Exportar empleados",
+            file_name="empleados.xlsx",
+            allowed_extensions=["xlsx"]
+        )
 
+    # -----------------------------
+    # BOTONES
+    # -----------------------------
+    def get_import_button(self, text="Importar", icon=ft.icons.FILE_DOWNLOAD_OUTLINED):
+        return ft.GestureDetector(
+            on_tap=lambda e: self.file_invoker.open(),
+            content=ft.Container(
+                padding=10,
+                border_radius=20,
+                bgcolor=ft.colors.SURFACE_VARIANT,
+                content=ft.Row(
+                    [
+                        ft.Icon(name=icon, size=18),
+                        ft.Text(text, size=12, weight="bold"),
+                    ],
+                    alignment=ft.MainAxisAlignment.CENTER,
+                    spacing=6,
+                ),
+            ),
+        )
+
+    def get_export_button(self, text="Exportar", icon=ft.icons.FILE_UPLOAD_OUTLINED):
+        return ft.GestureDetector(
+            on_tap=lambda e: self.save_invoker.open_save(),
+            content=ft.Container(
+                padding=10,
+                border_radius=20,
+                bgcolor=ft.colors.SURFACE_VARIANT,
+                content=ft.Row(
+                    [
+                        ft.Icon(name=icon, size=18),
+                        ft.Text(text, size=12, weight="bold"),
+                    ],
+                    alignment=ft.MainAxisAlignment.CENTER,
+                    spacing=6,
+                ),
+            ),
+        )
+
+    # -----------------------------
+    # IMPORTACIÓN
+    # -----------------------------
     def _on_file_selected(self, path: str):
         if not path:
             print("⚠️ No se seleccionó ningún archivo.")
@@ -61,8 +112,10 @@ class EmpleadosImportController:
             if columnas == ["numero_nomina", "nombre_completo", "sueldo_diario"]:
                 df = df.rename(columns={"sueldo_diario": "sueldo_por_hora"})
                 empleados = df.to_dict(orient="records")
+            elif set(["numero_nomina", "nombre_completo", "sueldo_por_hora"]).issubset(columnas):
+                empleados = df.to_dict(orient="records")
             else:
-                raise ValueError("❌ Formato de columnas no válido. Se esperaban: numero_nomina, nombre_completo, sueldo_diario")
+                raise ValueError("❌ Formato de columnas no válido. Se esperaban: numero_nomina, nombre_completo, sueldo_diario/sueldo_por_hora")
 
             return empleados
 
@@ -105,3 +158,41 @@ class EmpleadosImportController:
         except Exception as e:
             print(f"⚠️ Error verificando existencia del empleado {numero_nomina}: {e}")
             return False
+
+    # -----------------------------
+    # EXPORTACIÓN
+    # -----------------------------
+    def _on_file_export(self, ruta: str):
+        try:
+            query = "SELECT numero_nomina, nombre_completo, sueldo_por_hora FROM empleados"
+            empleados = self.db.get_data_list(query, dictionary=True)
+
+            if not empleados:
+                self.page.snack_bar = ft.SnackBar(
+                    ft.Text("⚠️ No hay empleados para exportar."),
+                    bgcolor=ft.colors.ORANGE
+                )
+                self.page.snack_bar.open = True
+                self.page.update()
+                return
+
+            df = pd.DataFrame(empleados)
+            df.to_excel(ruta, index=False)
+
+            if self.on_export:
+                self.on_export(ruta)
+
+            self.page.snack_bar = ft.SnackBar(
+                ft.Text(f"✅ Empleados exportados correctamente en {ruta}"),
+                bgcolor=ft.colors.GREEN
+            )
+            self.page.snack_bar.open = True
+            self.page.update()
+
+        except Exception as e:
+            self.page.snack_bar = ft.SnackBar(
+                ft.Text(f"❌ Error exportando empleados: {e}"),
+                bgcolor=ft.colors.RED
+            )
+            self.page.snack_bar.open = True
+            self.page.update()

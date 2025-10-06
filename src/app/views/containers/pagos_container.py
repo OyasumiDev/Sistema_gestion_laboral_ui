@@ -396,37 +396,66 @@ class PagosContainer(ft.Container):
 
         ModalPrestamosNomina(pago_data=p, on_confirmar=on_ok).mostrar()
 
+
+    def _get_fechas_disponibles_para_pago(self) -> List[date]:
+        """
+        Devuelve la lista de fechas disponibles para generar pagos,
+        considerando las asistencias completas y no utilizadas.
+        """
+        try:
+            if hasattr(self.assistance_model, "get_fechas_disponibles_para_pago"):
+                return self.assistance_model.get_fechas_disponibles_para_pago() or []
+
+            # Si no existe el método en AssistanceModel, calculamos desde min/max
+            fi = self.assistance_model.get_fecha_minima_asistencia()
+            ff = self.assistance_model.get_fecha_maxima_asistencia()
+            if not fi or not ff:
+                return []
+
+            cur, out = fi, []
+            while cur <= ff:
+                out.append(cur)
+                cur = date.fromordinal(cur.toordinal() + 1)
+            return out
+
+        except Exception as ex:
+            print(f"❌ Error al obtener fechas disponibles para pago: {ex}")
+            return []
+
+
     # ------------- Calendario -------------
     def _abrir_modal_fechas_disponibles(self):
         try:
+            # 1) Fechas ya utilizadas (bloqueadas)
             bloqueadas = self.payment_model.get_fechas_utilizadas() or []
             bloqueadas = [
                 datetime.strptime(f, "%Y-%m-%d").date() if isinstance(f, str) else f
                 for f in bloqueadas
             ]
+
             self.selector_fechas.set_fechas_bloqueadas(bloqueadas)
 
+            # 2) Fechas disponibles normales (asistencias completas y no usadas)
             disponibles = self._get_fechas_disponibles_para_pago()
             disponibles = [d for d in disponibles if d not in bloqueadas]
-            self.selector_fechas.set_fechas_disponibles(disponibles)
 
+            # 3) Fechas totalmente vacías (sin asistencias registradas)
+            fi = self.assistance_model.get_fecha_minima_asistencia()
+            ff = self.assistance_model.get_fecha_maxima_asistencia()
+            if fi and ff:
+                vacias = self.assistance_model.get_fechas_vacias(fi, ff)
+                disponibles.extend(vacias)
+
+            # 4) Elimina duplicados y ordena
+            disponibles = sorted(set(disponibles))
+
+            # 5) Enviar al selector
+            self.selector_fechas.set_fechas_disponibles(disponibles)
             self.selector_fechas.abrir_dialogo(reset_selection=True)
 
         except Exception as ex:
             ModalAlert.mostrar_info("Error", f"No se pudo abrir el calendario: {str(ex)}")
 
-    def _get_fechas_disponibles_para_pago(self) -> List[date]:
-        if hasattr(self.assistance_model, "get_fechas_disponibles_para_pago"):
-            return self.assistance_model.get_fechas_disponibles_para_pago() or []
-        min_f = getattr(self.assistance_model, "get_fecha_minima_asistencia", lambda: None)()
-        max_f = getattr(self.assistance_model, "get_fecha_maxima_asistencia", lambda: None)()
-        if not min_f or not max_f:
-            return []
-        cur, out = min_f, []
-        while cur <= max_f:
-            out.append(cur)
-            cur = date.fromordinal(cur.toordinal() + 1)
-        return out
 
     # ------------- Generación por fechas -------------
     def _generar_por_fechas(self, fechas: List[date]):

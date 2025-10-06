@@ -28,19 +28,15 @@ def _safe_create(label: str, fn):
 
 
 def bootstrap_db():
-    """
-    Crea/verifica todas las tablas y objetos de BD en el orden correcto.
-    IMPORTANTE: respeta FKs para evitar errores de referencia.
-    """
     # 1) Base
     _safe_create("tabla empleados", EmployesModel)
     _safe_create("tabla usuarios_app", UserModel)
 
-    # 2) Asistencias (depende de empleados) + triggers internos del propio modelo
-    asistencia = _safe_create("tabla asistencias", AssistanceModel)
-
-    # 3) Pagos (depende de empleados) -> requerido por descuentos y pagos_prestamo
+    # 2) Pagos (depende de empleados)
     pagos = _safe_create("tabla pagos", PaymentModel)
+
+    # 3) Asistencias (depende de empleados, y requiere pagos para integridad)
+    asistencia = _safe_create("tabla asistencias", AssistanceModel)
 
     # 4) Préstamos (depende de empleados)
     _safe_create("tabla prestamos", LoanModel)
@@ -58,12 +54,13 @@ def bootstrap_db():
     _safe_create("tabla desempeño", PerformanceModel)
     _safe_create("tabla reportes_semanales", WeeklyReportModel)
 
-    # 9) Stored Procedure (depende de asistencias y empleados). Se crea al final.
+    # 9) Stored Procedure
     try:
         print("⚙️  Verificando Stored Procedure 'horas_trabajadas_para_pagos'...")
         pagos.crear_sp_horas_trabajadas_para_pagos()
     except Exception as ex:
         print(f"❌ Error creando SP 'horas_trabajadas_para_pagos': {ex}")
+
 
 
 def iniciar_aplicacion():

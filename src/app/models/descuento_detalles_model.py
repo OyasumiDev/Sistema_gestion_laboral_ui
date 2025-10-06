@@ -1,25 +1,11 @@
-# app/models/descuento_detalles_model.py
 from typing import Dict, Any, Optional
 from app.core.interfaces.database_mysql import DatabaseMysql
-
-# Si tienes el enum, ajústalo a estos nombres:
-# - E.TABLE -> "descuento_detalles"
-# - E.ID -> "id_detalle_descuento"
-# - E.ID_PAGO -> "id_pago_nomina"   <-- ¡clave!
-# - E.APLICADO_IMSS -> "aplicado_imss"
-# - E.MONTO_IMSS -> "monto_imss"
-# - E.APLICADO_TRANSPORTE -> "aplicado_transporte"
-# - E.MONTO_TRANSPORTE -> "monto_transporte"
-# - E.APLICADO_EXTRA -> "aplicado_extra"
-# - E.DESCRIPCION_EXTRA -> "descripcion_extra"
-# - E.MONTO_EXTRA -> "monto_extra"
 
 class DescuentoDetallesModel:
     """
     Borrador de descuentos por pago (no escribe en la tabla final 'descuentos').
-    - Sin 'comida' (eliminado del flujo).
     - Un registro por id_pago_nomina (UNIQUE), con UPSERT.
-    - No aplica defaults de negocio (IMSS=50 vive en el FRONT).
+    - Si no hay registro, devuelve defaults: IMSS=50, Transporte=100.
     """
     TABLE = "descuento_detalles"
     COL_ID = "id_detalle_descuento"
@@ -37,7 +23,6 @@ class DescuentoDetallesModel:
         self._create_table()
 
     def _create_table(self):
-        # FK explícita hacia pagos(id_pago_nomina); UNIQUE para tener un borrador por pago.
         sql = f"""
         CREATE TABLE IF NOT EXISTS {self.TABLE} (
             {self.COL_ID} INT AUTO_INCREMENT PRIMARY KEY,
@@ -66,10 +51,6 @@ class DescuentoDetallesModel:
     # ------------------- CRUD borrador -------------------
 
     def upsert_detalles(self, id_pago_nomina: int, detalles: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Inserta/actualiza borrador con UPSERT.
-        Los campos numéricos pueden ser NULL; el front decide defaults visuales.
-        """
         try:
             q = f"""
             INSERT INTO {self.TABLE} (
@@ -103,15 +84,36 @@ class DescuentoDetallesModel:
             return {"status": "error", "message": f"Error al guardar borrador: {ex}"}
 
     def obtener_por_id_pago(self, id_pago_nomina: int) -> Dict[str, Any]:
-        """
-        Devuelve el borrador tal cual está en BD, o {} si no existe.
-        Si no hay registro, el FRONT mostrará defaults visuales (p.ej. IMSS=50).
-        """
         try:
             q = f"SELECT * FROM {self.TABLE} WHERE {self.COL_ID_PAGO}=%s"
-            return self.db.get_data(q, (id_pago_nomina,), dictionary=True) or {}
-        except Exception as ex:
-            return {}
+            det = self.db.get_data(q, (id_pago_nomina,), dictionary=True)
+
+            if det:
+                return det
+
+            # Defaults si no existe registro
+            return {
+                self.COL_ID_PAGO: id_pago_nomina,
+                self.COL_APLICADO_IMSS: True,
+                self.COL_MONTO_IMSS: 50.0,
+                self.COL_APLICADO_TRANSPORTE: True,
+                self.COL_MONTO_TRANSPORTE: 100.0,
+                self.COL_APLICADO_EXTRA: False,
+                self.COL_DESCRIPCION_EXTRA: None,
+                self.COL_MONTO_EXTRA: None,
+            }
+
+        except Exception:
+            return {
+                self.COL_ID_PAGO: id_pago_nomina,
+                self.COL_APLICADO_IMSS: True,
+                self.COL_MONTO_IMSS: 50.0,
+                self.COL_APLICADO_TRANSPORTE: True,
+                self.COL_MONTO_TRANSPORTE: 100.0,
+                self.COL_APLICADO_EXTRA: False,
+                self.COL_DESCRIPCION_EXTRA: None,
+                self.COL_MONTO_EXTRA: None,
+            }
 
     def eliminar_por_id_pago(self, id_pago_nomina: int) -> Dict[str, Any]:
         try:
@@ -125,25 +127,23 @@ class DescuentoDetallesModel:
 
     def aplicar_a_descuentos_y_limpiar(self, id_pago_nomina: int, discount_model) -> Dict[str, Any]:
         """
-        Toma el borrador, lo pasa al DiscountModel como registros FINALES
-        y luego elimina el borrador (el modal quedará en modo lectura).
+        Aplica descuentos definitivos al confirmar el pago:
+        - Si hay borrador → usa borrador.
+        - Si no hay borrador → aplica defaults (IMSS=50, Transporte=100).
+        - Luego elimina el borrador.
         """
         try:
             det = self.obtener_por_id_pago(id_pago_nomina)
-            if not det:
-                # Nada que aplicar: simplemente no hay borrador.
-                return {"status": "success", "message": "Sin borrador de descuentos para aplicar."}
 
             numero_nomina = self._get_numero_nomina_de_pago(id_pago_nomina)
             if not numero_nomina:
                 return {"status": "error", "message": "No se pudo resolver numero_nomina para este pago."}
 
-            # Mapear borrador -> modelo final
-            aplicar_imss = bool(det.get(self.COL_APLICADO_IMSS))
-            monto_imss = self._to_float_or_zero(det.get(self.COL_MONTO_IMSS))
+            aplicar_imss = bool(det.get(self.COL_APLICADO_IMSS, True))
+            monto_imss = self._to_float_or_zero(det.get(self.COL_MONTO_IMSS)) or 50.0
 
-            aplicar_transporte = bool(det.get(self.COL_APLICADO_TRANSPORTE))
-            monto_transporte = self._to_float_or_zero(det.get(self.COL_MONTO_TRANSPORTE))
+            aplicar_transporte = bool(det.get(self.COL_APLICADO_TRANSPORTE, True))
+            monto_transporte = self._to_float_or_zero(det.get(self.COL_MONTO_TRANSPORTE)) or 100.0
 
             aplicar_extra = bool(det.get(self.COL_APLICADO_EXTRA))
             monto_extra = self._to_float_or_zero(det.get(self.COL_MONTO_EXTRA))
@@ -169,7 +169,6 @@ class DescuentoDetallesModel:
         except Exception as ex:
             return {"status": "error", "message": f"Error al aplicar borrador: {ex}"}
 
-    # Resolver numero_nomina a partir del pago (para no exponer lógica al front)
     def _get_numero_nomina_de_pago(self, id_pago_nomina: int) -> Optional[int]:
         try:
             q = "SELECT numero_nomina FROM pagos WHERE id_pago_nomina=%s"
@@ -195,3 +194,15 @@ class DescuentoDetallesModel:
             return float(v)
         except Exception:
             return 0.0
+
+    def pago_esta_pagado(self, id_pago_nomina: int) -> bool:
+        """
+        Devuelve True si el pago ya está en estado 'pagado'.
+        Esto fuerza al modal de descuentos a abrirse en modo lectura.
+        """
+        try:
+            q = "SELECT estado FROM pagos WHERE id_pago_nomina=%s"
+            r = self.db.get_data(q, (id_pago_nomina,), dictionary=True)
+            return (r or {}).get("estado") == "pagado"
+        except Exception:
+            return False

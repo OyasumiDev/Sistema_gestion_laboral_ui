@@ -766,47 +766,100 @@ class AssistanceModel:
             return []
 
 
-
-    def _get_fechas_disponibles(self) -> Tuple[List[date], List[date]]:
+    def get_fecha_minima_asistencia(self) -> Optional[date]:
         """
-        Devuelve (bloqueadas, disponibles) como listas de datetime.date ordenadas.
-        - bloqueadas: fechas ya usadas en nómina (pagadas o pendientes).
-        - disponibles: fechas con asistencias completas y NO usadas aún.
+        Devuelve la fecha mínima registrada en asistencias como datetime.date.
         """
-        # 1) Bloqueadas desde pagos (string -> date)
         try:
-            usadas = self.payment_model.get_fechas_utilizadas() or []
-        except Exception:
-            usadas = []
-        bloqueadas_set = set()
-        for f in usadas:
-            if isinstance(f, date):
-                bloqueadas_set.add(f)
-            elif isinstance(f, str):
-                try:
-                    bloqueadas_set.add(datetime.strptime(f, "%Y-%m-%d").date())
-                except Exception:
-                    pass
+            query = f"SELECT MIN({E_ASSISTANCE.FECHA.value}) AS fi FROM {E_ASSISTANCE.TABLE.value}"
+            result = self.db.get_data(query, dictionary=True)
+            fi = result.get("fi") if result else None
+            if isinstance(fi, str):
+                fi = datetime.strptime(fi, "%Y-%m-%d").date()
+            return fi
+        except Exception as e:
+            print(f"❌ Error al obtener fecha mínima de asistencia: {e}")
+            return None
 
-        # 2) Disponibles desde asistencias (ya vienen como date o str)
+
+    def get_fecha_maxima_asistencia(self) -> Optional[date]:
+        """
+        Devuelve la fecha máxima registrada en asistencias como datetime.date.
+        """
         try:
-            disp_raw = self.get_fechas_disponibles_para_pago() or []
-        except Exception:
-            disp_raw = []
+            query = f"SELECT MAX({E_ASSISTANCE.FECHA.value}) AS ff FROM {E_ASSISTANCE.TABLE.value}"
+            result = self.db.get_data(query, dictionary=True)
+            ff = result.get("ff") if result else None
+            if isinstance(ff, str):
+                ff = datetime.strptime(ff, "%Y-%m-%d").date()
+            return ff
+        except Exception as e:
+            print(f"❌ Error al obtener fecha máxima de asistencia: {e}")
+            return None
 
-        disponibles_set = set()
-        for f in disp_raw:
-            if isinstance(f, date):
-                disponibles_set.add(f)
-            elif isinstance(f, str):
-                try:
-                    disponibles_set.add(datetime.strptime(f, "%Y-%m-%d").date())
-                except Exception:
-                    pass
 
-        # 3) Quita las bloqueadas de las disponibles
-        disponibles_set -= bloqueadas_set
+    def get_fechas_disponibles_para_pago(self) -> List[date]:
+        """
+        Fechas con asistencias completas y que aún NO se han usado en nómina (fecha_generada IS NULL).
+        """
+        try:
+            q = f"""
+                SELECT DISTINCT {E_ASSISTANCE.FECHA.value} AS fecha
+                FROM {E_ASSISTANCE.TABLE.value}
+                WHERE {E_ASSISTANCE.ESTADO.value} = 'completo'
+                AND {E_ASSISTANCE.FECHA_GENERADA.value} IS NULL
+                ORDER BY fecha ASC
+            """
+            rows = self.db.get_data_list(q, dictionary=True) or []
+            out: List[date] = []
+            for r in rows:
+                f = r.get("fecha")
+                if isinstance(f, date):
+                    out.append(f)
+                elif isinstance(f, str):
+                    out.append(datetime.strptime(f, "%Y-%m-%d").date())
+            return out
+        except Exception as ex:
+            print(f"❌ Error al obtener fechas disponibles para pago: {ex}")
+            return []
 
-        bloqueadas = sorted(bloqueadas_set)
-        disponibles = sorted(disponibles_set)
-        return bloqueadas, disponibles
+
+    def get_fechas_vacias(self, fi: date, ff: date) -> List[date]:
+        """
+        Retorna todas las fechas entre fi y ff que no tienen asistencias registradas.
+        """
+        try:
+            if not fi or not ff:
+                return []
+
+            # Fechas ocupadas
+            q = f"""
+                SELECT DISTINCT {E_ASSISTANCE.FECHA.value} AS fecha
+                FROM {E_ASSISTANCE.TABLE.value}
+                WHERE {E_ASSISTANCE.FECHA.value} BETWEEN %s AND %s
+            """
+            rows = self.db.get_data_list(q, (fi, ff), dictionary=True) or []
+            ocupadas = set()
+            for r in rows:
+                f = r.get("fecha")
+                if isinstance(f, date):
+                    ocupadas.add(f)
+                elif isinstance(f, str):
+                    ocupadas.add(datetime.strptime(f, "%Y-%m-%d").date())
+
+            # Generar rango completo y filtrar
+            vacias = []
+            cur = fi
+            while cur <= ff:
+                if cur not in ocupadas:
+                    vacias.append(cur)
+                cur += timedelta(days=1)
+
+            return vacias
+        except Exception as ex:
+            print(f"❌ Error al obtener fechas vacías: {ex}")
+            return []
+
+    def marcar_asistencias_como_no_generadas(self, fecha_inicio, fecha_fin):
+        q = "UPDATE asistencias SET generado=0 WHERE fecha BETWEEN %s AND %s"
+        self.db.run_query(q, (fecha_inicio, fecha_fin))

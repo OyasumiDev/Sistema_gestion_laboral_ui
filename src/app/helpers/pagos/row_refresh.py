@@ -1,59 +1,29 @@
-# helpers/pagos/payment_row_refresh.py
+# app/helpers/pagos/row_refresh.py
 from __future__ import annotations
 
 from typing import Any, Dict, Optional, Callable
 import flet as ft
 
-from app.helpers.pagos.payment_view_math import PaymentViewMath, RowCalcDict
-from app.models.discount_model import DiscountModel
-from app.models.descuento_detalles_model import DescuentoDetallesModel
-from app.models.loan_payment_model import LoanPaymentModel
-from app.models.detalles_pagos_prestamo_model import DetallesPagosPrestamoModel
-
-# Botones Guardar / Cancelar (tu BotonFactory)
-from app.helpers.boton_factory import crear_boton_guardar, crear_boton_cancelar
-
 
 class PaymentRowRefresh:
     """
-    Row helper para Pagos (Flet 0.24):
-      - Solo 'Depósito' es editable (TextField).
-      - Descuentos / Préstamos / Saldo / Efectivo / Total se muestran como números (Text) que se actualizan.
-      - Escritura continua en 'Depósito' sin regex/InputFilter (validación manual).
-      - Columna 'Ediciones' separada de 'Acciones'.
+    Construye y refresca una fila de pago en DataTable.
+    - Provee TextField de Depósito con on_change/blur/submit (buffer externo).
+    - Botones de edición (descuentos, préstamos); estado.
+    - Métodos set_* para refrescar SIN romper la expansión ni el foco.
+    - Mantiene referencias a controles clave para actualizaciones rápidas.
+
+    Columnas esperadas por tu DataTable (índices):
+    0 ID Pago | 1 ID Emp | 2 Nombre | 3 Fecha | 4 Horas | 5 Sueldo/H |
+    6 Monto Base | 7 Descuentos | 8 Préstamos | 9 Saldo | 10 Depósito |
+    11 Efectivo | 12 Total | 13 Ediciones | 14 Acciones (reemplaza container) | 15 Estado
     """
 
-    def __init__(
-        self,
-        *,
-        aplicar_redondeo_50: bool = True,
-        key_id_pago: str = "id_pago_nomina",
-        key_monto_base: str = "monto_base",
-        key_estado: str = "estado",
-        # Inyección de modelos (opcional)
-        discount_model: Optional[DiscountModel] = None,
-        detalles_desc_model: Optional[DescuentoDetallesModel] = None,
-        loan_payment_model: Optional[LoanPaymentModel] = None,
-        detalles_prestamo_model: Optional[DetallesPagosPrestamoModel] = None,
-        # Callback global post-recalc (opcional)
-        on_after_recalc: Optional[Callable[[RowCalcDict], None]] = None,
-    ):
-        self.key_id_pago = key_id_pago
-        self.key_monto_base = key_monto_base
-        self.key_estado = key_estado
-        self.aplicar_redondeo_50 = aplicar_redondeo_50
-        self.on_after_recalc = on_after_recalc
+    def __init__(self):
+        # cache: id_pago -> dict(controles)
+        self._cache: Dict[int, Dict[str, Any]] = {}
 
-        self.math = PaymentViewMath(
-            discount_model=discount_model or DiscountModel(),
-            detalles_desc_model=detalles_desc_model or DescuentoDetallesModel(),
-            loan_payment_model=loan_payment_model or LoanPaymentModel(),
-            detalles_prestamo_model=detalles_prestamo_model or DetallesPagosPrestamoModel(),
-        )
-
-    # -----------------------------
-    # Construcción de fila
-    # -----------------------------
+    # -------------------- Construcción --------------------
     def build_row(
         self,
         pago_row: Dict[str, Any],
@@ -65,279 +35,185 @@ class PaymentRowRefresh:
         efectivo_value: float,
         total_value: float,
         esta_pagado: bool,
-        # Ediciones
         on_editar_descuentos: Callable[[Dict[str, Any]], None],
         on_editar_prestamos: Callable[[Dict[str, Any]], None],
         tiene_prestamo_activo: bool,
-        # Acciones principales (opcionales)
-        on_confirmar: Optional[Callable[[int], None]] = None,
-        on_eliminar: Optional[Callable[[int], None]] = None,
-        # Guardar / Cancelar (opcionales, BotonFactory)
-        on_guardar: Optional[Callable[[int], None]] = None,
-        on_cancelar: Optional[Callable[[int], None]] = None,
-        # Depósito buffer callbacks
-        on_deposito_change: Callable[[str], None] = lambda _v: None,
-        on_deposito_blur: Callable[[], None] = lambda: None,
-        on_deposito_submit: Callable[[], None] = lambda: None,
+        on_confirmar: Callable[[int], None],
+        on_eliminar: Callable[[int], None],
+        on_deposito_change: Callable[[str], None],
+        on_deposito_blur: Callable[[], None],
+        on_deposito_submit: Callable[[], None],
     ) -> ft.DataRow:
-        """
-        Orden de columnas:
-        ID Pago | ID Empleado | Nombre(150) | Fecha | Horas | Sueldo/Hora | Monto Base |
-        Descuentos | Préstamos | Saldo | Depósito | Efectivo | Total | Ediciones | Acciones | Estado
-        """
-        id_pago = int(pago_row.get(self.key_id_pago) or pago_row.get("id_pago") or 0)
-        id_empleado = int(pago_row.get("numero_nomina") or pago_row.get("id_empleado") or 0)
-        nombre = str(pago_row.get("nombre_completo") or pago_row.get("nombre") or "-")
-        fecha_pago = str(pago_row.get("fecha_pago") or pago_row.get("fecha") or "-")
-        horas = f"{float(pago_row.get('horas', 0) or 0):.2f}"
-        sueldo_hora = f"{float(pago_row.get('sueldo_hora', 0) or 0):.2f}"
-        monto_base = f"{float(pago_row.get(self.key_monto_base, 0) or 0):.2f}"
-        estado = str(pago_row.get(self.key_estado) or "").strip()
 
-        def _wrap(control: ft.Control, width: int) -> ft.Container:
-            return ft.Container(
-                content=control, width=width, alignment=ft.alignment.center,
-                padding=ft.padding.symmetric(horizontal=2),
-            )
+        id_pago = int(pago_row.get("id_pago_nomina") or pago_row.get("id_pago"))
+        num = int(pago_row.get("numero_nomina") or 0)
+        nombre = str(pago_row.get("nombre_completo") or "")
+        fecha_pago = str(pago_row.get("fecha_pago") or "")
+        horas = float(pago_row.get("horas") or 0.0)
+        sueldo_h = float(pago_row.get("sueldo_por_hora") or 0.0)
+        monto_base = float(pago_row.get("monto_base") or 0.0)
+        estado = str(pago_row.get("estado") or "").lower()
 
-        def fmt2(v: float) -> str:
-            try:
-                return f"{float(v):.2f}"
-            except Exception:
-                return "0.00"
+        # ------------- celdas presentacionales -------------
+        def _txt_money(v: float) -> ft.Text:
+            return ft.Text(f"${float(v):,.2f}")
 
-        # --- Campos derivados (NO editables) como Text ---
-        txt_desc = ft.Text(fmt2(descuentos_value), text_align=ft.TextAlign.RIGHT)
-        txt_prest = ft.Text(fmt2(prestamos_value), text_align=ft.TextAlign.RIGHT)
-        txt_saldo = ft.Text(fmt2(saldo_value), text_align=ft.TextAlign.RIGHT)
-        txt_efec = ft.Text(fmt2(efectivo_value), text_align=ft.TextAlign.RIGHT)
-        txt_total = ft.Text(fmt2(total_value), text_align=ft.TextAlign.RIGHT)
+        def _txt_small(s: str) -> ft.Text:
+            return ft.Text(s, size=12)
 
-        # --- Depósito editable (TextField, escritura continua) ---
-        txt_dep = ft.TextField(
-            value=fmt2(deposito_value),
+        txt_id = ft.Text(str(id_pago))
+        txt_num = ft.Text(str(num))
+        txt_nombre = ft.Text(nombre)
+        txt_fecha = ft.Text(fecha_pago)
+        txt_horas = ft.Text(f"{horas:.2f}")
+        txt_sueldo = _txt_money(sueldo_h)
+        txt_monto_base = _txt_money(monto_base)
+        txt_desc = _txt_money(descuentos_value)
+        txt_prest = _txt_money(prestamos_value)
+        txt_saldo = _txt_money(saldo_value)
+        txt_efectivo = _txt_money(efectivo_value)
+        txt_total = _txt_money(total_value)
+
+        # ------------- TextField de Depósito -------------
+        tf_deposito = ft.TextField(
+            value=f"{float(deposito_value or 0):.2f}",
+            width=110,
+            height=34,
             text_align=ft.TextAlign.RIGHT,
-            width=120,
+            dense=True,
             read_only=esta_pagado,
-            keyboard_type=ft.KeyboardType.NUMBER,  # hint en Flet 0.24
-            on_change=lambda e: self._on_dep_change(
-                e, pago_row, txt_desc, txt_prest, txt_total, txt_efec, txt_saldo, on_deposito_change
-            ),
+            on_change=lambda e: on_deposito_change(e.control.value),
             on_blur=lambda e: on_deposito_blur(),
             on_submit=lambda e: on_deposito_submit(),
         )
 
-        # ========== Columna "Ediciones" ==========
+        # ------------- Botones edición (col 13) -------------
         btn_desc = ft.IconButton(
-            icon=ft.icons.PRICE_CHANGE_OUTLINED,
+            icon=ft.icons.REMOVE_CIRCLE_OUTLINE,
             tooltip="Editar descuentos",
             on_click=lambda e: on_editar_descuentos(pago_row),
+            icon_color=ft.colors.AMBER_700,
+            disabled=esta_pagado,
         )
         btn_prest = ft.IconButton(
-            icon=ft.icons.ACCOUNT_BALANCE_WALLET_OUTLINED,
+            icon=ft.icons.ACCOUNT_BALANCE_WALLET,
             tooltip="Editar préstamos",
-            disabled=not tiene_prestamo_activo,
-            on_click=(lambda e: on_editar_prestamos(pago_row)) if tiene_prestamo_activo else None,
+            on_click=lambda e: on_editar_prestamos(pago_row),
+            icon_color=ft.colors.BLUE_600,
+            disabled=(not tiene_prestamo_activo) or esta_pagado,
         )
-        ediciones_col = ft.Row([btn_desc, btn_prest], spacing=6, alignment=ft.MainAxisAlignment.CENTER)
+        ediciones_cell = ft.Row([btn_desc, btn_prest], spacing=6)
 
-        # ========== Columna "Acciones" ==========
-        acciones_controls: list[ft.Control] = []
-        if on_guardar:
-            acciones_controls.append(crear_boton_guardar(lambda _e: on_guardar(id_pago)))
-        if on_cancelar:
-            acciones_controls.append(crear_boton_cancelar(lambda _e: on_cancelar(id_pago)))
-        if on_confirmar:
-            acciones_controls.append(ft.IconButton(
-                icon=ft.icons.CHECK_CIRCLE_OUTLINE,
-                tooltip="Confirmar pago",
-                disabled=esta_pagado,
-                icon_color=ft.colors.GREEN_600 if not esta_pagado else ft.colors.GREY,
-                on_click=lambda _e: on_confirmar(id_pago),
-            ))
-        if on_eliminar:
-            acciones_controls.append(ft.IconButton(
-                icon=ft.icons.DELETE_OUTLINE,
-                tooltip="Eliminar pago",
-                icon_color=ft.colors.RED_600,
-                on_click=lambda _e: on_eliminar(id_pago),
-            ))
-        acciones_col = ft.Row(acciones_controls, spacing=6, alignment=ft.MainAxisAlignment.CENTER)
+        # ------------- Estado (col 15) -------------
+        estado_chip = ft.Container(
+            content=_txt_small("PAGADO" if estado == "pagado" else "PENDIENTE"),
+            bgcolor=ft.colors.GREEN_100 if estado == "pagado" else ft.colors.GREY_200,
+            padding=ft.padding.symmetric(4, 6),
+            border_radius=6,
+        )
 
-        # Estado
-        txt_estado = ft.Text(estado.upper() if estado else "-", weight=ft.FontWeight.BOLD)
+        # ------------- Placeholder Acciones (col 14) -------------
+        acciones_placeholder = ft.Text("-")  # lo reemplaza el container
 
-        # DataRow en el ORDEN que espera tu DataTable
+        # ------------- DataRow -------------
         row = ft.DataRow(
             cells=[
-                ft.DataCell(_wrap(ft.Text(str(id_pago)), 70)),                              # ID Pago
-                ft.DataCell(_wrap(ft.Text(str(id_empleado)), 90)),                          # ID Empleado
-                ft.DataCell(_wrap(ft.Text(nombre, overflow=ft.TextOverflow.ELLIPSIS, max_lines=1), 150)),  # Nombre (150)
-                ft.DataCell(_wrap(ft.Text(fecha_pago), 110)),                               # Fecha Pago
-                ft.DataCell(_wrap(ft.Text(horas), 70)),                                     # Horas
-                ft.DataCell(_wrap(ft.Text(sueldo_hora), 100)),                              # Sueldo/Hora
-                ft.DataCell(_wrap(ft.Text(monto_base), 110)),                               # Monto Base
-                ft.DataCell(_wrap(txt_desc, 120)),                                          # Descuentos (Text)
-                ft.DataCell(_wrap(txt_prest, 110)),                                         # Préstamos (Text)
-                ft.DataCell(_wrap(txt_saldo, 100)),                                         # Saldo (Text)
-                ft.DataCell(_wrap(txt_dep, 120)),                                           # Depósito (TextField)
-                ft.DataCell(_wrap(txt_efec, 110)),                                          # Efectivo (Text)
-                ft.DataCell(_wrap(txt_total, 110)),                                         # Total (Text)
-                ft.DataCell(_wrap(ediciones_col, 100)),                                     # Ediciones
-                ft.DataCell(_wrap(acciones_col, 120)),                                      # Acciones
-                ft.DataCell(_wrap(txt_estado, 90)),                                         # Estado
+                ft.DataCell(txt_id),            # 0
+                ft.DataCell(txt_num),           # 1
+                ft.DataCell(txt_nombre),        # 2
+                ft.DataCell(txt_fecha),         # 3
+                ft.DataCell(txt_horas),         # 4
+                ft.DataCell(txt_sueldo),        # 5
+                ft.DataCell(txt_monto_base),    # 6
+                ft.DataCell(txt_desc),          # 7
+                ft.DataCell(txt_prest),         # 8
+                ft.DataCell(txt_saldo),         # 9
+                ft.DataCell(tf_deposito),       # 10
+                ft.DataCell(txt_efectivo),      # 11
+                ft.DataCell(txt_total),         # 12
+                ft.DataCell(ediciones_cell),    # 13
+                ft.DataCell(acciones_placeholder),  # 14 (reemplazado fuera)
+                ft.DataCell(estado_chip),       # 15
             ],
         )
-
-        # Refs para setters posteriores
-        row.data = {
-            "id_pago": id_pago,
-            "txt_descuentos": txt_desc,   # ft.Text
-            "txt_prestamos": txt_prest,   # ft.Text
-            "txt_saldo": txt_saldo,       # ft.Text
-            "txt_deposito": txt_dep,      # ft.TextField
-            "txt_efectivo": txt_efec,     # ft.Text
-            "txt_total": txt_total,       # ft.Text
-            "txt_estado": txt_estado,
-            "btn_prest": btn_prest,
+        # Guarda referencias para refrescos sin re-expansión
+        self._cache[id_pago] = {
+            "row": row,
+            "txt_desc": txt_desc,
+            "txt_prest": txt_prest,
+            "txt_saldo": txt_saldo,
+            "tf_deposito": tf_deposito,
+            "txt_efectivo": txt_efectivo,
+            "txt_total": txt_total,
+            "estado_chip": estado_chip,
         }
+        # atributo auxiliar por si quieres ubicar rápido
+        row._id_pago = id_pago  # tipo: ignore
         return row
 
-    # -----------------------------
-    # Eventos y validación (sin regex)
-    # -----------------------------
-    def _on_dep_change(
-        self,
-        e: ft.ControlEvent,
-        pago_row: Dict[str, Any],
-        txt_desc: ft.Text,
-        txt_prest: ft.Text,
-        txt_total: ft.Text,
-        txt_efec: ft.Text,
-        txt_saldo: ft.Text,
-        on_deposito_change_cb: Callable[[str], None],
-    ) -> None:
-        raw = e.control.value or ""
-        on_deposito_change_cb(raw)  # buffer externo
-
-        dep = self._safe_float(raw)
-        try:
-            calc = self.math.recalc_from_pago_row(
-                pago_row,
-                deposito_ui=dep,
-                key_monto_base=self.key_monto_base,
-                key_id_pago=self.key_id_pago,
-                aplicar_redondeo_50=self.aplicar_redondeo_50,
-            )
-        except Exception:
-            calc = RowCalcDict(descuentos_view=0.0, prestamos_view=0.0, total_vista=0.0, efectivo=0.0, saldo_ajuste=0.0)
-
-        # Pintar derivados (ft.Text)
-        txt_desc.value = f"{calc['descuentos_view']:.2f}"
-        txt_prest.value = f"{calc['prestamos_view']:.2f}"
-        txt_total.value = f"{calc['total_vista']:.2f}"
-        txt_efec.value = f"{calc['efectivo']:.2f}"
-        txt_saldo.value = f"{calc['saldo_ajuste']:.2f}"
-
-        txt_desc.update(); txt_prest.update(); txt_total.update(); txt_efec.update(); txt_saldo.update()
-        e.control.border_color = ft.colors.RED if dep > calc["total_vista"] + 1e-9 else None
-        e.control.update()
-
-        if callable(self.on_after_recalc):
+    # -------------------- Búsqueda fila --------------------
+    def get_row(self, datatable: ft.DataTable, id_pago: int) -> Optional[ft.DataRow]:
+        if id_pago in self._cache:
+            return self._cache[id_pago].get("row")
+        # búsqueda defensiva
+        for r in datatable.rows:
             try:
-                self.on_after_recalc(calc)
-            except Exception:
-                pass
-
-    # -----------------------------
-    # Getters / Setters
-    # -----------------------------
-    def get_row(self, table: ft.DataTable, id_pago_nomina: int) -> Optional[ft.DataRow]:
-        for r in table.rows:
-            try:
-                if getattr(r, "data", None) and r.data.get("id_pago") == id_pago_nomina:
+                rid = int(str(r.cells[0].content.value))
+                if rid == id_pago:
                     return r
             except Exception:
                 continue
         return None
 
-    def set_descuentos(self, row: ft.DataRow, value: float) -> None:
-        try:
-            row.data["txt_descuentos"].value = f"{float(value):.2f}"
-            row.data["txt_descuentos"].update()
-        except Exception:
-            pass
+    # -------------------- Setters rápidos --------------------
+    def set_descuentos(self, row: ft.DataRow, valor: float):
+        c = self._find_controls(row)
+        if c and c["txt_desc"]:
+            c["txt_desc"].value = f"${float(valor):,.2f}"
 
-    def set_prestamos(self, row: ft.DataRow, value: float) -> None:
-        try:
-            row.data["txt_prestamos"].value = f"{float(value):.2f}"
-            row.data["txt_prestamos"].update()
-        except Exception:
-            pass
+    def set_prestamos(self, row: ft.DataRow, valor: float):
+        c = self._find_controls(row)
+        if c and c["txt_prest"]:
+            c["txt_prest"].value = f"${float(valor):,.2f}"
 
-    def set_saldo(self, row: ft.DataRow, value: float) -> None:
-        try:
-            row.data["txt_saldo"].value = f"{float(value):.2f}"
-            row.data["txt_saldo"].update()
-        except Exception:
-            pass
+    def set_saldo(self, row: ft.DataRow, valor: float):
+        c = self._find_controls(row)
+        if c and c["txt_saldo"]:
+            c["txt_saldo"].value = f"${float(valor):,.2f}"
 
-    def set_efectivo(self, row: ft.DataRow, value: float) -> None:
-        try:
-            row.data["txt_efectivo"].value = f"{float(value):.2f}"
-            row.data["txt_efectivo"].update()
-        except Exception:
-            pass
+    def set_efectivo(self, row: ft.DataRow, valor: float):
+        c = self._find_controls(row)
+        if c and c["txt_efectivo"]:
+            c["txt_efectivo"].value = f"${float(valor):,.2f}"
 
-    def set_total(self, row: ft.DataRow, value: float) -> None:
-        try:
-            row.data["txt_total"].value = f"{float(value):.2f}"
-            row.data["txt_total"].update()
-        except Exception:
-            pass
+    def set_total(self, row: ft.DataRow, valor: float):
+        c = self._find_controls(row)
+        if c and c["txt_total"]:
+            c["txt_total"].value = f"${float(valor):,.2f}"
 
-    def set_deposito_border_color(self, row: ft.DataRow, color: Optional[str]) -> None:
-        try:
-            dep = row.data["txt_deposito"]
-            dep.border_color = color
-            dep.update()
-        except Exception:
-            pass
+    def set_deposito_border_color(self, row: ft.DataRow, color: Optional[str]):
+        c = self._find_controls(row)
+        if c and c["tf_deposito"]:
+            c["tf_deposito"].border_color = color
 
-    def set_estado_pagado(self, row: ft.DataRow) -> None:
-        try:
-            row.data["txt_estado"].value = "PAGADO"
-            row.data["txt_estado"].update()
+    def set_estado_pagado(self, row: ft.DataRow):
+        c = self._find_controls(row)
+        if not c:
+            return
+        chip: ft.Container = c["estado_chip"]
+        chip.content.value = "PAGADO"
+        chip.bgcolor = ft.colors.GREEN_100
+        # Bloquea depósito
+        tf: ft.TextField = c["tf_deposito"]
+        tf.read_only = True
 
-            dep = row.data.get("txt_deposito")
-            if dep:
-                dep.read_only = True
-                dep.border_color = None
-                dep.update()
-        except Exception:
-            pass
-
-    # -----------------------------
-    # Utils
-    # -----------------------------
-    @staticmethod
-    def _safe_float(texto: Any) -> float:
-        """
-        Convierte texto a float sin lanzar error:
-        - "", ".", "-", "-." -> 0.0 (permite escritura continua)
-        - recorta a 2 decimales si trae muchos (sin regex)
-        """
-        try:
-            s = str(texto).strip().replace(",", "")
-            if s in ("", ".", "-", "-."):
-                return 0.0
-            if "." in s:
-                partes = s.split(".")
-                enteros = "".join(ch for ch in partes[0] if ch.isdigit() or (ch == "-" and not partes[0].startswith("-")))
-                dec = "".join(ch for ch in partes[1] if ch.isdigit())[:2]
-                s = f"{enteros}.{dec}" if dec != "" else f"{enteros}."
-            else:
-                s = "".join(ch for ch in s if ch.isdigit() or ch == "-")
-            return float(s) if s not in ("", "-", "-.") else 0.0
-        except Exception:
-            return 0.0
+    # -------------------- Util interno --------------------
+    def _find_controls(self, row: ft.DataRow) -> Optional[Dict[str, Any]]:
+        id_pago = getattr(row, "_id_pago", None)
+        if id_pago is None:
+            # intenta leer del texto en celda 0
+            try:
+                id_pago = int(str(row.cells[0].content.value))
+            except Exception:
+                return None
+        return self._cache.get(int(id_pago))

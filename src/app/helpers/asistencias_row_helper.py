@@ -1,6 +1,5 @@
 import flet as ft
-from typing import Callable, Dict, Tuple
-from datetime import datetime, date, time, timedelta
+from typing import Callable, Dict
 from app.helpers.calculo_horas_helper import CalculoHorasHelper
 
 
@@ -18,7 +17,7 @@ class AsistenciasRowHelper:
             padding=ft.padding.symmetric(horizontal=2)
         )
 
-
+    # ---------------- FILA NUEVA ----------------
     def build_fila_nueva(
         self,
         grupo_importacion: str,
@@ -30,52 +29,50 @@ class AsistenciasRowHelper:
         if "descanso" not in registro:
             registro["descanso"] = "SN"
 
+        # Campo tiempo trabajado solo lectura
         tiempo_trabajo_field = ft.TextField(
             value=registro.get("tiempo_trabajo_con_descanso", "0.00"),
             width=100,
             read_only=True
         )
 
+        # Entrada / salida
         entrada_field = ft.TextField(width=100)
         salida_field = ft.TextField(width=100)
-
         entrada_field.value = self.calculo_helper.sanitizar_hora(registro.get("hora_entrada", ""))
         salida_field.value = self.calculo_helper.sanitizar_hora(registro.get("hora_salida", ""))
 
-        entrada_field.on_change = lambda e: self.calculo_helper._actualizar_tiempo_trabajo(
-            entrada_field, salida_field, registro["descanso"], tiempo_trabajo_field, registro
-        )
-        salida_field.on_change = lambda e: self.calculo_helper._actualizar_tiempo_trabajo(
-            entrada_field, salida_field, registro["descanso"], tiempo_trabajo_field, registro
-        )
+        entrada_field.on_blur = lambda e: self._recalcular_fila(entrada_field, salida_field, registro, tiempo_trabajo_field)
+        salida_field.on_blur = lambda e: self._recalcular_fila(entrada_field, salida_field, registro, tiempo_trabajo_field)
 
-        def on_numero_change(e):
+        # Validaciones ID / fecha solo en blur
+        def on_numero_blur(e):
             registro["numero_nomina"] = e.control.value
-            self.calculo_helper.validar_fecha_y_numero(registro, registros_del_grupo, numero_field, fecha_field)
+            self.calculo_helper.validar_fecha_y_numero(
+                registro, registros_del_grupo, numero_field, fecha_field
+            )
 
-        def on_fecha_change(e):
+        def on_fecha_blur(e):
             registro["fecha"] = e.control.value
-            self.calculo_helper.validar_fecha_y_numero(registro, registros_del_grupo, numero_field, fecha_field)
+            self.calculo_helper.validar_fecha_y_numero(
+                registro, registros_del_grupo, numero_field, fecha_field
+            )
 
         numero_field = ft.TextField(
             width=60,
             value=str(registro.get("numero_nomina", "")),
-            on_change=on_numero_change,
+            on_blur=on_numero_blur,
             autofocus=True
         )
-
         fecha_field = ft.TextField(
             width=150,
             value=str(registro.get("fecha", "")),
-            on_change=on_fecha_change
+            on_blur=on_fecha_blur
         )
 
+        # Descanso
         descanso_widget = self._crear_botones_descanso(
-            grupo_importacion,
-            registro,
-            tiempo_trabajo_field,
-            entrada_field,
-            salida_field
+            grupo_importacion, registro, tiempo_trabajo_field, entrada_field, salida_field
         )
 
         return ft.DataRow(cells=[
@@ -93,7 +90,7 @@ class AsistenciasRowHelper:
             ], spacing=5), 100))
         ])
 
-
+    # ---------------- FILA EDICIÓN ----------------
     def build_fila_edicion(self, registro: Dict, on_save: Callable, on_cancel: Callable) -> ft.DataRow:
         numero_nomina = registro["numero_nomina"]
         fecha = registro["fecha"]
@@ -101,23 +98,28 @@ class AsistenciasRowHelper:
         if "descanso" not in registro:
             registro["descanso"] = "SN"
 
-        tiempo_field = ft.TextField(value=registro.get("tiempo_trabajo_con_descanso", "00:00:00"), width=100, read_only=True)
+        tiempo_field = ft.TextField(
+            value=registro.get("tiempo_trabajo_con_descanso", "00:00:00"),
+            width=100,
+            read_only=True
+        )
 
         entrada_field = ft.TextField(value=self.calculo_helper.sanitizar_hora(registro.get("hora_entrada", "")), width=100)
         salida_field = ft.TextField(value=self.calculo_helper.sanitizar_hora(registro.get("hora_salida", "")), width=100)
 
-        entrada_field.on_change = lambda e: self.calculo_helper._actualizar_tiempo_trabajo(
-            entrada_field, salida_field, registro["descanso"], tiempo_field, registro, [entrada_field, salida_field, tiempo_field]
-        )
-        salida_field.on_change = lambda e: self.calculo_helper._actualizar_tiempo_trabajo(
-            entrada_field, salida_field, registro["descanso"], tiempo_field, registro, [entrada_field, salida_field, tiempo_field]
-        )
+        entrada_field.on_blur = lambda e: self._recalcular_fila(entrada_field, salida_field, registro, tiempo_field)
+        salida_field.on_blur = lambda e: self._recalcular_fila(entrada_field, salida_field, registro, tiempo_field)
 
-        descanso_widget = self._crear_botones_descanso(numero_nomina, registro, tiempo_field, entrada_field, salida_field)
+        descanso_widget = self._crear_botones_descanso(
+            numero_nomina, registro, tiempo_field, entrada_field, salida_field
+        )
 
         return ft.DataRow(cells=[
             ft.DataCell(self._wrap_cell(ft.Text(str(numero_nomina)), 60)),
-            ft.DataCell(self._wrap_cell(ft.Text(registro.get("nombre_completo", ""), overflow=ft.TextOverflow.ELLIPSIS, max_lines=1, text_align=ft.TextAlign.LEFT), 250)),
+            ft.DataCell(self._wrap_cell(ft.Text(
+                registro.get("nombre_completo", ""),
+                overflow=ft.TextOverflow.ELLIPSIS, max_lines=1, text_align=ft.TextAlign.LEFT
+            ), 250)),
             ft.DataCell(self._wrap_cell(ft.Text(str(fecha)), 135)),
             ft.DataCell(self._wrap_cell(entrada_field, 100)),
             ft.DataCell(self._wrap_cell(salida_field, 100)),
@@ -130,14 +132,8 @@ class AsistenciasRowHelper:
             ], spacing=5), 100))
         ])
 
-
-
-    def build_fila_vista(
-        self,
-        registro: dict,
-        on_edit: Callable,
-        on_delete: Callable = None
-    ) -> ft.DataRow:
+    # ---------------- FILA VISTA ----------------
+    def build_fila_vista(self, registro: dict, on_edit: Callable, on_delete: Callable = None) -> ft.DataRow:
         numero_nomina = registro["numero_nomina"]
         fecha = registro["fecha"]
         descanso = registro.get("descanso", "SN")
@@ -145,27 +141,20 @@ class AsistenciasRowHelper:
         tiempo_mostrar = registro.get("tiempo_trabajo_con_descanso", "00:00:00")
 
         acciones = [
-            ft.IconButton(
-                icon=ft.icons.EDIT,
-                tooltip="Editar",
-                on_click=lambda e: on_edit(numero_nomina, fecha)
-            )
+            ft.IconButton(icon=ft.icons.EDIT, tooltip="Editar", on_click=lambda e: on_edit(numero_nomina, fecha))
         ]
-
         if on_delete:
             acciones.append(
-                ft.IconButton(
-                    icon=ft.icons.DELETE_OUTLINE,
-                    tooltip="Eliminar",
-                    icon_color=ft.colors.RED_600,
-                    on_click=lambda e: on_delete(registro)
-                )
+                ft.IconButton(icon=ft.icons.DELETE_OUTLINE, tooltip="Eliminar", icon_color=ft.colors.RED_600,
+                              on_click=lambda e: on_delete(registro))
             )
 
         return ft.DataRow(cells=[
             ft.DataCell(self._wrap_cell(ft.Text(str(numero_nomina)), 60)),
-            ft.DataCell(self._wrap_cell(ft.Text(registro.get("nombre_completo", ""), overflow=ft.TextOverflow.ELLIPSIS, max_lines=1,text_align=ft.TextAlign.LEFT  # o START si usas idiomas LTR/RTL
-), 250)),
+            ft.DataCell(self._wrap_cell(ft.Text(
+                registro.get("nombre_completo", ""),
+                overflow=ft.TextOverflow.ELLIPSIS, max_lines=1, text_align=ft.TextAlign.LEFT
+            ), 250)),
             ft.DataCell(self._wrap_cell(ft.Text(str(fecha)), 135)),
             ft.DataCell(self._wrap_cell(ft.Text(registro.get("hora_entrada", "")), 100)),
             ft.DataCell(self._wrap_cell(ft.Text(registro.get("hora_salida", "")), 100)),
@@ -175,83 +164,31 @@ class AsistenciasRowHelper:
             ft.DataCell(self._wrap_cell(ft.Row(acciones, spacing=5), 100))
         ])
 
-
-    def _crear_textfield(
-        self,
-        grupo: str,
-        campo: str,
-        registro: Dict,
-        tiempo_trabajo_field: ft.TextField = None,
-        entrada_field_ref: ft.TextField = None,
-        salida_field_ref: ft.TextField = None
-    ) -> ft.TextField:
-        field = ft.TextField(
-            value=registro.get(campo, ""),
-            width=100,
-            border_color=ft.colors.GREY,
-            bgcolor=ft.colors.TRANSPARENT
+    # ---------------- HELPERS ----------------
+    def _recalcular_fila(self, entrada_field, salida_field, registro, tiempo_field):
+        resultado = self.calculo_helper.recalcular_con_estado(
+            entrada_field.value, salida_field.value, registro.get("descanso", "SN")
         )
+        tiempo_field.value = resultado["tiempo_trabajo_con_descanso"]
+        registro["tiempo_trabajo"] = resultado["tiempo_trabajo"]
+        registro["tiempo_trabajo_con_descanso"] = resultado["tiempo_trabajo_con_descanso"]
+        if callable(self.recalcular_callback):
+            self.recalcular_callback(registro.get("grupo_importacion"))
 
-        def on_change(e):
-            valor = e.control.value
-            self._on_change(grupo, campo, valor)
-
-            # Recalcular tiempo trabajado si cambian entrada/salida
-            if campo in ("hora_entrada", "hora_salida") and tiempo_trabajo_field:
-                entrada_valor = entrada_field_ref.value if campo == "hora_salida" else valor
-                salida_valor = salida_field_ref.value if campo == "hora_entrada" else valor
-
-                self.calculo_helper._actualizar_tiempo_trabajo(
-                    entrada_field=entrada_field_ref,
-                    salida_field=salida_field_ref,
-                    descanso_tipo=registro.get("descanso", "SN"),
-                    tiempo_field=tiempo_trabajo_field,
-                    registro=registro,
-                    fila_controls=[entrada_field_ref, salida_field_ref, tiempo_trabajo_field]
-                )
-
-        field.on_change = on_change
-        return field
-
-
-    def _crear_botones_descanso(
-        self,
-        grupo: str,
-        registro: Dict,
-        tiempo_trabajo_field: ft.TextField,
-        entrada_field: ft.TextField = None,
-        salida_field: ft.TextField = None
-    ) -> ft.Container:
+    def _crear_botones_descanso(self, grupo: str, registro: Dict, tiempo_field: ft.TextField,
+                                entrada_field: ft.TextField = None, salida_field: ft.TextField = None) -> ft.Container:
         opciones = ["SN", "MD", "CMP"]
         botones = []
 
         def seleccionar(opcion):
             registro["descanso"] = opcion
-            self._on_change(grupo, "descanso", opcion)
-
-            # Actualizar visual de botones
+            # Recalcular inmediatamente
+            self._recalcular_fila(entrada_field, salida_field, registro, tiempo_field)
+            # Refrescar botones
             for btn in botones:
                 btn.bgcolor = ft.colors.BLUE if btn.data == opcion else ft.colors.WHITE
-                try:
-                    if btn.page:
-                        btn.update()
-                except Exception as e:
-                    print(f"⚠️ Error actualizando botón de descanso: {e}")
-
-            # Recalcular tiempo trabajado si campos están presentes
-            if entrada_field and salida_field and tiempo_trabajo_field:
-                self.calculo_helper._actualizar_tiempo_trabajo(
-                    entrada_field=entrada_field,
-                    salida_field=salida_field,
-                    descanso_tipo=opcion,
-                    tiempo_field=tiempo_trabajo_field,
-                    registro=registro,
-                    fila_controls=[entrada_field, salida_field, tiempo_trabajo_field]
-                )
-
-        # Valor por defecto
-        if "descanso" not in registro:
-            registro["descanso"] = "SN"
+            if botones and botones[0].page:
+                botones[0].page.update()
 
         for tipo in opciones:
             btn = ft.Container(
@@ -268,33 +205,7 @@ class AsistenciasRowHelper:
             botones.append(btn)
 
         return ft.Container(
-            content=ft.Row(
-                controls=botones,
-                spacing=3,
-                alignment=ft.MainAxisAlignment.CENTER,
-                vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                expand=True
-            ),
+            content=ft.Row(controls=botones, spacing=3, alignment=ft.MainAxisAlignment.CENTER),
             alignment=ft.alignment.center,
             width=180
         )
-
-
-    def _on_change(self, grupo: str, campo: str, valor: str):
-        try:
-            # Validación rápida
-            if not grupo or not campo:
-                print("❗ _on_change cancelado: grupo o campo vacío")
-                return
-
-            # Actualiza el valor en el registro sin bloquear
-            if callable(self.actualizar_callback):
-                self.actualizar_callback(grupo, campo, valor)
-
-            # Evitar recálculos innecesarios en cada pulsación
-            if campo in ("hora_entrada", "hora_salida", "descanso"):
-                # Usa una tarea diferida o mínima para evitar saturación
-                ft.app(target=lambda: self.recalcular_callback(grupo))
-
-        except Exception as e:
-            print(f"❌ Excepción en _on_change - Grupo: {grupo}, Campo: {campo}, Error: {e}")
