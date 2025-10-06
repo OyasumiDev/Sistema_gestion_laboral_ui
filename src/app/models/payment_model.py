@@ -23,15 +23,13 @@ class PaymentModel:
     Modelo de Pagos (Nómina)
 
     - Estructura con GRUPOS: cada corrida por rango [fecha_inicio, fecha_fin]
-      genera/actualiza pagos con: grupo_pago, fecha_inicio, fecha_fin, estado_grupo.
+    genera/actualiza pagos con: grupo_pago, fecha_inicio, fecha_fin, estado_grupo.
     - Generación por rango o por empleado (estado 'pendiente').
     - Uso de borrador de descuentos (descuento_detalles): defaults IMSS=50 y Transporte=100,
-      y clon automático del último pago CONFIRMADO del empleado.
+    y clon automático del último pago CONFIRMADO del empleado.
     - Confirmación aplica: borrador -> descuentos (finales) + detalles de préstamos -> pagos_prestamo.
     - Lecturas: plano, agrupado por empleado, y agrupado por grupo_pago.
     """
-
-class PaymentModel:
     def __init__(self):
         self.db = DatabaseMysql()
 
@@ -277,42 +275,53 @@ class PaymentModel:
         except Exception:
             return None
 
-    def _prefill_borrador_descuentos(self, id_pago: int, numero_nomina: int) -> None:
+    def _prefill_borrador_descuentos(self, id_pago: int, numero_nomina: int) -> dict:
         """
-        Crea/actualiza el borrador de descuentos con defaults y clon del último 'pagado'.
-        Defaults: IMSS=50 (aplicado), Transporte=100 (aplicado).
-        Si en el último pago hubo 'descuento_extra', se clona monto y descripción.
+        Prellena o actualiza el borrador de descuentos para un pago pendiente.
+        - Defaults: IMSS=50, Transporte=100 (ambos aplicados).
+        - Clona descuentos del último pago 'pagado' del empleado si existen.
+        - Si no existe `detalles_desc_model`, no hace nada.
+        Retorna dict con status y mensaje.
         """
+        if not self.detalles_desc_model:
+            return {"status": "warning", "message": "Módulo detalles_desc no disponible, se omitió prellenado."}
+
+        # Defaults
         aplicado_imss, monto_imss = True, 50.0
         aplicado_transporte, monto_transporte = True, 100.0
-        aplicado_extra, monto_extra, desc_extra = False, None, None
+        aplicado_extra, monto_extra, desc_extra = False, 0.0, None
 
         try:
+            # Buscar último pago confirmado del empleado
             ultimo = self._get_ultimo_pago_confirmado(numero_nomina)
             if ultimo:
                 ds_prev = self.discount_model.get_descuentos_por_pago(int(ultimo["id_pago"])) or []
                 for d in ds_prev:
-                    t = str(d.get("tipo") or d.get("tipo_descuento") or "").lower()
-                    m = float(d.get("monto_descuento") or d.get("monto") or 0.0)
-                    if t == "retenciones_imss":
-                        aplicado_imss, monto_imss = True, max(0.0, m)
-                    elif t == "transporte":
-                        aplicado_transporte, monto_transporte = True, max(0.0, m)
-                    elif t == "descuento_extra":
-                        aplicado_extra, monto_extra = True, max(0.0, m)
+                    tipo = str(d.get("tipo") or d.get("tipo_descuento") or "").lower()
+                    monto = float(d.get("monto_descuento") or d.get("monto") or 0.0)
+                    if tipo == "retenciones_imss":
+                        aplicado_imss, monto_imss = True, max(0.0, monto)
+                    elif tipo == "transporte":
+                        aplicado_transporte, monto_transporte = True, max(0.0, monto)
+                    elif tipo == "descuento_extra":
+                        aplicado_extra, monto_extra = True, max(0.0, monto)
                         desc_extra = (d.get("descripcion") or "").strip() or None
-        except Exception:
-            pass
 
-        self.detalles_desc_model.upsert_detalles(id_pago, {
-            self.detalles_desc_model.COL_APLICADO_IMSS: aplicado_imss,
-            self.detalles_desc_model.COL_MONTO_IMSS: monto_imss,
-            self.detalles_desc_model.COL_APLICADO_TRANSPORTE: aplicado_transporte,
-            self.detalles_desc_model.COL_MONTO_TRANSPORTE: monto_transporte,
-            self.detalles_desc_model.COL_APLICADO_EXTRA: aplicado_extra,
-            self.detalles_desc_model.COL_MONTO_EXTRA: monto_extra,
-            self.detalles_desc_model.COL_DESCRIPCION_EXTRA: desc_extra
-        })
+            # Guardar en la tabla de borradores
+            self.detalles_desc_model.upsert_detalles(id_pago, {
+                self.detalles_desc_model.COL_APLICADO_IMSS: aplicado_imss,
+                self.detalles_desc_model.COL_MONTO_IMSS: monto_imss,
+                self.detalles_desc_model.COL_APLICADO_TRANSPORTE: aplicado_transporte,
+                self.detalles_desc_model.COL_MONTO_TRANSPORTE: monto_transporte,
+                self.detalles_desc_model.COL_APLICADO_EXTRA: aplicado_extra,
+                self.detalles_desc_model.COL_MONTO_EXTRA: monto_extra,
+                self.detalles_desc_model.COL_DESCRIPCION_EXTRA: desc_extra
+            })
+            return {"status": "success", "message": "Borrador de descuentos prellenado correctamente."}
+
+        except Exception as ex:
+            return {"status": "error", "message": f"Error al prellenar borrador: {ex}"}
+
 
     # ---------------------------------------------------------------------
     # Generación de pagos
@@ -354,11 +363,11 @@ class PaymentModel:
                     # pagos existentes del empleado en el rango
                     q_exist = f"""
                         SELECT {self.E.ID_PAGO_NOMINA.value} AS id_pago,
-                               {self.E.FECHA_PAGO.value} AS fecha_pago,
-                               {self.E.ESTADO.value} AS estado
+                            {self.E.FECHA_PAGO.value} AS fecha_pago,
+                            {self.E.ESTADO.value} AS estado
                         FROM {self.E.TABLE.value}
                         WHERE {self.E.NUMERO_NOMINA.value}=%s
-                          AND {self.E.FECHA_PAGO.value} BETWEEN %s AND %s
+                        AND {self.E.FECHA_PAGO.value} BETWEEN %s AND %s
                         ORDER BY {self.E.FECHA_PAGO.value} ASC, {self.E.ID_PAGO_NOMINA.value} ASC
                     """
                     existentes = self.db.get_data_list(q_exist, (numero_nomina, fecha_inicio, fecha_fin), dictionary=True) or []
@@ -636,12 +645,12 @@ class PaymentModel:
         try:
             q = f"""
                 SELECT {self.E.GRUPO_PAGO.value} AS grupo_pago,
-                       {self.E.FECHA_INICIO.value} AS fecha_inicio,
-                       {self.E.FECHA_FIN.value} AS fecha_fin,
-                       {self.E.ESTADO_GRUPO.value} AS estado_grupo,
-                       COUNT(*) AS total_pagos,
-                       SUM(CASE WHEN {self.E.ESTADO.value}='pagado' THEN 1 ELSE 0 END) AS pagados,
-                       SUM({self.E.MONTO_TOTAL.value}) AS suma_montos
+                    {self.E.FECHA_INICIO.value} AS fecha_inicio,
+                    {self.E.FECHA_FIN.value} AS fecha_fin,
+                    {self.E.ESTADO_GRUPO.value} AS estado_grupo,
+                    COUNT(*) AS total_pagos,
+                    SUM(CASE WHEN {self.E.ESTADO.value}='pagado' THEN 1 ELSE 0 END) AS pagados,
+                    SUM({self.E.MONTO_TOTAL.value}) AS suma_montos
                 FROM {self.E.TABLE.value}
                 GROUP BY {self.E.GRUPO_PAGO.value}, {self.E.FECHA_INICIO.value}, {self.E.FECHA_FIN.value}, {self.E.ESTADO_GRUPO.value}
                 ORDER BY {self.E.FECHA_INICIO.value} DESC, {self.E.FECHA_FIN.value} DESC
@@ -904,3 +913,5 @@ class PaymentModel:
             return {"status": "success", "message": "Pago actualizado correctamente."}
         except Exception as ex:
             return {"status": "error", "message": f"Error al actualizar pago: {ex}"}
+
+

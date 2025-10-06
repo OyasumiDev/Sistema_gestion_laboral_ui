@@ -762,10 +762,21 @@ class AsistenciasContainer(ft.Container):
         if self.page:
             self.page.update()
 
-    def _actualizar_valor_fila(self, grupo, campo, valor):
+    def _actualizar_valor_fila(self, grupo=None, campo=None, valor=None):
+        """
+        Actualiza el valor de una fila en edición o nueva.
+        - grupo, campo y valor vienen del RowHelper.
+        - Si se invoca sin argumentos, no hace nada (para callbacks simplificados).
+        """
+        if grupo is None or campo is None:
+            return  # 🔧 evita el TypeError cuando se llama sin args
+
+        # Caso: fila nueva en grupo
         if ("nuevo", grupo) in self.editando:
             self.editando[("nuevo", grupo)][campo] = valor
             return
+
+        # Caso: edición de fila existente
         for (numero_nomina, fecha), edit_flag in self.editando.items():
             if edit_flag is True:
                 for registros in self.datos_por_grupo.get(grupo, []):
@@ -775,6 +786,7 @@ class AsistenciasContainer(ft.Container):
                     ):
                         registros[campo] = valor
                         return
+
 
     def _agregar_fila_en_grupo(self, grupo_importacion):
         # Descanso por defecto = "MD"
@@ -1208,11 +1220,43 @@ class AsistenciasContainer(ft.Container):
 
         filas = []
         for reg in registros_ordenados:
-            if reg.get("__error_horas", False):
-                reg["estado"] = "ERROR"
-            elif not reg.get("estado"):
+            # 🔹 Descanso por defecto = "MD"
+            if not reg.get("descanso") or reg.get("descanso") in (0, "0", "SN", "", None):
+                reg["descanso"] = "MD"
+
+            # 🔹 Recalcular horas
+            hora_entrada = self.calculo_helper.sanitizar_hora(reg.get("hora_entrada"))
+            hora_salida = self.calculo_helper.sanitizar_hora(reg.get("hora_salida"))
+            resultado = self.calculo_helper.recalcular_con_estado(
+                hora_entrada,
+                hora_salida,
+                reg.get("descanso", "MD")
+            )
+
+            if resultado["estado"] == "ok":
+                reg["tiempo_trabajo"] = resultado["tiempo_trabajo"]
+                reg["tiempo_trabajo_con_descanso"] = resultado["tiempo_trabajo_con_descanso"]
+                reg["estado"] = "COMPLETO"
+                reg["__error_horas"] = False
+            else:
+                reg["__error_horas"] = True
+                reg["estado"] = "INCOMPLETO"
+
+            # 🔹 Estado inicial si aún no hay
+            if not reg.get("estado"):
                 reg["estado"] = "INCOMPLETO" if Sworting.is_asistencia_incomplete(reg) else "COMPLETO"
 
+            # 🔹 Texto del estado con color y centrado
+            estado_text = ft.Text(
+                reg.get("estado", "").upper(),
+                text_align=ft.TextAlign.CENTER,
+                color=ft.colors.RED if reg["estado"] == "INCOMPLETO"
+                    else ft.colors.GREEN if reg["estado"] == "COMPLETO"
+                    else ft.colors.GREY
+            )
+            reg["__estado_text_widget"] = estado_text  # opcional, por si necesitas reusar
+
+            # 🔹 Construcción de filas
             if self._es_editando(reg):
                 fila = self.row_helper.build_fila_edicion(
                     registro=reg,
@@ -1229,17 +1273,6 @@ class AsistenciasContainer(ft.Container):
                 self._estilizar_fila(fila, editable=False, incompleto=(reg["estado"] == "INCOMPLETO"))
 
             filas.append(fila)
-
-        if ("nuevo", grupo) in self.editando:
-            nueva_fila = self.row_helper.build_fila_nueva(
-                grupo_importacion=grupo,
-                registro=self.editando[("nuevo", grupo)],
-                on_save=lambda g=grupo: self._guardar_fila_nueva(g),
-                on_cancel=lambda g=grupo: self._cancelar_fila_nueva(g),
-                registros_del_grupo=registros_ordenados,
-            )
-            self._estilizar_fila(nueva_fila, editable=True, incompleto=False)
-            filas.append(nueva_fila)
 
         tabla.rows = filas
         if self.page:

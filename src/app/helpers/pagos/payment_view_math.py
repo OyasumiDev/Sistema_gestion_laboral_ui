@@ -1,7 +1,6 @@
 # app/helpers/pagos/payment_view_math.py
 from __future__ import annotations
-
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 from app.models.discount_model import DiscountModel
 from app.models.descuento_detalles_model import DescuentoDetallesModel
@@ -11,10 +10,11 @@ from app.models.detalles_pagos_prestamo_model import DetallesPagosPrestamoModel
 
 class PaymentViewMath:
     """
-    Motor de cálculo para pintar cada fila de pago en la UI.
+    Motor de cálculo para pagos de nómina:
     - Si el pago está 'pendiente': usa BORRADOR de descuentos (o defaults si no existe).
-    - Suma préstamos: confirmados (pagos_prestamo) + pendientes (detalles_pagos_prestamo).
-    - Calcula efectivo y saldo visual en función del 'depósito' tipeado por el usuario.
+    - Si está 'pagado': usa tablas definitivas de descuentos y préstamos.
+    - Integra préstamos confirmados + pendientes.
+    - Calcula en tiempo real: total, efectivo y saldo según depósito tipeado.
     """
 
     def __init__(
@@ -33,7 +33,7 @@ class PaymentViewMath:
     # -------------------- Descuentos --------------------
     def _descuentos_pendientes_desde_borrador(self, id_pago: int) -> float:
         """
-        Lee el borrador (o defaults) y suma solo lo 'aplicado'.
+        Lee el borrador de descuentos y suma solo los aplicados.
         """
         det = self.detalles_desc_model.obtener_por_id_pago(id_pago) or {}
         imss = float(det.get(self.detalles_desc_model.COL_MONTO_IMSS, 0) or 0) if det.get(self.detalles_desc_model.COL_APLICADO_IMSS) else 0.0
@@ -42,9 +42,7 @@ class PaymentViewMath:
         return round(imss + transporte + extra, 2)
 
     def _descuentos_confirmados(self, id_pago: int) -> float:
-        """
-        Total de la tabla 'descuentos' para el pago ya confirmado.
-        """
+        """Total de la tabla 'descuentos' para el pago ya confirmado."""
         try:
             return float(self.discount_model.get_total_descuentos_por_pago(id_pago) or 0.0)
         except Exception:
@@ -58,18 +56,13 @@ class PaymentViewMath:
             return 0.0
 
     def _prestamos_pendientes(self, id_pago: int) -> float:
-        """
-        Suma de detalles_pagos_prestamo vinculados al pago (pendientes).
-        Soporta varios nombres/metodos según tu implementación.
-        """
-        # Intento por método explícito
+        """Suma de detalles_pagos_prestamo vinculados al pago (pendientes)."""
         for m in ("get_total_pendiente_por_pago", "get_total_por_pago", "get_total", "sumar_por_pago"):
             if hasattr(self.detalles_prestamo_model, m) and callable(getattr(self.detalles_prestamo_model, m)):
                 try:
                     return float(getattr(self.detalles_prestamo_model, m)(id_pago) or 0.0)
                 except Exception:
                     pass
-        # Fallback robusto directo a DB si expone .db
         try:
             db = getattr(self.detalles_prestamo_model, "db", None)
             E = getattr(self.detalles_prestamo_model, "E", None)
@@ -84,13 +77,14 @@ class PaymentViewMath:
     # -------------------- Recalculo Vista ----------------
     def recalc_from_pago_row(self, pago_row: Dict[str, Any], deposito_ui: float) -> Dict[str, float]:
         """
-        Retorna los valores listos para pintar:
-        - descuentos_view, prestamos_view, saldo_ajuste, efectivo, total_vista
+        Retorna valores listos para pintar en la UI:
+        - descuentos_view, prestamos_view, total_vista, deposito, efectivo, saldo_ajuste
         """
         id_pago = int(pago_row.get("id_pago_nomina") or pago_row.get("id_pago") or 0)
         estado = str(pago_row.get("estado") or "").lower()
         monto_base = float(pago_row.get("monto_base") or 0.0)
 
+        # 1) Calcular descuentos + préstamos según estado
         if estado == "pagado":
             descuentos = self._descuentos_confirmados(id_pago)
             prestamos = self._prestamos_confirmados(id_pago)
@@ -98,21 +92,46 @@ class PaymentViewMath:
             descuentos = self._descuentos_pendientes_desde_borrador(id_pago)
             prestamos = self._prestamos_pendientes(id_pago) + self._prestamos_confirmados(id_pago)
 
+        # 2) Total neto a pagar
         total_vista = max(0.0, round(monto_base - descuentos - prestamos, 2))
 
-        # Regla: deposito + efectivo = total_vista
+        # 3) Aplicar lógica de billetes de $50 sobre depósito+efectivo
         deposito_ui = float(deposito_ui or 0.0)
-        if deposito_ui <= total_vista:
-            efectivo = round(total_vista - deposito_ui, 2)
-            saldo_ajuste = 0.0
-        else:
-            efectivo = 0.0
-            saldo_ajuste = round(deposito_ui - total_vista, 2)  # sobre-depósito
+        calculo = self._calcular_pago_y_saldo(total_vista, deposito_ui)
 
         return {
             "descuentos_view": round(descuentos, 2),
             "prestamos_view": round(prestamos, 2),
-            "saldo_ajuste": round(saldo_ajuste, 2),
-            "efectivo": round(efectivo, 2),
             "total_vista": round(total_vista, 2),
+            "deposito": deposito_ui,
+            "efectivo": calculo["pago_efectivo"],
+            "saldo_ajuste": calculo["saldo"],   # 👈 clave corregida
         }
+
+    # -------------------- Regla billetes de 50 --------------------
+    def _calcular_pago_y_saldo(self, monto_total: float, deposito: float) -> dict:
+        """
+        Calcula efectivo y saldo según la regla de múltiplos de 50 pesos.
+        """
+        try:
+            restante = round(monto_total - deposito, 2)
+            if restante <= 0:
+                return {"pago_efectivo": 0.0, "saldo": restante}
+
+            residuo = restante % 50
+            pago_efectivo = restante - residuo  # múltiplo inferior de 50
+
+            if residuo >= 25:
+                pago_efectivo += 50
+                saldo = -(50 - residuo)  # adelanto (saldo negativo)
+            else:
+                saldo = residuo  # saldo a favor (positivo)
+
+            return {
+                "pago_efectivo": round(pago_efectivo, 2),
+                "saldo": round(saldo, 2),
+            }
+
+        except Exception as ex:
+            print(f"❌ Error en _calcular_pago_y_saldo: {ex}")
+            return {"pago_efectivo": 0.0, "saldo": 0.0}
