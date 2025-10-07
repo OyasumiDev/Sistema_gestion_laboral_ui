@@ -131,6 +131,11 @@ class PaymentModel:
     # Stored Procedure de horas (creación si no existe)
     # ---------------------------------------------------------------------
     def crear_sp_horas_trabajadas_para_pagos(self):
+        """
+        Crea (si no existe) el procedimiento almacenado para calcular horas trabajadas.
+        Devuelve horas en DECIMAL(5,2). Es robusto: detecta si asistencias.tiempo_trabajo
+        es TIME o DECIMAL y aplica la fórmula correcta en cada caso.
+        """
         try:
             check_query = """
                 SELECT COUNT(*) AS c
@@ -152,31 +157,68 @@ class PaymentModel:
                     IN p_fecha_fin DATE
                 )
                 BEGIN
+                    DECLARE v_dtype VARCHAR(32);
+
+                    -- Detectar el tipo real de la columna asistencias.tiempo_trabajo
+                    SELECT DATA_TYPE INTO v_dtype
+                    FROM information_schema.columns
+                    WHERE table_schema = DATABASE()
+                    AND table_name = 'asistencias'
+                    AND column_name = 'tiempo_trabajo'
+                    LIMIT 1;
+
                     IF p_numero_nomina IS NOT NULL THEN
                         IF EXISTS (SELECT 1 FROM empleados WHERE numero_nomina = p_numero_nomina) THEN
-                            SELECT
-                                a.numero_nomina,
-                                e.nombre_completo,
-                                IFNULL(SEC_TO_TIME(SUM(TIME_TO_SEC(a.tiempo_trabajo))), '00:00:00') AS total_horas_trabajadas
-                            FROM asistencias a
-                            JOIN empleados e ON a.numero_nomina = e.numero_nomina
-                            WHERE a.numero_nomina = p_numero_nomina
-                            AND a.fecha BETWEEN p_fecha_inicio AND p_fecha_fin
-                            AND a.estado = 'completo'
-                            GROUP BY a.numero_nomina, e.nombre_completo;
+                            IF v_dtype = 'time' THEN
+                                -- Esquema antiguo: TIME -> convertir a horas
+                                SELECT
+                                    a.numero_nomina,
+                                    e.nombre_completo,
+                                    ROUND(SUM(TIME_TO_SEC(a.tiempo_trabajo)) / 3600, 2) AS total_horas_trabajadas
+                                FROM asistencias a
+                                JOIN empleados e ON a.numero_nomina = e.numero_nomina
+                                WHERE a.numero_nomina = p_numero_nomina
+                                AND a.fecha BETWEEN p_fecha_inicio AND p_fecha_fin
+                                AND a.estado = 'completo'
+                                GROUP BY a.numero_nomina, e.nombre_completo;
+                            ELSE
+                                -- Esquema nuevo: DECIMAL(5,2) en horas
+                                SELECT
+                                    a.numero_nomina,
+                                    e.nombre_completo,
+                                    ROUND(SUM(a.tiempo_trabajo), 2) AS total_horas_trabajadas
+                                FROM asistencias a
+                                JOIN empleados e ON a.numero_nomina = e.numero_nomina
+                                WHERE a.numero_nomina = p_numero_nomina
+                                AND a.fecha BETWEEN p_fecha_inicio AND p_fecha_fin
+                                AND a.estado = 'completo'
+                                GROUP BY a.numero_nomina, e.nombre_completo;
+                            END IF;
                         ELSE
                             SELECT 'Empleado no encontrado' AS mensaje;
                         END IF;
                     ELSE
-                        SELECT
-                            a.numero_nomina,
-                            e.nombre_completo,
-                            IFNULL(SEC_TO_TIME(SUM(TIME_TO_SEC(a.tiempo_trabajo))), '00:00:00') AS total_horas_trabajadas
-                        FROM asistencias a
-                        JOIN empleados e ON a.numero_nomina = e.numero_nomina
-                        WHERE a.fecha BETWEEN p_fecha_inicio AND p_fecha_fin
-                        AND a.estado = 'completo'
-                        GROUP BY a.numero_nomina, e.nombre_completo;
+                        IF v_dtype = 'time' THEN
+                            SELECT
+                                a.numero_nomina,
+                                e.nombre_completo,
+                                ROUND(SUM(TIME_TO_SEC(a.tiempo_trabajo)) / 3600, 2) AS total_horas_trabajadas
+                            FROM asistencias a
+                            JOIN empleados e ON a.numero_nomina = e.numero_nomina
+                            WHERE a.fecha BETWEEN p_fecha_inicio AND p_fecha_fin
+                            AND a.estado = 'completo'
+                            GROUP BY a.numero_nomina, e.nombre_completo;
+                        ELSE
+                            SELECT
+                                a.numero_nomina,
+                                e.nombre_completo,
+                                ROUND(SUM(a.tiempo_trabajo), 2) AS total_horas_trabajadas
+                            FROM asistencias a
+                            JOIN empleados e ON a.numero_nomina = e.numero_nomina
+                            WHERE a.fecha BETWEEN p_fecha_inicio AND p_fecha_fin
+                            AND a.estado = 'completo'
+                            GROUP BY a.numero_nomina, e.nombre_completo;
+                        END IF;
                     END IF;
                 END
                 """
@@ -189,22 +231,45 @@ class PaymentModel:
         except Exception as ex:
             print(f"❌ Error al crear SP 'horas_trabajadas_para_pagos': {ex}")
 
+
+
     # ---------------------------------------------------------------------
     # Utilidades de lectura/cálculo
     # ---------------------------------------------------------------------
-    def get_total_horas_trabajadas(self, fecha_inicio: str, fecha_fin: str, numero_nomina: Optional[int] = None) -> Dict[str, Any]:
+    def get_total_horas_trabajadas(
+        self, fecha_inicio: str, fecha_fin: str, numero_nomina: Optional[int] = None
+    ) -> Dict[str, Any]:
+        """
+        Obtiene las horas trabajadas entre fecha_inicio y fecha_fin,
+        siempre en DECIMAL(5,2). Usa el SP que ya se adapta al tipo de columna.
+        """
         try:
+            # Asegura que el SP exista (por si migraste recientemente)
+            self.crear_sp_horas_trabajadas_para_pagos()
+
             cursor = self.db.connection.cursor()
             cursor.callproc("horas_trabajadas_para_pagos", (numero_nomina, fecha_inicio, fecha_fin))
+
+            data = []
             for result in cursor.stored_results():
                 rows = result.fetchall()
                 cols = [d[0] for d in result.description]
-                data = [dict(zip(cols, r)) for r in rows]
-                cursor.close()
-                return {"status": "success", "data": data}
+                for r in rows:
+                    row = dict(zip(cols, r))
+                    if "total_horas_trabajadas" in row:
+                        try:
+                            horas = float(row["total_horas_trabajadas"] or 0)
+                            row["total_horas_trabajadas"] = round(horas, 2)
+                        except Exception:
+                            row["total_horas_trabajadas"] = 0.0
+                    data.append(row)
+
+            cursor.close()
+            return {"status": "success", "data": data}
         except Exception as ex:
             print(f"❌ Error en get_total_horas_trabajadas: {ex}")
-        return {"status": "error", "message": "No fue posible obtener horas."}
+            return {"status": "error", "message": "No fue posible obtener horas."}
+
 
     def get_fechas_utilizadas(self) -> List[str]:
         """Fechas de pago ya usadas (cualquier estado)."""
@@ -246,14 +311,6 @@ class PaymentModel:
                 if sd > 0:
                     sh = round(sd / 8.0, 2)
             return max(0.0, sh)
-        except Exception:
-            return 0.0
-
-    @staticmethod
-    def _hhmmss_to_dec(hhmmss: str) -> float:
-        try:
-            h, m, s = map(int, str(hhmmss or "0:0:0").split(":"))
-            return round(h + m / 60.0 + s / 3600.0, 2)
         except Exception:
             return 0.0
 
@@ -329,15 +386,13 @@ class PaymentModel:
     def generar_pagos_por_rango(self, fecha_inicio: str, fecha_fin: str) -> Dict[str, Any]:
         """
         Genera/actualiza pagos PENDIENTES por empleado para el rango [fecha_inicio, fecha_fin].
-        - Asigna grupo lógico (grupo_pago, fecha_inicio, fecha_fin, estado_grupo='abierto').
-        - Consolida si ya existen pendientes en el rango.
-        - NO escribe 'descuentos' finales; inicializa/actualiza BORRADOR con defaults o clon del último 'pagado'.
-        - Deja MONTO_TOTAL = MONTO_BASE (la vista calcula total con borrador/loans).
+        Usa horas DECIMAL correctas; monto_base = sueldo_hora * horas_trabajadas (redondeado a 2).
         """
         try:
             horas_rs = self.get_total_horas_trabajadas(fecha_inicio, fecha_fin, None)
             if horas_rs.get("status") != "success":
                 return {"status": "error", "message": "No fue posible obtener horas del SP."}
+
             horas_rows = horas_rs.get("data") or []
             if not horas_rows:
                 return {"status": "success", "message": "No hay horas registradas en el rango."}
@@ -352,7 +407,7 @@ class PaymentModel:
                     if numero_nomina <= 0:
                         continue
 
-                    horas_dec = self._hhmmss_to_dec(r.get("total_horas_trabajadas", "00:00:00"))
+                    horas_dec = float(r.get("total_horas_trabajadas", 0.0) or 0.0)
                     sh = self._sueldo_hora(numero_nomina)
                     if horas_dec <= 0 or sh <= 0:
                         sin_horas_sueldo += 1
@@ -360,7 +415,7 @@ class PaymentModel:
 
                     monto_base = round(sh * horas_dec, 2)
 
-                    # pagos existentes del empleado en el rango
+                    # Pagos existentes en el rango
                     q_exist = f"""
                         SELECT {self.E.ID_PAGO_NOMINA.value} AS id_pago,
                             {self.E.FECHA_PAGO.value} AS fecha_pago,
@@ -373,7 +428,6 @@ class PaymentModel:
                     existentes = self.db.get_data_list(q_exist, (numero_nomina, fecha_inicio, fecha_fin), dictionary=True) or []
 
                     if any(str(x.get("estado", "")).lower() == "pagado" for x in existentes):
-                        # Si ya hay un pagado en el rango, no se reabre
                         omitidos_pagados += 1
                         continue
 
@@ -389,7 +443,6 @@ class PaymentModel:
                             id_pago_target = int(existentes[-1]["id_pago"])
                             to_delete = [int(x["id_pago"]) for x in existentes[:-1]]
 
-                        # borra duplicados pendientes + sus detalles de préstamo
                         if to_delete:
                             ids_tuple = tuple(to_delete)
                             self.db.run_query(
@@ -402,7 +455,7 @@ class PaymentModel:
                             )
                             eliminados += len(to_delete)
 
-                        # update consolidado
+                        # Update consolidado
                         self.update_pago(id_pago_target, {
                             self.E.GRUPO_PAGO.value: grupo_token,
                             self.E.FECHA_INICIO.value: fecha_inicio,
@@ -414,14 +467,14 @@ class PaymentModel:
                             self.E.MONTO_TOTAL.value: monto_base,
                             self.D.MONTO_DESCUENTO.value: 0.0,
                             self.P.PRESTAMO_MONTO.value: 0.0,
-                            self.E.SALDO.value: 0.0,
+                            self.E.SALDO.value: monto_base,
                             self.E.PAGO_DEPOSITO.value: 0.0,
                             self.E.PAGO_EFECTIVO.value: monto_base,
                             self.E.ESTADO.value: "pendiente",
                         })
                         actualizados += 1
                     else:
-                        # insert nuevo
+                        # Insert nuevo
                         ins_q = f"""
                             INSERT INTO {self.E.TABLE.value} (
                                 {self.E.NUMERO_NOMINA.value},
@@ -436,26 +489,28 @@ class PaymentModel:
                                 {self.E.PAGO_DEPOSITO.value},
                                 {self.E.PAGO_EFECTIVO.value},
                                 {self.E.ESTADO.value}
-                            ) VALUES (%s,%s,%s,%s,'abierto',%s,%s,%s,%s,0,0,0,0,%s,'pendiente')
+                            ) VALUES (%s,%s,%s,%s,'abierto',%s,%s,%s,%s,0,0,%s,0,%s,'pendiente')
                         """
                         self.db.run_query(
                             ins_q,
-                            (numero_nomina, grupo_token, fecha_inicio, fecha_fin, fecha_fin, horas_dec, monto_base, monto_base, monto_base),
+                            (numero_nomina, grupo_token, fecha_inicio, fecha_fin, fecha_fin,
+                            horas_dec, monto_base, monto_base, monto_base, monto_base)
                         )
                         id_pago_target = int(self.db.get_last_insert_id())
                         generados += 1
 
-                    # Prellenar/actualizar BORRADOR de descuentos para ese pago
+                    # Prellenar borrador de descuentos
                     self._prefill_borrador_descuentos(id_pago_target, numero_nomina)
 
-                except Exception as _:
-                    # no paramos toda la corrida por un empleado
+                except Exception:
                     continue
 
             msg = f"{generados} creados, {actualizados} actualizados, {eliminados} duplicados eliminados, {omitidos_pagados} omitidos (ya pagados), {sin_horas_sueldo} sin horas/sueldo."
             return {"status": "success", "message": msg}
         except Exception as ex:
             return {"status": "error", "message": f"Error al generar por rango: {ex}"}
+
+
 
     def registrar_pago_manual(self, numero_nomina: int) -> Dict[str, Any]:
         try:
@@ -472,6 +527,7 @@ class PaymentModel:
     def generar_pago_por_empleado(self, numero_nomina: int, fecha_inicio: str, fecha_fin: str) -> Dict[str, Any]:
         """
         Genera un pago PENDIENTE para el empleado en fecha_fin con grupo del rango.
+        Usa horas DECIMAL (del SP) y calcula monto_base de forma consistente.
         """
         try:
             if not numero_nomina or not isinstance(numero_nomina, int):
@@ -481,7 +537,7 @@ class PaymentModel:
             if horas_rs.get("status") != "success" or not horas_rs.get("data"):
                 return {"status": "error", "message": f"No hay horas válidas para el empleado {numero_nomina}."}
 
-            horas_dec = self._hhmmss_to_dec(horas_rs["data"][0].get("total_horas_trabajadas", "00:00:00"))
+            horas_dec = float(horas_rs["data"][0].get("total_horas_trabajadas", 0.0) or 0.0)
             sh = self._sueldo_hora(numero_nomina)
             if horas_dec <= 0 or sh <= 0:
                 return {"status": "error", "message": "Horas o sueldo por hora inválidos."}
@@ -503,20 +559,22 @@ class PaymentModel:
                     {self.E.PAGO_DEPOSITO.value},
                     {self.E.PAGO_EFECTIVO.value},
                     {self.E.ESTADO.value}
-                ) VALUES (%s,%s,%s,%s,'abierto',%s,%s,%s,%s,0,0,0,0,%s,'pendiente')
+                ) VALUES (%s,%s,%s,%s,'abierto',%s,%s,%s,%s,0,0,%s,0,%s,'pendiente')
             """
             self.db.run_query(
                 insert_q,
-                (numero_nomina, grupo_token, fecha_inicio, fecha_fin, fecha_fin, horas_dec, monto_base, monto_base, monto_base),
+                (numero_nomina, grupo_token, fecha_inicio, fecha_fin, fecha_fin,
+                horas_dec, monto_base, monto_base, monto_base, monto_base)
             )
             id_pago = int(self.db.get_last_insert_id())
 
-            # BORRADOR de descuentos (defaults + clon último 'pagado')
             self._prefill_borrador_descuentos(id_pago, numero_nomina)
 
             return {"status": "success", "message": f"Pago generado por ${monto_base:.2f}", "id_pago": id_pago}
         except Exception as ex:
             return {"status": "error", "message": f"Error en generar_pago_por_empleado: {ex}"}
+
+
 
     # ---------------------------------------------------------------------
     # Lectura (plano, por empleado y AGRUPADO)
@@ -708,22 +766,36 @@ class PaymentModel:
     def update_pago(self, id_pago: int, cambios: Dict[str, Any]) -> bool:
         if not cambios:
             return True
+
+        # Campos permitidos a actualizar
         permitidas = {
             self.E.GRUPO_PAGO.value, self.E.FECHA_INICIO.value, self.E.FECHA_FIN.value, self.E.ESTADO_GRUPO.value,
             self.E.FECHA_PAGO.value, self.E.TOTAL_HORAS_TRABAJADAS.value, self.E.MONTO_BASE.value,
             self.E.MONTO_TOTAL.value, self.D.MONTO_DESCUENTO.value, self.P.PRESTAMO_MONTO.value,
             self.E.SALDO.value, self.E.PAGO_DEPOSITO.value, self.E.PAGO_EFECTIVO.value, self.E.ESTADO.value,
         }
+
+        # Si se está actualizando un pago PENDIENTE, forzamos saldo = monto_base
+        estado_nuevo = str(cambios.get(self.E.ESTADO.value, "")).lower()
+        if estado_nuevo == "pendiente" and self.E.MONTO_BASE.value in cambios:
+            cambios[self.E.SALDO.value] = cambios[self.E.MONTO_BASE.value]
+            cambios[self.E.PAGO_EFECTIVO.value] = cambios[self.E.MONTO_BASE.value]
+            cambios[self.E.PAGO_DEPOSITO.value] = 0.0
+
         sets, vals = [], []
         for k, v in cambios.items():
             if k in permitidas:
-                sets.append(f"{k}=%s"); vals.append(v)
+                sets.append(f"{k}=%s")
+                vals.append(v)
+
         if not sets:
             return True
+
         q = f"UPDATE {self.E.TABLE.value} SET {', '.join(sets)} WHERE {self.E.ID_PAGO_NOMINA.value}=%s"
         vals.append(id_pago)
         self.db.run_query(q, tuple(vals))
         return True
+
 
     def confirmar_pago(self, id_pago: int, fecha_real_pago: Optional[str] = None) -> Dict[str, Any]:
         """

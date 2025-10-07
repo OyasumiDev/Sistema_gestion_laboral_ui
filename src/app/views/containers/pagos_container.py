@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, date
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional, Tuple
 import flet as ft
 
 # Core / Models
@@ -25,10 +25,16 @@ from app.models.detalles_pagos_prestamo_model import DetallesPagosPrestamoModel
 from app.helpers.pagos.payment_view_math import PaymentViewMath
 from app.helpers.pagos.pagos_repo import PagosRepo
 
-# Tablas compactas y filas (builder de tablas)
+# Sorting/Filters (si existe)
+try:
+    from app.helpers.pagos.sorting_filter_payment_helper import SortingFilterPaymentHelper
+except Exception:
+    SortingFilterPaymentHelper = None  # fallback interno
+
+# Tablas compactas
 from app.helpers.pagos.payment_table_builder import PaymentTableBuilder
 
-# Refresher de filas (no construye filas; solo refresca)
+# Refresher por fila
 from app.helpers.pagos.row_refresh import PaymentRowRefresh
 
 # Scroll helper
@@ -44,26 +50,23 @@ from app.helpers.boton_factory import (
 
 class PagosContainer(ft.Container):
     """
-    Contenedor de Pagos refactorizado:
-    - Tabla compacta de PENDIENTES (edición) al inicio.
-    - Expansibles por día (CONFIRMADOS) con tabla compacta y scroll interno.
-    - Cálculo visual con PaymentViewMath (descuentos/préstamos de borrador ó confirmados).
-    - Refresco granular de celdas con PaymentRowRefresh.
+    Pagos:
+    - Pendientes (edición) con recálculo en vivo y guardado exacto.
+    - Confirmados por fecha (expansibles) con CRUD de grupos y filas.
+    - Filtros que priorizan coincidencias sin ocultar el resto.
+    - Sorting solo en CONFIRMADOS al clickear encabezados (id_pago, monto_base, total).
+    - Registros PAGADOS editables (depósito).
     """
 
-    # --- configuración de columnas compactas (coinciden con índices usados) ---
+    # --- columnas ---
     COLUMNS_EDICION = [
         "id_pago", "id_empleado", "nombre", "fecha_pago", "horas", "sueldo_hora",
         "monto_base", "descuentos", "prestamos", "saldo", "deposito",
         "efectivo", "total", "ediciones", "acciones", "estado"
     ]
 
-    COLUMNS_COMPACTAS_CONFIRMADO = [
-    "id_pago", "id_empleado", "nombre",
-    "monto_base", "descuentos", "prestamos",
-    "deposito", "saldo", "efectivo", "total", "estado"
-    ]
-
+    # En confirmados construimos columnas manualmente para añadir sort en encabezados
+    COLS_CONF_CLICK_SORT = ("id_pago", "monto_base", "total")
 
     def __init__(self):
         super().__init__(expand=True, padding=0, alignment=ft.alignment.top_center)
@@ -79,7 +82,7 @@ class PagosContainer(ft.Container):
         self.detalles_desc_model = DescuentoDetallesModel()
         self.detalles_prestamo_model = DetallesPagosPrestamoModel()
 
-        # Helpers de negocio/UI
+        # Helpers
         self.repo = PagosRepo(payment_model=self.payment_model)
         self.math = PaymentViewMath(
             discount_model=self.discount_model,
@@ -87,18 +90,26 @@ class PagosContainer(ft.Container):
             loan_payment_model=self.loan_payment_model,
             detalles_prestamo_model=self.detalles_prestamo_model,
         )
-        self.table_builder = PaymentTableBuilder()  # tablas compactas
-        self.row_refresh = PaymentRowRefresh()      # refresco granular
-        self.scroll = PagosScrollHelper()          # scaffold con scroll
+        self.table_builder = PaymentTableBuilder()
+        self.row_refresh = PaymentRowRefresh()
+        self.scroll = PagosScrollHelper()
+        self.sf = SortingFilterPaymentHelper() if SortingFilterPaymentHelper else None
 
-        # Estado UI para depósito tipeado
-        self.depositos_temporales: dict[int, float] = {}
+        # Filtros (prioritarios, no excluyentes)
+        self.filters_pend = {"id_empleado": "", "id_pago": ""}
+        self.filters_conf = {"id_empleado": "", "id_pago": ""}
+
+        # Estado de sorting SOLO para confirmados (encabezados clicables)
+        self.sort_conf_key, self.sort_conf_asc = "id_pago", True
+
+        # Estado UI depósito tipeado
         self._deposito_buffer: dict[int, str] = {}
+        self._saving_rows: set[int] = set()
 
-        # Selector de fechas
+        # Selector de fechas (generación y grupos pagados)
         self.selector_fechas = DateModalSelector(on_dates_confirmed=self._generar_por_fechas)
 
-        # Controles UI header
+        # Controles UI header (solo filtros y acciones)
         self.input_id = ft.TextField(
             label="ID Empleado",
             width=150,
@@ -106,8 +117,22 @@ class PagosContainer(ft.Container):
             border_color=ft.colors.OUTLINE,
             on_change=self._validar_input_id,
         )
+        self.input_id_pago_pend = ft.TextField(
+            label="ID Pago (pend.)",
+            width=140,
+            height=34,
+            border_color=ft.colors.OUTLINE,
+            on_change=lambda e: self._on_filter_change(scope="pend", key="id_pago", value=e.control.value),
+        )
+        self.input_id_pago_conf = ft.TextField(
+            label="ID Pago (conf.)",
+            width=140,
+            height=34,
+            border_color=ft.colors.OUTLINE,
+            on_change=lambda e: self._on_filter_change(scope="conf", key="id_pago", value=e.control.value),
+        )
 
-        # Tabla de pendientes (editable) + contenedor de expansibles
+        # Tabla de pendientes + expansibles confirmados
         self.tabla_pendientes = self.table_builder.build_table(self.COLUMNS_EDICION, rows=[])
         self.paneles_confirmados = ft.ExpansionPanelList(expand=True, controls=[])
 
@@ -119,15 +144,26 @@ class PagosContainer(ft.Container):
 
     # ---------------- UI scaffold ----------------
     def _build(self):
-        # Header con acciones
+        # Acciones + filtros (sin controles de sort)
         header_bar = ft.Row(
             controls=[
                 crear_boton_importar(lambda: self._no_impl("Importar")),
                 crear_boton_exportar(lambda: self._no_impl("Exportar")),
                 crear_boton_agregar(self._abrir_modal_fechas_disponibles),
+                ft.ElevatedButton(
+                    "Agregar grupo pagado",
+                    icon=ft.icons.ADD,
+                    on_click=lambda e: self._abrir_modal_agregar_grupo_pagado(),
+                ),
+                ft.Container(width=20),
+                ft.Text("Filtros (prioritarios):", size=12, italic=True),
+                self.input_id,
+                self.input_id_pago_pend,
+                self.input_id_pago_conf,
             ],
             spacing=10,
             alignment=ft.MainAxisAlignment.START,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
         )
         header = ft.Column(
             spacing=8,
@@ -160,7 +196,7 @@ class PagosContainer(ft.Container):
         # Scaffold con scroll ALWAYS
         self.content = self.scroll.build_scaffold(
             page=self.page,
-            datatable=None,   # ahora usamos layout propio
+            datatable=None,   # layout personalizado
             header=header,
             footer=footer,
             required_min_width=1700,
@@ -170,7 +206,16 @@ class PagosContainer(ft.Container):
     def _no_impl(self, what: str):
         ModalAlert.mostrar_info("Próximamente", f"La acción '{what}' se implementará más adelante.")
 
-    # ------------- Carga / Render -------------
+    # -------------------- Filtros (prioritarios) --------------------
+    def _on_filter_change(self, *, scope: str, key: str, value: str):
+        value = (value or "").strip()
+        if scope == "pend":
+            self.filters_pend[key] = value
+        else:
+            self.filters_conf[key] = value
+        self._cargar_pagos()
+
+    # ---------------- Carga / Render ----------------
     def _cargar_pagos(self):
         try:
             pagos = self.repo.listar_pagos(order_desc=True) or []
@@ -180,7 +225,6 @@ class PagosContainer(ft.Container):
             self.paneles_confirmados.controls.clear()
 
             if not pagos:
-                # Vacío: solo pintar fila placeholder en pendientes
                 self.tabla_pendientes.rows.append(
                     ft.DataRow(cells=[ft.DataCell(ft.Text("-")) for _ in range(len(self.COLUMNS_EDICION))])
                 )
@@ -189,7 +233,7 @@ class PagosContainer(ft.Container):
                     self.page.update()
                 return
 
-            # Split pendientes / confirmados
+            # Split
             pendientes: List[Dict[str, Any]] = []
             confirmados: List[Dict[str, Any]] = []
             for p in pagos:
@@ -198,20 +242,24 @@ class PagosContainer(ft.Container):
                 else:
                     pendientes.append(p)
 
-            # ---------------- PENDIENTES (tabla editable) ----------------
+            # --- Filtros PRIORITARIOS (no excluyentes) ---
+            pendientes = self._priorizar_por_filtros(pendientes, self.filters_pend)
+            confirmados = self._priorizar_por_filtros(confirmados, self.filters_conf)
+
+            # ---------------- PENDIENTES (editable) ----------------
             for p in pendientes:
                 id_pago = int(p.get("id_pago_nomina") or p.get("id_pago"))
-                # depósito visible (buffer -> temporales -> DB)
+                # depósito visible en UI (buffer -> DB)
                 if id_pago in self._deposito_buffer:
                     try:
-                        deposito_ui = float(self._deposito_buffer[id_pago])
+                        deposito_ui = float(self._sanitize_float(self._deposito_buffer[id_pago]))
                     except Exception:
-                        deposito_ui = float(self.depositos_temporales.get(id_pago, p.get("pago_deposito", 0.0) or 0.0))
+                        deposito_ui = float(p.get("pago_deposito", 0.0) or 0.0)
                 else:
-                    deposito_ui = float(self.depositos_temporales.get(id_pago, p.get("pago_deposito", 0.0) or 0.0))
+                    deposito_ui = float(p.get("pago_deposito", 0.0) or 0.0)
 
                 calc = self.math.recalc_from_pago_row(p, deposito_ui)
-                # construir fila compacta editable (índices deben coincidir con COLUMNS_EDICION)
+
                 row = self._build_row_edicion_compacta(
                     p=p,
                     deposito_ui=deposito_ui,
@@ -220,37 +268,57 @@ class PagosContainer(ft.Container):
                 )
                 self.tabla_pendientes.rows.append(row)
 
-            # ---------------- CONFIRMADOS agrupados por fecha (expansibles) ----------------
+            # ---------------- CONFIRMADOS agrupados por fecha ----------------
             grupos: Dict[str, List[Dict[str, Any]]] = {}
             for p in confirmados:
                 fecha = str(p.get("fecha_pago") or "")
                 grupos.setdefault(fecha, []).append(p)
 
             for fecha, pagos_dia in sorted(grupos.items(), reverse=True):
-                # armar tabla compacta por día (lectura)
-                tabla = self.table_builder.build_table(self.COLUMNS_COMPACTAS_CONFIRMADO, rows=[])
+                # Ordenar dentro del grupo según sort_conf_key/asc
+                pagos_dia = self._aplicar_sort_confirmados(pagos_dia)
+
+                # tabla con encabezados clicables para sort
+                tabla = self._build_confirmados_table_with_click_sort(fecha)
                 total_dia = 0.0
 
                 for p in pagos_dia:
-                    id_pago = int(p.get("id_pago_nomina") or p.get("id_pago"))
-                    deposito_ui = float(p.get("pago_deposito", 0.0) or 0.0)
-                    calc = self.math.recalc_from_pago_row(p, deposito_ui)
+                    deposito_real = float(p.get("pago_deposito", 0.0) or 0.0)
+                    calc = self.math.recalc_from_pago_row(p, deposito_real)
                     total_dia += float(calc["total_vista"])
-                    row = self._build_row_confirmado_compacto(p, calc)
+                    row = self._build_row_confirmado_editable(p, calc, fecha_grupo=fecha)
                     tabla.rows.append(row)
 
-                # wrap con scroll interno
                 tabla_scroll = self.table_builder.wrap_scroll(tabla, height=220, width=1600)
 
-                # panel expansible
+                # Header del panel con acciones de grupo
+                panel_header = ft.Row(
+                    [
+                        ft.Text(f"Pagos del {fecha}", weight=ft.FontWeight.BOLD, size=12),
+                        ft.Text(f"Total día: ${total_dia:.2f}", italic=True, size=11),
+                        ft.Container(width=16),
+                        ft.IconButton(
+                            icon=ft.icons.ADD,
+                            tooltip="Agregar pago a este grupo",
+                            on_click=lambda e, f=fecha: self._agregar_pago_a_grupo(f),
+                        ),
+                        ft.IconButton(
+                            icon=ft.icons.EDIT_CALENDAR,
+                            tooltip="Mover grupo a otra fecha",
+                            on_click=lambda e, f=fecha: self._editar_grupo_fecha(f),
+                        ),
+                        ft.IconButton(
+                            icon=ft.icons.DELETE_FOREVER,
+                            icon_color=ft.colors.RED_500,
+                            tooltip="Eliminar grupo",
+                            on_click=lambda e, f=fecha: self._eliminar_grupo_fecha(f),
+                        ),
+                    ],
+                    spacing=14,
+                )
+
                 panel = ft.ExpansionPanel(
-                    header=ft.Row(
-                        [
-                            ft.Text(f"Pagos del {fecha}", weight=ft.FontWeight.BOLD, size=12),
-                            ft.Text(f"Total día: ${total_dia:.2f}", italic=True, size=11),
-                        ],
-                        spacing=20,
-                    ),
+                    header=panel_header,
                     content=tabla_scroll,
                     expanded=False,
                 )
@@ -266,7 +334,7 @@ class PagosContainer(ft.Container):
         except Exception as ex:
             ModalAlert.mostrar_info("Error al cargar pagos", str(ex))
 
-
+    # -------------------- Fila editable (pendientes) --------------------
     def _build_row_edicion_compacta(
         self,
         *,
@@ -275,10 +343,6 @@ class PagosContainer(ft.Container):
         calc: Dict[str, float],
         tiene_prestamo_activo: bool,
     ) -> ft.DataRow:
-        """
-        Fila editable compacta que coincide con COLUMNS_EDICION (16 columnas).
-        Además registra referencias en PaymentRowRefresh para refresco granular.
-        """
         font = 11
         id_pago = int(p.get("id_pago_nomina") or p.get("id_pago"))
         num = int(p.get("numero_nomina") or 0)
@@ -303,7 +367,7 @@ class PagosContainer(ft.Container):
         txt_prest = ft.Text(t_money(calc.get("prestamos_view", 0.0)), size=font)
         txt_saldo = ft.Text(t_money(calc.get("saldo_ajuste", 0.0)), size=font)
 
-        # Depósito editable
+        # Depósito editable (recalcula UI; guarda en DB en blur/submit)
         tf_deposito = ft.TextField(
             value=f"{float(deposito_ui or 0):.2f}",
             width=90,
@@ -311,15 +375,14 @@ class PagosContainer(ft.Container):
             text_align=ft.TextAlign.RIGHT,
             dense=True,
             text_size=font,
-            on_change=lambda e, pid=id_pago: self._on_deposito_change(pid, e.control.value),
-            on_blur=lambda e, pid=id_pago: self._actualizar_fila_pago(pid),
-            on_submit=lambda e, pid=id_pago: self._actualizar_fila_pago(pid),
+            on_change=lambda e, pid=id_pago: self._on_deposito_change_pend(pid, e.control.value),
+            on_blur=lambda e, pid=id_pago: self._guardar_deposito_desde_ui_pend(pid),
+            on_submit=lambda e, pid=id_pago: self._guardar_deposito_desde_ui_pend(pid),
         )
 
         txt_efectivo = ft.Text(t_money(calc.get("efectivo", 0.0)), size=font)
         txt_total = ft.Text(t_money(calc.get("total_vista", 0.0)), size=font)
 
-        # Botones edición (descuentos / préstamos)
         btn_desc = ft.IconButton(
             icon=ft.icons.REMOVE_CIRCLE_OUTLINE,
             tooltip="Editar descuentos",
@@ -335,7 +398,6 @@ class PagosContainer(ft.Container):
         )
         ediciones_cell = ft.Row([btn_desc, btn_prest], spacing=4)
 
-        # Acciones (confirmar / eliminar)
         btn_confirmar = ft.IconButton(
             icon=ft.icons.CHECK,
             icon_color=ft.colors.GREEN_600,
@@ -359,25 +421,25 @@ class PagosContainer(ft.Container):
 
         row = ft.DataRow(
             cells=[
-                ft.DataCell(txt_id),          # 0 id_pago
-                ft.DataCell(txt_num),         # 1 id_empleado
-                ft.DataCell(txt_nombre),      # 2 nombre
-                ft.DataCell(txt_fecha),       # 3 fecha_pago
-                ft.DataCell(txt_horas),       # 4 horas
-                ft.DataCell(txt_sueldo),      # 5 sueldo_hora
-                ft.DataCell(txt_monto_base),  # 6 monto_base
-                ft.DataCell(txt_desc),        # 7 descuentos
-                ft.DataCell(txt_prest),       # 8 prestamos
-                ft.DataCell(txt_saldo),       # 9 saldo ajustado
-                ft.DataCell(tf_deposito),     # 10 depósito
-                ft.DataCell(txt_efectivo),    # 11 efectivo
-                ft.DataCell(txt_total),       # 12 total
-                ft.DataCell(ediciones_cell),  # 13 ediciones
-                ft.DataCell(acciones_cell),   # 14 acciones
-                ft.DataCell(estado_chip),     # 15 estado
+                ft.DataCell(txt_id),
+                ft.DataCell(txt_num),
+                ft.DataCell(txt_nombre),
+                ft.DataCell(txt_fecha),
+                ft.DataCell(txt_horas),
+                ft.DataCell(txt_sueldo),
+                ft.DataCell(txt_monto_base),
+                ft.DataCell(txt_desc),
+                ft.DataCell(txt_prest),
+                ft.DataCell(txt_saldo),
+                ft.DataCell(tf_deposito),
+                ft.DataCell(txt_efectivo),
+                ft.DataCell(txt_total),
+                ft.DataCell(ediciones_cell),
+                ft.DataCell(acciones_cell),
+                ft.DataCell(estado_chip),
             ]
         )
-        # registrar referencias para refresco ágil
+        # registrar referencias
         self.row_refresh.register_row(
             id_pago,
             row,
@@ -389,26 +451,114 @@ class PagosContainer(ft.Container):
             txt_total=txt_total,
             estado_chip=estado_chip,
         )
-        row._id_pago = id_pago  # hint
+        row._id_pago = id_pago
+        # feedback visual si depósito excede total
+        self.row_refresh.set_deposito_border_color(
+            row, ft.colors.RED if deposito_ui > float(calc.get("total_vista", 0.0)) + 1e-9 else None
+        )
         return row
 
-
-    def _build_row_confirmado_compacto(self, p: Dict[str, Any], calc: Dict[str, float]) -> ft.DataRow:
+    # -------------------- Confirmados: tabla con encabezados clicables --------------------
+    def _build_confirmados_table_with_click_sort(self, fecha_grupo: str) -> ft.DataTable:
         """
-        Fila de lectura compacta para confirmados.
-        Muestra monto base, descuentos, préstamos, depósito confirmado, saldo, efectivo, total y estado.
+        DataTable para confirmados con encabezados clicables de sort (id_pago, monto_base, total).
+        El estado de sort es global para confirmados.
+        """
+        # Columnas en el orden final
+        col_keys = [
+            "id_pago", "id_empleado", "nombre",
+            "monto_base", "descuentos", "prestamos",
+            "deposito", "saldo", "efectivo", "total", "estado", "acciones"
+        ]
+
+        cols: List[ft.DataColumn] = []
+        for key in col_keys:
+            label_ctrl = self._make_header_label(key)
+            cols.append(
+                ft.DataColumn(
+                    label=ft.Container(
+                        label_ctrl,
+                        width=self.table_builder.DEFAULT_WIDTHS.get(key, 90),
+                    )
+                )
+            )
+
+        return ft.DataTable(
+            columns=cols,
+            rows=[],
+            heading_row_height=self.table_builder.heading_row_height,
+            data_row_min_height=self.table_builder.data_row_min_height,
+            data_row_max_height=self.table_builder.data_row_max_height,
+            column_spacing=self.table_builder.column_spacing,
+        )
+
+    def _make_header_label(self, key: str) -> ft.Control:
+        """
+        Construye la etiqueta de encabezado.
+        - Si es un campo sortable, muestra botón que alterna asc/desc.
+        - En otros, solo texto.
+        """
+        title = key.replace("_", " ").title()
+        is_sortable = key in self.COLS_CONF_CLICK_SORT
+
+        if not is_sortable:
+            return ft.Text(title, size=self.table_builder.font_size, weight=ft.FontWeight.BOLD)
+
+        # Icono segun estado actual
+        active = (self.sort_conf_key == key)
+        icon = None
+        if active:
+            icon = ft.icons.ARROW_UPWARD if self.sort_conf_asc else ft.icons.ARROW_DOWNWARD
+
+        def do_click(_):
+            if self.sort_conf_key == key:
+                self.sort_conf_asc = not self.sort_conf_asc
+            else:
+                self.sort_conf_key, self.sort_conf_asc = key, True
+            if self.page:
+                self.page.update()
+            self._cargar_pagos()
+
+        btn = ft.TextButton(
+            content=ft.Row(
+                [
+                    ft.Text(title, size=self.table_builder.font_size, weight=ft.FontWeight.BOLD),
+                    ft.Icon(icon) if icon else ft.Container(width=0, height=0),
+                ],
+                spacing=6,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            ),
+            on_click=do_click,
+        )
+        return btn
+
+    def _aplicar_sort_confirmados(self, items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        key, asc = self.sort_conf_key, self.sort_conf_asc
+
+        def k(row: Dict[str, Any]):
+            if key == "id_pago":
+                return int(row.get("id_pago_nomina") or row.get("id_pago") or 0)
+            if key == "monto_base":
+                return float(row.get("monto_base") or 0.0)
+            if key == "total":
+                deposito = float(row.get("pago_deposito", 0.0) or 0.0)
+                calc = self.math.recalc_from_pago_row(row, deposito)
+                return float(calc.get("total_vista", 0.0))
+            return 0
+
+        return sorted(items, key=k, reverse=not asc)
+
+    # -------------------- Fila lectura/edición (confirmados) --------------------
+    def _build_row_confirmado_editable(self, p: Dict[str, Any], calc: Dict[str, float], *, fecha_grupo: str) -> ft.DataRow:
+        """
+        Confirmados: igual que lectura, pero con depósito editable y acciones de eliminación.
         """
         font = 11
         id_pago = int(p.get("id_pago_nomina") or p.get("id_pago"))
         num = int(p.get("numero_nomina") or 0)
         nombre = str(p.get("nombre_completo") or p.get("nombre_empleado") or "")
         monto_base = float(p.get("monto_base") or 0.0)
-
-        # Depósito realmente pagado desde la DB
         deposito_real = float(p.get("pago_deposito", 0.0) or 0.0)
-
-        # Recalcular usando el depósito real
-        calc_conf = self.math.recalc_from_pago_row(p, deposito_real)
 
         def tx(v: float) -> str:
             return f"${float(v):,.2f}"
@@ -420,30 +570,98 @@ class PagosContainer(ft.Container):
             border_radius=6,
         )
 
-        return ft.DataRow(
+        # Depósito editable en confirmados
+        tf_deposito = ft.TextField(
+            value=f"{float(deposito_real or 0):.2f}",
+            width=90,
+            height=28,
+            text_align=ft.TextAlign.RIGHT,
+            dense=True,
+            text_size=font,
+            on_change=lambda e, pid=id_pago: self._on_deposito_change_pagado(pid, e.control.value),
+            on_blur=lambda e, pid=id_pago: self._guardar_deposito_desde_ui_pagado(pid),
+            on_submit=lambda e, pid=id_pago: self._guardar_deposito_desde_ui_pagado(pid),
+        )
+
+        txt_desc = ft.Text(tx(calc.get("descuentos_view", 0.0)), size=font)
+        txt_prest = ft.Text(tx(calc.get("prestamos_view", 0.0)), size=font)
+        txt_saldo = ft.Text(tx(calc.get("saldo_ajuste", 0.0)), size=font)
+        txt_efectivo = ft.Text(tx(calc.get("efectivo", 0.0)), size=font)
+        txt_total = ft.Text(tx(calc.get("total_vista", 0.0)), size=font)
+
+        acciones = ft.Row(
+            [
+                ft.IconButton(
+                    icon=ft.icons.DELETE_OUTLINE,
+                    icon_color=ft.colors.RED_500,
+                    tooltip="Eliminar pago (confirmado)",
+                    on_click=lambda e, pid=id_pago: self._eliminar_pago_pagado(pid),
+                ),
+            ],
+            spacing=4,
+        )
+
+        row = ft.DataRow(
             cells=[
-                ft.DataCell(ft.Text(str(id_pago), size=font)),                         # ID Pago
-                ft.DataCell(ft.Text(str(num), size=font)),                             # ID Empleado
-                ft.DataCell(ft.Text(nombre, size=font)),                               # Nombre
-                ft.DataCell(ft.Text(tx(monto_base), size=font)),                       # Monto Base
-                ft.DataCell(ft.Text(tx(calc_conf.get("descuentos_view", 0.0)), size=font)),  # Descuentos
-                ft.DataCell(ft.Text(tx(calc_conf.get("prestamos_view", 0.0)), size=font)),   # Préstamos
-                ft.DataCell(ft.Text(tx(deposito_real), size=font)),                    # Depósito confirmado
-                ft.DataCell(ft.Text(tx(calc_conf.get("saldo_ajuste", 0.0)), size=font)),     # Saldo ajustado
-                ft.DataCell(ft.Text(tx(calc_conf.get("efectivo", 0.0)), size=font)),        # Efectivo
-                ft.DataCell(ft.Text(tx(calc_conf.get("total_vista", 0.0)), size=font)),     # Total
-                ft.DataCell(estado_chip),                                              # Estado
+                ft.DataCell(ft.Text(str(id_pago), size=font)),      # ID Pago
+                ft.DataCell(ft.Text(str(num), size=font)),          # ID Empleado
+                ft.DataCell(ft.Text(nombre, size=font)),            # Nombre
+                ft.DataCell(ft.Text(tx(monto_base), size=font)),    # Monto Base
+                ft.DataCell(txt_desc),                              # Descuentos
+                ft.DataCell(txt_prest),                             # Préstamos
+                ft.DataCell(tf_deposito),                           # Depósito (editable)
+                ft.DataCell(txt_saldo),                             # Saldo
+                ft.DataCell(txt_efectivo),                          # Efectivo
+                ft.DataCell(txt_total),                             # Total
+                ft.DataCell(estado_chip),                           # Estado
+                ft.DataCell(acciones),                              # Acciones
             ]
         )
 
+        # registrar en refresher
+        self.row_refresh.register_row(
+            id_pago,
+            row,
+            txt_desc=txt_desc,
+            txt_prest=txt_prest,
+            txt_saldo=txt_saldo,
+            tf_deposito=tf_deposito,
+            txt_efectivo=txt_efectivo,
+            txt_total=txt_total,
+            estado_chip=estado_chip,
+        )
+        row._id_pago = id_pago
 
-    # ------------- Eventos Depósito -------------
-    def _on_deposito_change(self, id_pago: int, value: str):
+        # borde rojo si depósito excede total
+        self.row_refresh.set_deposito_border_color(
+            row, ft.colors.RED if deposito_real > float(calc.get("total_vista", 0.0)) + 1e-9 else None
+        )
+
+        return row
+
+    # ---------------- Eventos Depósito (UI) ----------------
+    def _on_deposito_change_pend(self, id_pago: int, value: str):
         self._deposito_buffer[id_pago] = value or ""
-
-    # ------------- Recalculo por fila -------------
-    def _actualizar_fila_pago(self, id_pago_nomina: int):
         try:
+            self._actualizar_fila(id_pago, persist=False)
+        except Exception as ex:
+            print(f"⚠️ recalculo UI (pend): {ex}")
+
+    def _on_deposito_change_pagado(self, id_pago: int, value: str):
+        self._deposito_buffer[id_pago] = value or ""
+        try:
+            self._actualizar_fila(id_pago, persist=False)
+        except Exception as ex:
+            print(f"⚠️ recalculo UI (pagado): {ex}")
+
+    # ---------------- Recalculo + Persistencia (común) ----------------
+    def _actualizar_fila(self, id_pago_nomina: int, *, persist: bool):
+        """
+        Recalcula una fila (pendiente o pagada) desde DB + buffer.
+        Si persist=True, guarda en DB lo que quedó en UI.
+        """
+        try:
+            # El row lo obtenemos del cache del refresher
             row = self.row_refresh.get_row(self.tabla_pendientes, id_pago_nomina)
             if not row:
                 return
@@ -454,16 +672,13 @@ class PagosContainer(ft.Container):
 
             buf = self._deposito_buffer.get(id_pago_nomina, None)
             if buf is not None:
-                try:
-                    deposito_ui = float(buf)
-                except Exception:
-                    deposito_ui = 0.0
+                deposito_ui = float(self._sanitize_float(buf))
             else:
-                deposito_ui = float(self.depositos_temporales.get(id_pago_nomina, p_db.get("pago_deposito", 0.0) or 0.0))
+                deposito_ui = float(p_db.get("pago_deposito", 0.0) or 0.0)
 
             calc = self.math.recalc_from_pago_row(p_db, deposito_ui)
 
-            # Actualiza celdas (sin reconstruir la fila)
+            # Actualiza celdas
             self.row_refresh.set_descuentos(row, calc["descuentos_view"])
             self.row_refresh.set_prestamos(row, calc["prestamos_view"])
             self.row_refresh.set_saldo(row, calc["saldo_ajuste"])
@@ -474,16 +689,73 @@ class PagosContainer(ft.Container):
             self.row_refresh.set_deposito_border_color(
                 row, ft.colors.RED if deposito_ui > calc["total_vista"] + 1e-9 else None
             )
-
             row.update()
+
+            if not persist:
+                return
+
+            # Persistir EXACTAMENTE lo visible
+            payload = {
+                "pago_deposito": deposito_ui,
+                "pago_efectivo": float(calc["efectivo"]),
+                "saldo": float(calc["saldo_ajuste"]),
+                "monto_total": float(calc["total_vista"]),
+            }
+
+            ok = False
+            try:
+                if hasattr(self.repo, "actualizar_montos_ui"):
+                    r = self.repo.actualizar_montos_ui(id_pago_nomina, payload)
+                    ok = (r or {}).get("status") == "success"
+                elif hasattr(self.payment_model, "update_montos_ui"):
+                    r = self.payment_model.update_montos_ui(id_pago_nomina, payload)
+                    ok = (r or {}).get("status") == "success"
+                elif hasattr(self.payment_model, "update_pago_campos"):
+                    r = self.payment_model.update_pago_campos(id_pago_nomina, payload)
+                    ok = (r or {}).get("status") == "success"
+                else:
+                    if hasattr(self.payment_model, "update_pago_deposito_y_totales"):
+                        r = self.payment_model.update_pago_deposito_y_totales(
+                            id_pago=id_pago_nomina,
+                            pago_deposito=payload["pago_deposito"],
+                            pago_efectivo=payload["pago_efectivo"],
+                            saldo=payload["saldo"],
+                            monto_total=payload["monto_total"],
+                        )
+                        ok = (r or {}).get("status") == "success"
+            except Exception as ex2:
+                print(f"⚠️ Persistencia fallback: {ex2}")
+                ok = False
+
+            if not ok:
+                ModalAlert.mostrar_info("Atención", "No se pudo guardar los montos en DB. Revisa PaymentModel/Repo.")
+
         except Exception as ex:
             print(f"❌ Error al actualizar fila: {ex}")
 
-    # ------------- Acciones -------------
+    def _guardar_deposito_desde_ui_pend(self, id_pago_nomina: int):
+        if id_pago_nomina in self._saving_rows:
+            return
+        self._saving_rows.add(id_pago_nomina)
+        try:
+            self._actualizar_fila(id_pago_nomina, persist=True)
+        finally:
+            self._saving_rows.discard(id_pago_nomina)
+
+    def _guardar_deposito_desde_ui_pagado(self, id_pago_nomina: int):
+        if id_pago_nomina in self._saving_rows:
+            return
+        self._saving_rows.add(id_pago_nomina)
+        try:
+            self._actualizar_fila(id_pago_nomina, persist=True)
+        finally:
+            self._saving_rows.discard(id_pago_nomina)
+
+    # ---------------- Acciones ----------------
     def _guardar_pago_confirmado(self, id_pago_nomina: int):
         try:
             res = self.repo.confirmar_pago(id_pago_nomina)
-            # fallback legacy si tu entorno usa update_pago_completo
+            # fallback legacy
             if res.get("status") != "success" and hasattr(self.payment_model, "update_pago_completo"):
                 detalles_desc = self.detalles_desc_model.obtener_por_id_pago(id_pago_nomina) or {}
                 res = self.payment_model.update_pago_completo(
@@ -491,7 +763,6 @@ class PagosContainer(ft.Container):
                 )
 
             if res.get("status") == "success":
-                # mover refresco simple; al recargar se reubica en confirmados/expansibles
                 ModalAlert.mostrar_info("Éxito", res.get("message", "Pago confirmado."))
                 self._cargar_pagos()
             else:
@@ -504,66 +775,203 @@ class PagosContainer(ft.Container):
             try:
                 res = self.repo.eliminar_pago(id_pago_nomina)
                 if res.get("status") == "success":
-                    self.depositos_temporales.pop(id_pago_nomina, None)
                     self._deposito_buffer.pop(id_pago_nomina, None)
                     self._cargar_pagos()
                 else:
                     ModalAlert.mostrar_info("Error", res.get("message", "No se pudo eliminar."))
             except Exception as ex:
                 ModalAlert.mostrar_info("Error al eliminar", str(ex))
-
         ModalAlert(
             title_text="Eliminar Pago",
-            message=f"¿Eliminar el pago #{id_pago_nomina}?",
+            message=f"¿Eliminar el pago #{id_pago_nomina} (pendiente)?",
             on_confirm=eliminar,
         ).mostrar()
 
-    # ------------- Modales -------------
-    def _abrir_modal_descuentos(self, pago_row: Dict[str, Any]):
-        p = {
-            "id_pago": int(pago_row.get("id_pago_nomina") or pago_row.get("id_pago")),
-            "numero_nomina": int(pago_row["numero_nomina"]),
-            "estado": pago_row.get("estado"),
-        }
+    def _eliminar_pago_pagado(self, id_pago_nomina: int):
+        def eliminar():
+            try:
+                ok = False
+                if hasattr(self.repo, "eliminar_pago"):
+                    r = self.repo.eliminar_pago(id_pago_nomina, force=True)
+                    ok = (r or {}).get("status") == "success"
+                if not ok and hasattr(self.payment_model, "eliminar_pago"):
+                    r = self.payment_model.eliminar_pago(id_pago_nomina, force=True)
+                    ok = (r or {}).get("status") == "success"
+                if ok:
+                    self._cargar_pagos()
+                else:
+                    ModalAlert.mostrar_info("Error", "Backend no soporta eliminar pagos pagados (force=True).")
+            except Exception as ex:
+                ModalAlert.mostrar_info("Error", str(ex))
+        ModalAlert(
+            title_text="Eliminar Pago (Confirmado)",
+            message=f"¿Eliminar el pago # {id_pago_nomina}? Esta acción es permanente.",
+            on_confirm=eliminar,
+        ).mostrar()
 
-        def on_ok(_):
-            self._actualizar_fila_pago(p["id_pago"])
+    # ---------------- CRUD Grupos Confirmados ----------------
+    def _eliminar_grupo_fecha(self, fecha: str):
+        def eliminar():
+            try:
+                ok = False
+                if hasattr(self.repo, "eliminar_grupo_por_fecha"):
+                    r = self.repo.eliminar_grupo_por_fecha(fecha, force=True)
+                    ok = (r or {}).get("status") == "success"
+                if not ok and hasattr(self.payment_model, "eliminar_pagos_por_fecha"):
+                    r = self.payment_model.eliminar_pagos_por_fecha(fecha, force=True)
+                    ok = (r or {}).get("status") == "success"
+                if ok:
+                    self._cargar_pagos()
+                else:
+                    ModalAlert.mostrar_info("Error", "No existe método backend para eliminar el grupo por fecha.")
+            except Exception as ex:
+                ModalAlert.mostrar_info("Error", str(ex))
+        ModalAlert(
+            title_text="Eliminar Grupo",
+            message=f"¿Eliminar TODOS los pagos del {fecha}? Esta acción no se puede deshacer.",
+            on_confirm=eliminar,
+        ).mostrar()
 
-        ModalDescuentos(pago_data=p, on_confirmar=on_ok).mostrar()
+    def _editar_grupo_fecha(self, fecha_actual: str):
+        """Mover todos los pagos de una fecha a otra (valida solapamientos)."""
+        dp = ft.DatePicker(on_change=lambda e: None, on_dismiss=lambda e: None)
+        self.page.overlay.append(dp)
+        self.page.update()
 
-    def _abrir_modal_prestamos(self, pago_row: Dict[str, Any]):
+        def do_move(new_date: date):
+            if not new_date:
+                return
+            nueva = new_date.strftime("%Y-%m-%d")
+            try:
+                ok = False
+                if hasattr(self.repo, "mover_grupo_fecha"):
+                    r = self.repo.mover_grupo_fecha(fecha_actual, nueva)
+                    ok = (r or {}).get("status") == "success"
+                elif hasattr(self.payment_model, "mover_grupo_fecha"):
+                    r = self.payment_model.mover_grupo_fecha(fecha_actual, nueva)
+                    ok = (r or {}).get("status") == "success"
+                if ok:
+                    self._cargar_pagos()
+                else:
+                    ModalAlert.mostrar_info("Error", "Backend no soporta mover grupos de fecha.")
+            except Exception as ex:
+                ModalAlert.mostrar_info("Error", str(ex))
+
+        dp.on_change = lambda e: do_move(e.control.value)
+        dp.pick_date()
+
+    def _abrir_modal_agregar_grupo_pagado(self):
         """
-        Abre el modal de PRÉSTAMOS para NÓMINA (multi-préstamo, auto-save),
-        sincronizado con el módulo de Préstamos.
+        Agrega un grupo 'pagado' vacío para una fecha elegida y, al terminar,
+        abre el modal para agregar pagos a ese grupo.
+        Evita fechas duplicadas (no puede haber una fecha dentro de otra).
         """
-        num = int(pago_row["numero_nomina"])
-        pago_id = int(pago_row.get("id_pago_nomina") or pago_row.get("id_pago"))
+        # Reutilizamos DateModalSelector para elegir UNA fecha
+        def on_dates_ok(fechas: List[date]):
+            if not fechas:
+                ModalAlert.mostrar_info("Fecha requerida", "Selecciona una fecha para el grupo pagado.")
+                return
+            f = min(fechas)  # si seleccionan varias, tomamos la mínima
+            fecha = f.strftime("%Y-%m-%d")
 
-        # Verificación en caliente
-        prestamo_activo = self.loan_model.get_prestamo_activo_por_empleado(num)
-        if not prestamo_activo:
-            ModalAlert.mostrar_info("Sin préstamo", f"El empleado {num} no tiene préstamos activos.")
-            return
+            # Validar no duplicado
+            usadas = self.payment_model.get_fechas_utilizadas() or []
+            usadas = [str(u) for u in usadas]
+            if fecha in usadas:
+                ModalAlert.mostrar_info("Fecha ocupada", f"Ya existe un grupo para {fecha}.")
+                return
 
-        p = {"id_pago": pago_id, "numero_nomina": num, "estado": pago_row.get("estado")}
+            try:
+                ok = False
+                if hasattr(self.repo, "crear_grupo_pagado"):
+                    r = self.repo.crear_grupo_pagado(fecha)
+                    ok = (r or {}).get("status") == "success"
+                elif hasattr(self.payment_model, "crear_grupo_pagado"):
+                    r = self.payment_model.crear_grupo_pagado(fecha)
+                    ok = (r or {}).get("status") == "success"
+                elif hasattr(self.payment_model, "crear_grupo_por_fecha"):
+                    r = self.payment_model.crear_grupo_por_fecha(fecha, estado="pagado")
+                    ok = (r or {}).get("status") == "success"
 
-        def on_ok(_):
-            # refresca SOLO esta fila (suma de detalles de préstamos)
-            self._actualizar_fila_pago(pago_id)
+                if not ok:
+                    ModalAlert.mostrar_info("No disponible", "Backend no soporta crear grupos pagados.")
+                    return
 
-        ModalPrestamosNomina(pago_data=p, on_confirmar=on_ok).mostrar()
+                # Cargar y abrir el modal para agregar pagos a ese grupo
+                self._cargar_pagos()
+                self._agregar_pago_a_grupo(fecha)
+
+            except Exception as ex:
+                ModalAlert.mostrar_info("Error", f"No se pudo crear el grupo: {str(ex)}")
+
+        # Configurar el selector para una elección rápida
+        try:
+            bloqueadas = self.payment_model.get_fechas_utilizadas() or []
+            bloqueadas = [
+                datetime.strptime(f, "%Y-%m-%d").date() if isinstance(f, str) else f
+                for f in bloqueadas
+            ]
+            # No bloqueamos aquí, solo informamos al usuario al confirmar si repite
+            self.selector_fechas.set_fechas_bloqueadas(bloqueadas)
+        except Exception:
+            pass
+
+        # Usamos el mismo modal de fechas pero con el callback anterior
+        self.selector_fechas.on_dates_confirmed = on_dates_ok
+        self.selector_fechas.abrir_dialogo(reset_selection=True)
+
+    def _agregar_pago_a_grupo(self, fecha: str):
+        """Agregar un pago manual al grupo (si backend lo permite)."""
+        numero_field = ft.TextField(label="Número de nómina", width=180)
+        deposito_field = ft.TextField(label="Depósito (opcional)", width=180)
+
+        def confirm(_):
+            try:
+                num = int(numero_field.value.strip())
+                dep = float(self._sanitize_float(deposito_field.value)) if deposito_field.value.strip() else 0.0
+            except Exception:
+                ModalAlert.mostrar_info("Datos inválidos", "Verifica número y depósito.")
+                return
+            try:
+                ok = False
+                if hasattr(self.repo, "agregar_pago_manual_a_fecha"):
+                    r = self.repo.agregar_pago_manual_a_fecha(num, fecha, dep)
+                    ok = (r or {}).get("status") == "success"
+                elif hasattr(self.payment_model, "agregar_pago_manual_a_fecha"):
+                    r = self.payment_model.agregar_pago_manual_a_fecha(num, fecha, dep)
+                    ok = (r or {}).get("status") == "success"
+                if ok:
+                    dlg.open = False
+                    self.page.update()
+                    self._cargar_pagos()
+                else:
+                    ModalAlert.mostrar_info("No disponible", "Tu backend aún no soporta alta manual en confirmados.")
+            except Exception as ex:
+                ModalAlert.mostrar_info("Error", str(ex))
+
+        dlg = ft.AlertDialog(
+            title=ft.Text(f"Agregar pago a grupo ({fecha})"),
+            content=ft.Column([numero_field, deposito_field], tight=True, spacing=8),
+            actions=[
+                ft.TextButton("Cancelar", on_click=lambda e: self._close_dialog(e, dlg)),
+                ft.ElevatedButton("Agregar", on_click=confirm),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+        )
+        self.page.dialog = dlg
+        dlg.open = True
+        self.page.update()
+
+    def _close_dialog(self, e, dlg: ft.AlertDialog):
+        dlg.open = False
+        self.page.update()
 
     # ------------- Fechas disponibles -------------
     def _get_fechas_disponibles_para_pago(self) -> List[date]:
-        """
-        Devuelve la lista de fechas disponibles para generar pagos,
-        considerando las asistencias completas y no utilizadas.
-        """
         try:
             if hasattr(self.assistance_model, "get_fechas_disponibles_para_pago"):
                 return self.assistance_model.get_fechas_disponibles_para_pago() or []
 
-            # Fallback desde min/max
             fi = self.assistance_model.get_fecha_minima_asistencia()
             ff = self.assistance_model.get_fecha_maxima_asistencia()
             if not fi or not ff:
@@ -582,7 +990,6 @@ class PagosContainer(ft.Container):
     # ------------- Calendario -------------
     def _abrir_modal_fechas_disponibles(self):
         try:
-            # 1) Fechas ya utilizadas (bloqueadas)
             bloqueadas = self.payment_model.get_fechas_utilizadas() or []
             bloqueadas = [
                 datetime.strptime(f, "%Y-%m-%d").date() if isinstance(f, str) else f
@@ -590,21 +997,21 @@ class PagosContainer(ft.Container):
             ]
             self.selector_fechas.set_fechas_bloqueadas(bloqueadas)
 
-            # 2) Fechas disponibles normales
             disponibles = self._get_fechas_disponibles_para_pago()
             disponibles = [d for d in disponibles if d not in bloqueadas]
 
-            # 3) Fechas totalmente vacías (sin asistencias registradas)
             fi = self.assistance_model.get_fecha_minima_asistencia()
             ff = self.assistance_model.get_fecha_maxima_asistencia()
             if fi and ff:
                 vacias = self.assistance_model.get_fechas_vacias(fi, ff)
                 disponibles.extend(vacias)
 
-            # 4) Únicas + ordenadas
             disponibles = sorted(set(disponibles))
 
-            # 5) Enviar al selector
+            if hasattr(self.assistance_model, "get_fechas_estado"):
+                fechas_estado = self.assistance_model.get_fechas_estado(fi, ff)
+                self.selector_fechas.set_asistencias(fechas_estado)
+
             self.selector_fechas.set_fechas_disponibles(disponibles)
             self.selector_fechas.abrir_dialogo(reset_selection=True)
 
@@ -619,11 +1026,25 @@ class PagosContainer(ft.Container):
 
         fi = min(fechas)
         ff = max(fechas)
-
         fi_s = fi.strftime("%Y-%m-%d")
         ff_s = ff.strftime("%Y-%m-%d")
 
         try:
+            if hasattr(self.assistance_model, "get_fechas_estado"):
+                estados = self.assistance_model.get_fechas_estado(fi, ff)
+                incompletas = [f for f, st in estados.items() if st == "incompleto"]
+
+                if incompletas:
+                    if len(incompletas) == 1:
+                        msg = (f"No se puede generar la nómina porque la fecha "
+                               f"{incompletas[0].strftime('%d/%m/%Y')} tiene asistencias incompletas.")
+                    else:
+                        fechas_txt = ", ".join(d.strftime("%d/%m/%Y") for d in incompletas)
+                        msg = ("No se puede generar la nómina en un rango de fechas donde existan "
+                               f"asistencias incompletas.\n\n🔴 Fechas con problemas: {fechas_txt}")
+                    ModalAlert.mostrar_info("Rango inválido para generar nómina", msg)
+                    return
+
             res = self.payment_model.generar_pagos_por_rango(fecha_inicio=fi_s, fecha_fin=ff_s)
 
             try:
@@ -643,7 +1064,67 @@ class PagosContainer(ft.Container):
 
     # ------------- Utils -------------
     def _validar_input_id(self, _):
-        texto = self.input_id.value.strip()
+        texto = (self.input_id.value or "").strip()
         self.input_id.border_color = ft.colors.OUTLINE if not texto or texto.isdigit() else ft.colors.RED_400
+        self.filters_pend["id_empleado"] = texto if texto.isdigit() else ""
+        self.filters_conf["id_empleado"] = texto if texto.isdigit() else ""
         if self.page:
             self.page.update()
+        self._cargar_pagos()
+
+    def _sanitize_float(self, s: str) -> float:
+        s = (s or "").strip().replace(",", "")
+        if s in ("", ".", "-", "-.", "+", "+."):
+            return 0.0
+        try:
+            return float(s)
+        except Exception:
+            return 0.0
+
+    def _priorizar_por_filtros(self, items: List[Dict[str, Any]], filtros: Dict[str, str]) -> List[Dict[str, Any]]:
+        """
+        No excluye. Empuja ARRIBA los items que coinciden con filtros.
+        """
+        ide = (filtros.get("id_empleado") or "").strip()
+        idp = (filtros.get("id_pago") or "").strip()
+
+        def match(x: Dict[str, Any]) -> bool:
+            ok = True
+            if ide:
+                ok = ok and str(x.get("numero_nomina", "")).startswith(ide)
+            if idp:
+                ok = ok and str(x.get("id_pago_nomina") or x.get("id_pago")).startswith(idp)
+            return ok
+
+        matching = [x for x in items if match(x)]
+        non_matching = [x for x in items if not match(x)]
+        return matching + non_matching
+
+    # ------------- Modales (descuentos / préstamos) -------------
+    def _abrir_modal_descuentos(self, pago_row: Dict[str, Any]):
+        p = {
+            "id_pago": int(pago_row.get("id_pago_nomina") or pago_row.get("id_pago")),
+            "numero_nomina": int(pago_row["numero_nomina"]),
+            "estado": pago_row.get("estado"),
+        }
+
+        def on_ok(_):
+            self._actualizar_fila(p["id_pago"], persist=False)
+
+        ModalDescuentos(pago_data=p, on_confirmar=on_ok).mostrar()
+
+    def _abrir_modal_prestamos(self, pago_row: Dict[str, Any]):
+        num = int(pago_row["numero_nomina"])
+        pago_id = int(pago_row.get("id_pago_nomina") or pago_row.get("id_pago"))
+
+        prestamo_activo = self.loan_model.get_prestamo_activo_por_empleado(num)
+        if not prestamo_activo:
+            ModalAlert.mostrar_info("Sin préstamo", f"El empleado {num} no tiene préstamos activos.")
+            return
+
+        p = {"id_pago": pago_id, "numero_nomina": num, "estado": pago_row.get("estado")}
+
+        def on_ok(_):
+            self._actualizar_fila(pago_id, persist=False)
+
+        ModalPrestamosNomina(pago_data=p, on_confirmar=on_ok).mostrar()

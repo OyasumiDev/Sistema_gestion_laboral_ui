@@ -46,26 +46,37 @@ class DateModalSelector:
         self.fechas_bloqueadas: set[date] = set()
         self.fechas_disponibles: set[date] = set()
 
+        # fechas seleccionadas en el modal
         self.seleccionadas: set[date] = set()
         self._anchor: date | None = None
+
+        # asistencias externas {date: "estado"}
+        self.asistencias_estado: dict[date, str] = {}
 
     # ------------------ API pública ------------------
 
     def set_fechas_bloqueadas(self, fechas):
         self.fechas_bloqueadas = set(self._normalize_dates(fechas))
-        self._sanitize_selection()   # ← limpia verdes fuera de reglas
+        self._sanitize_selection()
 
     def set_fechas_disponibles(self, fechas):
         self.fechas_disponibles = set(self._normalize_dates(fechas))
-        self._sanitize_selection()   # ← limpia verdes fuera de reglas
+        self._sanitize_selection()
+
+    def set_asistencias(self, asistencias: dict):
+        """
+        Recibe un diccionario {date: estado}, ej:
+        {date(2025,10,6): "completo", date(2025,10,7): "incompleto"}
+        """
+        self.asistencias_estado = {
+            self._normalize_dates([k])[0]: v for k, v in asistencias.items()
+        }
 
     def reset(self):
-        """Limpia selección y ancla (útil al reabrir)."""
         self.seleccionadas.clear()
         self._anchor = None
 
     def abrir_dialogo(self, *, reset_selection: bool = True):
-        # ← Limpia selección al abrir, para no arrastrar verdes del uso anterior
         if reset_selection:
             self.reset()
 
@@ -108,14 +119,20 @@ class DateModalSelector:
 
                 f_actual = date(self.year, self.month, dia)
 
-                # REGLA NUEVA: clicable = disponible Y NO bloqueada
+                # Reglas
                 is_disponible = f_actual in self.fechas_disponibles
                 is_bloqueada = f_actual in self.fechas_bloqueadas
-                clickable = is_disponible and not is_bloqueada
+                is_incompleta = self.asistencias_estado.get(f_actual) == "incompleto"
+
+                # clickable = disponible, no bloqueada y no incompleta
+                clickable = is_disponible and not is_bloqueada and not is_incompleta
 
                 if is_bloqueada:
                     bgcolor = ft.colors.GREY_300
                     text_color = ft.colors.BLACK45
+                elif is_incompleta:
+                    bgcolor = ft.colors.RED_200
+                    text_color = ft.colors.BLACK
                 elif clickable:
                     bgcolor = ft.colors.GREEN if f_actual in self.seleccionadas else None
                     text_color = ft.colors.BLACK
@@ -139,6 +156,8 @@ class DateModalSelector:
             [
                 ft.Container(width=12, height=12, bgcolor=ft.colors.GREEN, border_radius=3),
                 ft.Text("Seleccionada", size=11),
+                ft.Container(width=12, height=12, bgcolor=ft.colors.RED_200, border_radius=3),
+                ft.Text("Asistencia incompleta", size=11),
                 ft.Container(width=12, height=12, bgcolor=ft.colors.GREY_100, border_radius=3),
                 ft.Text("No disponible", size=11),
                 ft.Container(width=12, height=12, bgcolor=ft.colors.GREY_300, border_radius=3),
@@ -168,13 +187,12 @@ class DateModalSelector:
     # ------------------ Interacción ------------------
 
     def _on_cancel(self):
-        # Limpia selección al cerrar para que no queden verdes “pegados”
         self.reset()
         self.cerrar_dialogo()
 
     def _toggle_fecha(self, f: date):
-        # seguridad extra: solo permitir toggle si sigue siendo clicable
-        if not (f in self.fechas_disponibles and f not in self.fechas_bloqueadas):
+        # Seguridad: solo toggle si sigue siendo clicable
+        if not (f in self.fechas_disponibles and f not in self.fechas_bloqueadas and self.asistencias_estado.get(f) != "incompleto"):
             return
 
         if not self.auto_range or self._anchor is None or f == self._anchor:
@@ -187,7 +205,10 @@ class DateModalSelector:
                 self._anchor = f
         else:
             f1, f2 = (self._anchor, f) if self._anchor < f else (f, self._anchor)
-            intervalo = [d for d in self._daterange(f1, f2) if d in self.fechas_disponibles and d not in self.fechas_bloqueadas]
+            intervalo = [
+                d for d in self._daterange(f1, f2)
+                if d in self.fechas_disponibles and d not in self.fechas_bloqueadas and self.asistencias_estado.get(d) != "incompleto"
+            ]
             faltantes = [d for d in intervalo if d not in self.seleccionadas]
             if faltantes:
                 self.seleccionadas.update(faltantes)
@@ -204,11 +225,22 @@ class DateModalSelector:
         if not self.seleccionadas:
             ModalAlert.mostrar_info("Sin selección", "Selecciona al menos una fecha disponible.")
             return
+
         fechas = sorted(list(self.seleccionadas))
+
+        # 🔎 VALIDAR que no haya incompletas en la selección
+        incompletas = [f for f in fechas if self.asistencias_estado.get(f) == "incompleto"]
+        if incompletas:
+            fechas_txt = ", ".join(d.strftime("%d/%m/%Y") for d in incompletas)
+            ModalAlert.mostrar_error(
+                "Asistencias incompletas",
+                f"No puedes continuar. Corrige primero las asistencias en estado INCOMPLETO: {fechas_txt}"
+            )
+            return
+
         try:
             self.on_dates_confirmed(fechas)
         finally:
-            # Limpia selección después de guardar
             self.reset()
             self.cerrar_dialogo()
 
@@ -220,7 +252,6 @@ class DateModalSelector:
         elif self.month < 1:
             self.month = 12
             self.year -= 1
-        # sanea selección al cambiar de mes (por si verdes quedaron fuera o bloqueados)
         self._sanitize_selection()
         self._reconstruir()
         if self.page:
@@ -251,9 +282,11 @@ class DateModalSelector:
             cur = date.fromordinal(cur.toordinal() + 1)
 
     def _sanitize_selection(self):
-        """Quita seleccionadas que no sean disponibles o estén bloqueadas."""
         if not self.seleccionadas:
             return
-        validas = {d for d in self.seleccionadas if (d in self.fechas_disponibles and d not in self.fechas_bloqueadas)}
+        validas = {
+            d for d in self.seleccionadas
+            if (d in self.fechas_disponibles and d not in self.fechas_bloqueadas and self.asistencias_estado.get(d) != "incompleto")
+        }
         if validas != self.seleccionadas:
             self.seleccionadas = validas
