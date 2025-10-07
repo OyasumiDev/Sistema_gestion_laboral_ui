@@ -33,7 +33,7 @@ class AsistenciasContainer(ft.Container):
     """
 
     # ---- Config UI / rendimiento ----
-    _BASE_MIN_WIDTH = 1280
+    _BASE_MIN_WIDTH = 1450
     _PAGE_MARGIN_W = 80
     _HEADER_ESTIMATE = 180
     _PANEL_MIN_H = 300
