@@ -898,37 +898,191 @@ class AssistanceModel:
         self.db.run_query(q, (fecha_inicio, fecha_fin))
 
 
-
-    def get_fechas_incompletas(self, fi: Optional[date] = None, ff: Optional[date] = None) -> dict:
+    def get_fechas_incompletas(
+        self,
+        fi: Optional[date] = None,
+        ff: Optional[date] = None,
+        numero_nomina: Optional[int] = None
+    ) -> dict:
         """
-        Retorna un diccionario {date: "incompleto"} con todas las fechas de asistencias en estado 'incompleto'.
-        - Si se pasa un rango [fi, ff], solo retorna las fechas dentro de ese rango.
+        Retorna un diccionario {date: "incompleto"} con todas las fechas
+        que contengan al menos una asistencia incompleta o con datos vacíos.
+        - Soporta rango [fi, ff]
+        - Soporta filtro opcional por empleado
         """
         try:
             params = []
-            filtro_rango = ""
+            condiciones = ["1=1"]
+
+            # Filtro por rango
             if fi and ff:
-                filtro_rango = f"AND {E_ASSISTANCE.FECHA.value} BETWEEN %s AND %s"
-                params = [fi, ff]
+                condiciones.append(f"{E_ASSISTANCE.FECHA.value} BETWEEN %s AND %s")
+                params.extend([fi, ff])
+
+            # Filtro por empleado
+            if numero_nomina:
+                condiciones.append(f"{E_ASSISTANCE.NUMERO_NOMINA.value} = %s")
+                params.append(numero_nomina)
+
+            # Condiciones de incompletitud
+            condiciones_incompletas = f"""
+            (
+                {E_ASSISTANCE.ESTADO.value} = 'incompleto'
+                OR {E_ASSISTANCE.ESTADO.value} IS NULL
+                OR {E_ASSISTANCE.ESTADO.value} = ''
+                OR {E_ASSISTANCE.HORA_ENTRADA.value} IS NULL
+                OR {E_ASSISTANCE.HORA_SALIDA.value} IS NULL
+                OR {E_ASSISTANCE.HORA_ENTRADA.value} IN ('00:00:00','0:00:00')
+                OR {E_ASSISTANCE.HORA_SALIDA.value}  IN ('00:00:00','0:00:00')
+                OR TIMEDIFF({E_ASSISTANCE.HORA_SALIDA.value}, {E_ASSISTANCE.HORA_ENTRADA.value}) <= '00:00:00'
+            )
+            """
 
             q = f"""
                 SELECT DISTINCT {E_ASSISTANCE.FECHA.value} AS fecha
                 FROM {E_ASSISTANCE.TABLE.value}
-                WHERE {E_ASSISTANCE.ESTADO.value} = 'incompleto'
-                {filtro_rango}
+                WHERE {" AND ".join(condiciones)}
+                AND {condiciones_incompletas}
                 ORDER BY {E_ASSISTANCE.FECHA.value} ASC
             """
+
             rows = self.db.get_data_list(q, tuple(params), dictionary=True) or []
             out = {}
+
             for r in rows:
                 f = r.get("fecha")
                 if isinstance(f, str):
                     f = datetime.strptime(f, "%Y-%m-%d").date()
                 out[f] = "incompleto"
+
+            print(f"✅ Fechas incompletas detectadas: {len(out)}")
             return out
+
         except Exception as ex:
             print(f"❌ Error al obtener fechas incompletas: {ex}")
             return {}
+
+
+    def get_fechas_estado_completo_y_incompleto(
+        self,
+        fi: Optional[date] = None,
+        ff: Optional[date] = None,
+        numero_nomina: Optional[int] = None
+    ) -> dict:
+        """
+        Devuelve {fecha: 'completo' | 'incompleto'} evaluando las horas reales,
+        sin depender del campo 'estado' guardado (más preciso).
+        """
+        try:
+            params = []
+            condiciones = ["1=1"]
+
+            if fi and ff:
+                condiciones.append(f"{E_ASSISTANCE.FECHA.value} BETWEEN %s AND %s")
+                params.extend([fi, ff])
+
+            if numero_nomina:
+                condiciones.append(f"{E_ASSISTANCE.NUMERO_NOMINA.value} = %s")
+                params.append(numero_nomina)
+
+            q = f"""
+                SELECT DISTINCT {E_ASSISTANCE.FECHA.value} AS fecha,
+                    CASE
+                        WHEN {E_ASSISTANCE.HORA_ENTRADA.value} IS NOT NULL
+                            AND {E_ASSISTANCE.HORA_SALIDA.value} IS NOT NULL
+                            AND {E_ASSISTANCE.HORA_ENTRADA.value} NOT IN ('00:00:00','0:00:00')
+                            AND {E_ASSISTANCE.HORA_SALIDA.value}  NOT IN ('00:00:00','0:00:00')
+                            AND TIMEDIFF({E_ASSISTANCE.HORA_SALIDA.value}, {E_ASSISTANCE.HORA_ENTRADA.value}) > '00:00:00'
+                        THEN 'completo'
+                        ELSE 'incompleto'
+                    END AS estado
+                FROM {E_ASSISTANCE.TABLE.value}
+                WHERE {" AND ".join(condiciones)}
+                ORDER BY {E_ASSISTANCE.FECHA.value} ASC
+            """
+
+            rows = self.db.get_data_list(q, tuple(params), dictionary=True) or []
+            out = {}
+
+            for r in rows:
+                f = r.get("fecha")
+                estado = str(r.get("estado", "incompleto")).lower().strip()
+                if isinstance(f, str):
+                    f = datetime.strptime(f, "%Y-%m-%d").date()
+                out[f] = estado
+
+            print(f"✅ Fechas con estado recalculado: {len(out)}")
+            return out
+
+        except Exception as ex:
+            print(f"❌ Error al obtener fechas por estado: {ex}")
+            return {}
+
+
+    def get_fechas_incompletas(
+        self,
+        fi: Optional[date] = None,
+        ff: Optional[date] = None,
+        numero_nomina: Optional[int] = None
+    ) -> dict:
+        """
+        Retorna un diccionario {date: "incompleto"} con todas las fechas
+        que contengan al menos una asistencia incompleta o con datos vacíos.
+        - Soporta filtro por rango [fi, ff].
+        - Soporta filtro opcional por empleado (numero_nomina).
+        """
+        try:
+            params = []
+            condiciones = ["1=1"]
+
+            # Filtro por rango
+            if fi and ff:
+                condiciones.append(f"{E_ASSISTANCE.FECHA.value} BETWEEN %s AND %s")
+                params.extend([fi, ff])
+
+            # Filtro por empleado
+            if numero_nomina:
+                condiciones.append(f"{E_ASSISTANCE.NUMERO_NOMINA.value} = %s")
+                params.append(numero_nomina)
+
+            # Condiciones de incompletitud
+            condiciones_incompletas = f"""
+            (
+                {E_ASSISTANCE.ESTADO.value} = 'incompleto'
+                OR {E_ASSISTANCE.ESTADO.value} IS NULL
+                OR {E_ASSISTANCE.ESTADO.value} = ''
+                OR {E_ASSISTANCE.HORA_ENTRADA.value} IS NULL
+                OR {E_ASSISTANCE.HORA_SALIDA.value} IS NULL
+                OR {E_ASSISTANCE.HORA_ENTRADA.value} IN ('00:00:00','0:00:00')
+                OR {E_ASSISTANCE.HORA_SALIDA.value}  IN ('00:00:00','0:00:00')
+                OR TIMEDIFF({E_ASSISTANCE.HORA_SALIDA.value}, {E_ASSISTANCE.HORA_ENTRADA.value}) <= '00:00:00'
+            )
+            """
+
+            q = f"""
+                SELECT DISTINCT {E_ASSISTANCE.FECHA.value} AS fecha
+                FROM {E_ASSISTANCE.TABLE.value}
+                WHERE {" AND ".join(condiciones)}
+                AND {condiciones_incompletas}
+                ORDER BY {E_ASSISTANCE.FECHA.value} ASC
+            """
+
+            rows = self.db.get_data_list(q, tuple(params), dictionary=True) or []
+            out = {}
+
+            for r in rows:
+                f = r.get("fecha")
+                if isinstance(f, str):
+                    f = datetime.strptime(f, "%Y-%m-%d").date()
+                out[f] = "incompleto"
+
+            print(f"✅ Fechas incompletas detectadas: {len(out)}")
+            return out
+
+        except Exception as ex:
+            print(f"❌ Error al obtener fechas incompletas: {ex}")
+            return {}
+
 
     def get_fechas_estado(self, fi: date = None, ff: date = None) -> dict:
         """

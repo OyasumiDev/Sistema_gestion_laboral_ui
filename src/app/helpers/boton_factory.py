@@ -6,7 +6,7 @@ class BotonFactory:
     """
     Fábrica de botones:
     - Acciones de fila (editar, eliminar, guardar, cancelar) -> IconButton
-    - Botones de header (importar, exportar, agregar) -> "pill buttons" (GestureDetector + Container)
+    - Botones de header (importar, exportar, agregar, agregar fechas pagadas) -> 'pill buttons'
     """
 
     def __init__(self):
@@ -15,7 +15,14 @@ class BotonFactory:
     # ------------------------
     #  Internos reutilizables
     # ------------------------
-    def _pill_button(self, text: str, on_tap: Callable, *, img_src: str | None = None, icon_name: str | None = None):
+    def _pill_button(
+        self,
+        text: str,
+        on_tap: Callable,
+        *,
+        img_src: str | None = None,
+        icon_name: str | None = None,
+    ) -> ft.GestureDetector:
         """
         Crea un botón tipo 'pastilla' consistente con EmpleadosContainer.
         Usa imagen si se provee; si no, usa un icono Flet.
@@ -37,9 +44,9 @@ class BotonFactory:
                 content=ft.Row(
                     content_row,
                     alignment=ft.MainAxisAlignment.CENTER,
-                    spacing=5
-                )
-            )
+                    spacing=5,
+                ),
+            ),
         )
 
     def crear_boton_accion(self, icon_name: str, tooltip: str, color: str, on_click: Callable) -> ft.IconButton:
@@ -70,7 +77,6 @@ class BotonFactory:
     #  Botones de header (pill)
     # ------------------------
     def crear_boton_importar(self, on_click: Callable) -> ft.GestureDetector:
-        # Mismo look & feel que Empleados: imagen + texto
         return self._pill_button(
             "Importar",
             on_click,
@@ -78,7 +84,6 @@ class BotonFactory:
         )
 
     def crear_boton_exportar(self, on_click: Callable) -> ft.GestureDetector:
-        # Mismo look & feel que Empleados: imagen + texto
         return self._pill_button(
             "Exportar",
             on_click,
@@ -86,11 +91,21 @@ class BotonFactory:
         )
 
     def crear_boton_agregar(self, on_click: Callable) -> ft.GestureDetector:
-        # En Empleados usas icono (no imagen). Replicamos eso:
         return self._pill_button(
             "Agregar",
             on_click,
             icon_name=ft.icons.ADD,
+        )
+
+    def crear_boton_agregar_fechas_pagadas(self, on_click: Callable) -> ft.GestureDetector:
+        """
+        Nuevo botón 'pill' para abrir el modal de 'Agregar fechas pagadas'.
+        Coincide visualmente con Importar/Exportar/Agregar.
+        """
+        return self._pill_button(
+            "Agregar fechas pagadas",
+            on_click,
+            icon_name=ft.icons.CALENDAR_MONTH,  # calendario para distinguirlo del resto
         )
 
 
@@ -117,3 +132,6 @@ def crear_boton_exportar(on_click: Callable):
 
 def crear_boton_agregar(on_click: Callable):
     return _factory.crear_boton_agregar(on_click)
+
+def crear_boton_agregar_fechas_pagadas(on_click: Callable):
+    return _factory.crear_boton_agregar_fechas_pagadas(on_click)

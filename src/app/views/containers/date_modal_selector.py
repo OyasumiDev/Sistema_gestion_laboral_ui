@@ -2,7 +2,7 @@ import flet as ft
 import calendar
 from datetime import datetime, date
 from app.core.app_state import AppState
-from app.views.containers.modal_alert import ModalAlert
+from app.models.assistance_model import AssistanceModel  # para sincronizar estados
 
 _cal = calendar.Calendar()
 _date_class = ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"]
@@ -15,10 +15,9 @@ _month_class = {
 class DateModalSelector:
     """
     Selector de fechas para pagos.
-    - Solo días DISPONIBLES son clicables.
-    - Selección 1..N días sueltos.
-    - Autorrango: segundo clic llena los días disponibles del intervalo.
-    - Guardar -> callback on_dates_confirmed(List[date]) con fechas ORDENADAS.
+    - Muestra días con asistencias completas (verde claro) e incompletas (rojo).
+    - Bloquea la selección en días incompletos o días con grupo PAGADO.
+    - Selección individual o autorango (sin atravesar inválidas).
     """
 
     def __init__(
@@ -43,17 +42,24 @@ class DateModalSelector:
         self.year = hoy.year
         self.month = hoy.month
 
-        self.fechas_bloqueadas: set[date] = set()
-        self.fechas_disponibles: set[date] = set()
+        self.fechas_bloqueadas: set[date] = set()     # solo PAGADOS
+        self.fechas_disponibles: set[date] = set()    # clicables
+        self.asistencias_estado: dict[date, str] = {} # {date: "completo"/"incompleto"}
 
-        # fechas seleccionadas en el modal
         self.seleccionadas: set[date] = set()
         self._anchor: date | None = None
 
-        # asistencias externas {date: "estado"}
-        self.asistencias_estado: dict[date, str] = {}
+        # modelo (opcional para refrescar estados)
+        self.assistance_model = AssistanceModel()
+
+        # modal centrado propio
+        self._center_alert = ft.AlertDialog(modal=True)
 
     # ------------------ API pública ------------------
+
+    def sincronizar_asistencias(self, fi: date = None, ff: date = None, numero_nomina: int = None):
+        estados = self.assistance_model.get_fechas_estado_completo_y_incompleto(fi, ff, numero_nomina)
+        self.set_asistencias(estados)
 
     def set_fechas_bloqueadas(self, fechas):
         self.fechas_bloqueadas = set(self._normalize_dates(fechas))
@@ -64,12 +70,9 @@ class DateModalSelector:
         self._sanitize_selection()
 
     def set_asistencias(self, asistencias: dict):
-        """
-        Recibe un diccionario {date: estado}, ej:
-        {date(2025,10,6): "completo", date(2025,10,7): "incompleto"}
-        """
+        # dict => {date/str: estado}
         self.asistencias_estado = {
-            self._normalize_dates([k])[0]: v for k, v in asistencias.items()
+            self._normalize_dates([k])[0]: (v or "").lower() for k, v in asistencias.items()
         }
 
     def reset(self):
@@ -91,7 +94,7 @@ class DateModalSelector:
         if self.page:
             self.page.update()
 
-    # ------------------ Render UI ------------------
+    # ------------------ UI ------------------
 
     def _reconstruir(self):
         encabezado = ft.Row(
@@ -119,22 +122,30 @@ class DateModalSelector:
 
                 f_actual = date(self.year, self.month, dia)
 
-                # Reglas
+                estado = (self.asistencias_estado.get(f_actual) or "").lower()
                 is_disponible = f_actual in self.fechas_disponibles
                 is_bloqueada = f_actual in self.fechas_bloqueadas
-                is_incompleta = self.asistencias_estado.get(f_actual) == "incompleto"
+                is_incompleta = estado == "incompleto"
+                is_completa = estado == "completo"
+                is_selected = f_actual in self.seleccionadas
 
-                # clickable = disponible, no bloqueada y no incompleta
                 clickable = is_disponible and not is_bloqueada and not is_incompleta
 
-                if is_bloqueada:
+                # Colores / prioridad visual
+                if is_selected:
+                    bgcolor = ft.colors.GREEN
+                    text_color = ft.colors.WHITE
+                elif is_incompleta:
+                    bgcolor = ft.colors.RED_400
+                    text_color = ft.colors.WHITE
+                elif is_bloqueada:
                     bgcolor = ft.colors.GREY_300
                     text_color = ft.colors.BLACK45
-                elif is_incompleta:
-                    bgcolor = ft.colors.RED_200
+                elif is_completa:
+                    bgcolor = ft.colors.GREEN_200
                     text_color = ft.colors.BLACK
-                elif clickable:
-                    bgcolor = ft.colors.GREEN if f_actual in self.seleccionadas else None
+                elif is_disponible:
+                    bgcolor = ft.colors.GREY_50
                     text_color = ft.colors.BLACK
                 else:
                     bgcolor = ft.colors.GREY_100
@@ -147,7 +158,8 @@ class DateModalSelector:
                     border_radius=8,
                     alignment=ft.alignment.center,
                     content=ft.Text(str(dia), color=text_color, size=13),
-                    on_click=(lambda e, f=f_actual: self._toggle_fecha(f)) if clickable else None,
+                    on_click=(lambda e, f=f_actual: self._toggle_fecha(f)) if clickable
+                             else (lambda e, f=f_actual: self._alerta_invalida(f)),
                 )
                 fila.controls.append(box)
             grid.controls.append(fila)
@@ -156,10 +168,10 @@ class DateModalSelector:
             [
                 ft.Container(width=12, height=12, bgcolor=ft.colors.GREEN, border_radius=3),
                 ft.Text("Seleccionada", size=11),
-                ft.Container(width=12, height=12, bgcolor=ft.colors.RED_200, border_radius=3),
+                ft.Container(width=12, height=12, bgcolor=ft.colors.GREEN_200, border_radius=3),
+                ft.Text("Asistencia completa", size=11),
+                ft.Container(width=12, height=12, bgcolor=ft.colors.RED_400, border_radius=3),
                 ft.Text("Asistencia incompleta", size=11),
-                ft.Container(width=12, height=12, bgcolor=ft.colors.GREY_100, border_radius=3),
-                ft.Text("No disponible", size=11),
                 ft.Container(width=12, height=12, bgcolor=ft.colors.GREY_300, border_radius=3),
                 ft.Text("Bloqueada", size=11),
             ],
@@ -186,16 +198,74 @@ class DateModalSelector:
 
     # ------------------ Interacción ------------------
 
+    def _show_center_alert(self, title: str, message: str, *, kind: str = "info"):
+        """Cuadro centrado en pantalla (reemplaza mensajes laterales)."""
+        icon = ft.Icon(ft.icons.ERROR_OUTLINE if kind == "error" else ft.icons.INFO_OUTLINE, size=26)
+        content = ft.Container(
+            width=520,
+            bgcolor=ft.colors.SURFACE,
+            padding=20,
+            border_radius=16,
+            content=ft.Column(
+                [
+                    ft.Row([icon, ft.Text(title or "Aviso", weight=ft.FontWeight.BOLD, size=16)], spacing=10),
+                    ft.Text(message or ""),
+                    ft.Row(
+                        [ft.ElevatedButton("Cerrar", on_click=lambda e: self._close_center_alert())],
+                        alignment="end",
+                    ),
+                ],
+                spacing=14,
+                tight=True,
+            ),
+        )
+        self._center_alert.content = content
+        if self._center_alert not in self.page.overlay:
+            self.page.overlay.append(self._center_alert)
+        self._center_alert.open = True
+        self.page.update()
+
+    def _close_center_alert(self):
+        self._center_alert.open = False
+        if self.page:
+            self.page.update()
+
+    def _alerta_invalida(self, f: date):
+        estado = (self.asistencias_estado.get(f) or "").lower()
+        if estado == "incompleto":
+            self._show_center_alert(
+                "Asistencia incompleta",
+                f"No puedes seleccionar el día {f.strftime('%d/%m/%Y')} porque su asistencia está INCOMPLETA.",
+                kind="error",
+            )
+        elif f in self.fechas_bloqueadas:
+            self._show_center_alert(
+                "Fecha bloqueada",
+                f"El día {f.strftime('%d/%m/%Y')} pertenece a un grupo PAGADO y no puede seleccionarse.",
+                kind="info",
+            )
+        else:
+            self._show_center_alert(
+                "No disponible",
+                f"El día {f.strftime('%d/%m/%Y')} no está disponible para selección.",
+                kind="info",
+            )
+
     def _on_cancel(self):
         self.reset()
         self.cerrar_dialogo()
 
     def _toggle_fecha(self, f: date):
-        # Seguridad: solo toggle si sigue siendo clicable
-        if not (f in self.fechas_disponibles and f not in self.fechas_bloqueadas and self.asistencias_estado.get(f) != "incompleto"):
+        # Seguridad
+        if (self.asistencias_estado.get(f) or "").lower() == "incompleto" or f in self.fechas_bloqueadas:
+            self._alerta_invalida(f)
+            return
+        if f not in self.fechas_disponibles:
+            self._alerta_invalida(f)
             return
 
-        if not self.auto_range or self._anchor is None or f == self._anchor:
+        # Click único / autorango
+        if (not self.auto_range) or (self._anchor is None) or (f == self._anchor):
             if f in self.seleccionadas:
                 self.seleccionadas.remove(f)
                 if self._anchor == f:
@@ -205,17 +275,31 @@ class DateModalSelector:
                 self._anchor = f
         else:
             f1, f2 = (self._anchor, f) if self._anchor < f else (f, self._anchor)
-            intervalo = [
-                d for d in self._daterange(f1, f2)
-                if d in self.fechas_disponibles and d not in self.fechas_bloqueadas and self.asistencias_estado.get(d) != "incompleto"
+            rango = list(self._daterange(f1, f2))
+
+            # Si hay incompletas o bloqueadas, cancelar y soltar anchor para evitar “movimientos raros”
+            invalidas = [d for d in rango if ((self.asistencias_estado.get(d) or "").lower() == "incompleto") or (d in self.fechas_bloqueadas)]
+            if invalidas:
+                fechas_txt = ", ".join(d.strftime("%d/%m/%Y") for d in invalidas)
+                self._show_center_alert(
+                    "Rango inválido",
+                    f"No puedes seleccionar este rango porque contiene días inválidos: {fechas_txt}",
+                    kind="error",
+                )
+                self._anchor = None
+                self._reconstruir()
+                if self.page:
+                    self.page.update()
+                return
+
+            # Aplicar solo válidas dentro del rango
+            rango_validas = [
+                d for d in rango
+                if d in self.fechas_disponibles and d not in self.fechas_bloqueadas
+                and (self.asistencias_estado.get(d) or "").lower() != "incompleto"
             ]
-            faltantes = [d for d in intervalo if d not in self.seleccionadas]
-            if faltantes:
-                self.seleccionadas.update(faltantes)
-            else:
-                for d in intervalo:
-                    self.seleccionadas.discard(d)
-            self._anchor = f
+            self.seleccionadas.update(rango_validas)
+            self._anchor = f  # nuevo extremo
 
         self._reconstruir()
         if self.page:
@@ -223,18 +307,18 @@ class DateModalSelector:
 
     def _guardar_fechas(self):
         if not self.seleccionadas:
-            ModalAlert.mostrar_info("Sin selección", "Selecciona al menos una fecha disponible.")
+            self._show_center_alert("Sin selección", "Selecciona al menos una fecha disponible.", kind="info")
             return
 
         fechas = sorted(list(self.seleccionadas))
+        incompletas = [f for f in fechas if (self.asistencias_estado.get(f) or "").lower() == "incompleto"]
 
-        # 🔎 VALIDAR que no haya incompletas en la selección
-        incompletas = [f for f in fechas if self.asistencias_estado.get(f) == "incompleto"]
         if incompletas:
             fechas_txt = ", ".join(d.strftime("%d/%m/%Y") for d in incompletas)
-            ModalAlert.mostrar_error(
+            self._show_center_alert(
                 "Asistencias incompletas",
-                f"No puedes continuar. Corrige primero las asistencias en estado INCOMPLETO: {fechas_txt}"
+                f"No puedes continuar. Corrige primero las asistencias INCOMPLETAS: {fechas_txt}",
+                kind="error",
             )
             return
 
@@ -286,7 +370,11 @@ class DateModalSelector:
             return
         validas = {
             d for d in self.seleccionadas
-            if (d in self.fechas_disponibles and d not in self.fechas_bloqueadas and self.asistencias_estado.get(d) != "incompleto")
+            if (
+                d in self.fechas_disponibles
+                and d not in self.fechas_bloqueadas
+                and (self.asistencias_estado.get(d) or "").lower() != "incompleto"
+            )
         }
         if validas != self.seleccionadas:
             self.seleccionadas = validas

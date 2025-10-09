@@ -11,7 +11,8 @@ from app.models.detalles_pagos_prestamo_model import DetallesPagosPrestamoModel
 class PaymentViewMath:
     """
     Motor de cálculo para pagos de nómina (solo vista/UI):
-    - PENDIENTE: toma descuentos del borrador + préstamos (pendientes + confirmados).
+    - PENDIENTE: ahora **prefiere descuentos confirmados**; si no hay, usa el borrador.
+      Préstamos: confirmados + pendientes (borrador).
     - PAGADO: toma descuentos y préstamos ya confirmados.
     - Con el depósito tipeado en UI calcula: total neto, efectivo (nunca negativo) y saldo
       aplicando la regla de billetes de $50 (redondeo al múltiplo de 50 y saldo de ajuste).
@@ -61,6 +62,34 @@ class PaymentViewMath:
         except Exception:
             return 0.0
 
+    def _has_descuentos_confirmados(self, id_pago: int) -> bool:
+        """
+        Indica si existen descuentos confirmados para el pago.
+        Usa un método directo si existe; si no, infiere por el total confirmado > 0 o por presencia de filas.
+        """
+        # Método directo si el modelo lo expone
+        fn = getattr(self.discount_model, "tiene_descuentos_guardados", None)
+        if callable(fn):
+            try:
+                return bool(fn(id_pago))
+            except Exception:
+                pass
+        # Fallback: confirma por total > 0 o por conteo si está disponible
+        try:
+            total = float(self.discount_model.get_total_descuentos_por_pago(id_pago) or 0.0)
+            if total > 0:
+                return True
+        except Exception:
+            pass
+        try:
+            get_list = getattr(self.discount_model, "get_descuentos_por_pago", None)
+            if callable(get_list):
+                lst = get_list(id_pago) or []
+                return len(lst) > 0
+        except Exception:
+            pass
+        return False
+
     # -------------------- Préstamos ---------------------
     def _prestamos_confirmados(self, id_pago: int) -> float:
         try:
@@ -103,19 +132,23 @@ class PaymentViewMath:
         estado = str(pago_row.get("estado") or "").lower()
         monto_base = float(pago_row.get("monto_base") or 0.0)
 
-        # 1) Descuentos + préstamos según estado
+        # 1) Descuentos + préstamos según estado (lógica nueva para PENDIENTE)
         if estado == "pagado":
             descuentos = self._descuentos_confirmados(id_pago)
             prestamos = self._prestamos_confirmados(id_pago)
         else:
-            descuentos = self._descuentos_pendientes_desde_borrador(id_pago)
-            # Sumar confirmados (si existieran) + pendientes del borrador de préstamos
+            # Preferir confirmados si existen; si no, leer borrador
+            if self._has_descuentos_confirmados(id_pago):
+                descuentos = self._descuentos_confirmados(id_pago)
+            else:
+                descuentos = self._descuentos_pendientes_desde_borrador(id_pago)
+            # Préstamos: confirmados + pendientes (borradores)
             prestamos = self._prestamos_confirmados(id_pago) + self._prestamos_pendientes(id_pago)
 
         # 2) Neto a pagar
         total_vista = max(0.0, round(monto_base - descuentos - prestamos, 2))
 
-        # 3) Depósito tipeado -> float >= 0 (no lo recortamos al neto; la UI marcará en rojo si excede)
+        # 3) Depósito tipeado -> float >= 0
         try:
             deposito = float(deposito_ui or 0.0)
         except Exception:
