@@ -10,17 +10,20 @@ class PaymentSortFilterHelper:
     """
     Helper para filtrar/ordenar DataTables y priorizar/ordenar listas de dicts.
 
-    Novedades claves:
+    Incluye:
     • refresh_snapshot(): resetea snapshot de la DataTable (evita snapshots viejos).
-    • sort_records(): ordena listas de dicts por claves conocidas; permite pasar compute_total().
-    • prioritize_records_by_filters(): acepta match_mode="or"/"and" (por defecto "or").
-    • _money_to_float(): parseo robusto para "$1,234.56" y "1.234,56".
+    • sort_table(), sort_rows_inplace(): orden para DataTable y listas de filas.
+    • bind_sorting(): vincula ordenamiento por columna (con atajos estándar).
+    • prioritize_or_filter_table_by_columns(): prioriza o filtra en DataTable
+      por prefijos de id_empleado / id_pago (pendientes y pagadas).
+    • sort_records(), prioritize_records_by_filters(): para listas de dicts (expansibles).
+    • parse_id_query(): soporta patrones "1,2,5-9" para filtros de IDs.
     """
 
     def __init__(self):
-        # id(datatable) -> snapshot completo de filas (sin filtros aplicados)
+        # id(datatable) -> snapshot completo de filas (estado base sin filtros)
         self._snapshots: Dict[int, List[ft.DataRow]] = {}
-        # id(datatable) -> estado de filtro actual (set de ids o None)
+        # id(datatable) -> estado de filtro activo (si decides usar set(ids))
         self._active_filters: Dict[int, Optional[set[int]]] = {}
 
     # ------------------------------------------------------------------
@@ -67,25 +70,30 @@ class PaymentSortFilterHelper:
                         on_after_sort(datatable)
                 return _on_sort
 
-            # si DataColumn soporta on_sort, lo seteamos
             try:
-                col.on_sort = _make_on_sort()
+                col.on_sort = _make_on_sort()  # type: ignore[attr-defined]
             except Exception:
                 # versiones antiguas podrían no soportarlo; ignorar
                 pass
 
         datatable.update()
 
-    # Atajos estándar
+    # Atajos (ajusta índices según tus tablas)
     def bind_standard_sorters_to_pendientes(
         self,
         datatable: ft.DataTable,
         on_after_sort: Optional[Callable[[ft.DataTable], None]] = None,
+        *,
+        id_pago_idx: int = 0,
+        monto_base_idx: int = 5,
+        total_idx: int = 11,
     ) -> None:
-        """Pendientes (COLUMNS_EDICION sugeridas): id_pago=0, monto_base=6, total=12."""
+        """
+        Pendientes: índices por defecto tentativos -> ajusta a tu tabla.
+        """
         self.bind_sorting(
             datatable,
-            sort_specs=[(0, "int"), (6, "money"), (12, "money")],
+            sort_specs=[(id_pago_idx, "int"), (monto_base_idx, "money"), (total_idx, "money")],
             on_after_sort=on_after_sort,
         )
 
@@ -93,16 +101,25 @@ class PaymentSortFilterHelper:
         self,
         datatable: ft.DataTable,
         on_after_sort: Optional[Callable[[ft.DataTable], None]] = None,
+        *,
+        id_pago_idx: int = 0,   # "id_pago"
+        monto_base_idx: int = 5,  # "monto_base"
+        total_idx: int = 11,      # "total"
     ) -> None:
-        """Confirmados (COLUMNS_COMPACTAS_CONFIRMADO sugeridas): id_pago=0, monto_base=3, total=9."""
+        """
+        Confirmados (expansibles): coincide con COLUMNS del módulo expansible:
+        ["id_pago"(0), "id_empleado"(1), "nombre"(2), "horas"(3), "sueldo_hora"(4),
+         "monto_base"(5), "descuentos"(6), "prestamos"(7), "deposito"(8),
+         "saldo"(9), "efectivo"(10), "total"(11), ...]
+        """
         self.bind_sorting(
             datatable,
-            sort_specs=[(0, "int"), (3, "money"), (9, "money")],
+            sort_specs=[(id_pago_idx, "int"), (monto_base_idx, "money"), (total_idx, "money")],
             on_after_sort=on_after_sort,
         )
 
     # ------------------------------------------------------------------
-    # Ordenar una tabla
+    # Ordenar una DataTable
     # ------------------------------------------------------------------
     def sort_table(
         self,
@@ -119,10 +136,103 @@ class PaymentSortFilterHelper:
             return self._cell_value_as(row, column_index, value_type)
 
         datatable.rows = sorted(datatable.rows, key=key_fn, reverse=not ascending)
-        # Visual hint (flecha en header si la versión de Flet lo soporta)
         datatable.sort_column_index = column_index
         datatable.sort_ascending = ascending
         datatable.update()
+
+    # ------------------------------------------------------------------
+    # Filtros/priorizaciones en DataTable (pendientes / pagadas)
+    # ------------------------------------------------------------------
+    def prioritize_or_filter_table_by_columns(
+        self,
+        datatable: ft.DataTable,
+        *,
+        id_empleado_col: int,
+        id_pago_col: int,
+        id_empleado_prefix: str = "",
+        id_pago_prefix: str = "",
+        match_mode: Literal["or", "and"] = "or",
+        mode: Literal["prioritize", "filter"] = "prioritize",
+    ) -> None:
+        """
+        Reordena (prioritize) o reduce (filter) filas de una DataTable en base a prefijos.
+
+        - id_empleado_col: índice de columna con el ID de empleado.
+        - id_pago_col: índice de columna con el ID de pago.
+        - match_mode: "or" (default) ó "and" para combinar prefijos.
+        - mode: "prioritize" (pone matching arriba) o "filter" (deja sólo matching).
+        """
+        self._ensure_snapshot(datatable)
+        base_rows = list(self._snapshots[id(datatable)])
+
+        emp_pref = self._norm_digits_prefix(id_empleado_prefix)
+        pago_pref = self._norm_digits_prefix(id_pago_prefix)
+
+        if not emp_pref and not pago_pref:
+            datatable.rows = base_rows
+            datatable.update()
+            return
+
+        def row_matches(r: ft.DataRow) -> bool:
+            emp_val = str(self._cell_value_as(r, id_empleado_col, "int"))
+            pago_val = str(self._cell_value_as(r, id_pago_col, "int"))
+            emp_ok = emp_val.startswith(emp_pref) if emp_pref else False
+            pago_ok = pago_val.startswith(pago_pref) if pago_pref else False
+            return (emp_ok or pago_ok) if match_mode == "or" else (emp_ok and pago_ok)
+
+        matching: List[ft.DataRow] = []
+        non_matching: List[ft.DataRow] = []
+        for r in base_rows:
+            (matching if row_matches(r) else non_matching).append(r)
+
+        if mode == "filter":
+            datatable.rows = matching
+        else:
+            datatable.rows = matching + non_matching
+        datatable.update()
+
+    # Wrappers de conveniencia con índices por defecto (ajústalos si difieren)
+    def apply_standard_filters_to_pendientes_table(
+        self,
+        datatable: ft.DataTable,
+        *,
+        id_empleado_prefix: str = "",
+        id_pago_prefix: str = "",
+        match_mode: Literal["or", "and"] = "or",
+        mode: Literal["prioritize", "filter"] = "prioritize",
+        id_empleado_idx: int = 1,  # suele ser 1: ["id_pago", "id_empleado", ...]
+        id_pago_idx: int = 0,
+    ) -> None:
+        self.prioritize_or_filter_table_by_columns(
+            datatable,
+            id_empleado_col=id_empleado_idx,
+            id_pago_col=id_pago_idx,
+            id_empleado_prefix=id_empleado_prefix,
+            id_pago_prefix=id_pago_prefix,
+            match_mode=match_mode,
+            mode=mode,
+        )
+
+    def apply_standard_filters_to_confirmado_table(
+        self,
+        datatable: ft.DataTable,
+        *,
+        id_empleado_prefix: str = "",
+        id_pago_prefix: str = "",
+        match_mode: Literal["or", "and"] = "or",
+        mode: Literal["prioritize", "filter"] = "prioritize",
+        id_empleado_idx: int = 1,  # según COLUMNS del expansible
+        id_pago_idx: int = 0,      # según COLUMNS del expansible
+    ) -> None:
+        self.prioritize_or_filter_table_by_columns(
+            datatable,
+            id_empleado_col=id_empleado_idx,
+            id_pago_col=id_pago_idx,
+            id_empleado_prefix=id_empleado_prefix,
+            id_pago_prefix=id_pago_prefix,
+            match_mode=match_mode,
+            mode=mode,
+        )
 
     # ------------------------------------------------------------------
     # Filtro duro por Id de empleado (EXCLUYE filas)
@@ -160,7 +270,7 @@ class PaymentSortFilterHelper:
             datatable.update()
 
     # ------------------------------------------------------------------
-    # Priorizar (no excluir) en DataTable por prefijo de texto
+    # Priorizar (no excluir) por prefijo de texto en UNA columna
     # ------------------------------------------------------------------
     def prioritize_by_prefix(
         self,
@@ -226,6 +336,11 @@ class PaymentSortFilterHelper:
     # Internos
     # ------------------------------------------------------------------
     @staticmethod
+    def _norm_digits_prefix(s: str) -> str:
+        s = (s or "").strip()
+        return "".join(ch for ch in s if ch.isdigit())
+
+    @staticmethod
     def _money_to_float(s: Union[str, float, int]) -> float:
         """
         Soporta:
@@ -240,14 +355,11 @@ class PaymentSortFilterHelper:
             return 0.0
 
         txt = str(s).strip()
-        # Quitar símbolos de moneda y espacios
         txt = re.sub(r"[^\d,.\-]", "", txt)
 
-        # Si contiene ambos, decidir por la última aparición como separador decimal
         has_comma = "," in txt
         has_dot = "." in txt
         if has_comma and has_dot:
-            # Si la última coma está después del último punto -> coma decimal (formato EU)
             if txt.rfind(",") > txt.rfind("."):
                 txt = txt.replace(".", "")
                 txt = txt.replace(",", ".")
@@ -256,29 +368,25 @@ class PaymentSortFilterHelper:
                 except Exception:
                     return 0.0
             else:
-                # punto decimal (formato US), remover comas
                 txt = txt.replace(",", "")
                 try:
                     return float(txt)
                 except Exception:
                     return 0.0
         elif has_comma and not has_dot:
-            # Un solo separador: si la parte decimal parece de 2 dígitos, tomar coma decimal
             parts = txt.split(",")
-            if len(parts) == 2 and len(parts[1]) in (2, 3):  # casos típicos
+            if len(parts) == 2 and len(parts[1]) in (2, 3):
                 txt = txt.replace(",", ".")
                 try:
                     return float(txt)
                 except Exception:
                     return 0.0
-            # si no, probablemente sea miles -> remover coma
             txt = txt.replace(",", "")
             try:
                 return float(txt)
             except Exception:
                 return 0.0
         else:
-            # Solo punto o ninguno
             txt = txt.replace(",", "")
             try:
                 return float(txt)
@@ -313,7 +421,7 @@ class PaymentSortFilterHelper:
         return self._text_value(raw)
 
     # ------------------------------------------------------------------
-    # ------------- Integración con grupos (expansibles) ---------------
+    # ------------- Integración con listas (expansibles) ----------------
     # ------------------------------------------------------------------
     def sort_records(
         self,
@@ -339,9 +447,7 @@ class PaymentSortFilterHelper:
             if key == "total":
                 if compute_total:
                     return float(compute_total(row))
-                # Fallback si no nos dan compute_total
                 return float(row.get("monto_base") or 0.0)
-            # default estable
             return 0
 
         return sorted(items, key=k, reverse=not asc)

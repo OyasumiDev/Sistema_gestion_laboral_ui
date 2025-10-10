@@ -108,20 +108,26 @@ class PagosPagadosExpansibles(ft.UserControl):
     def get_control(self) -> ft.Control:
         return self.view
 
-    def set_filters(
-        self,
-        *,
-        id_empleado: str = "",
-        id_pago: str = "",
-        id_pago_conf: str = "",
-        preserve_expansion: bool = True
-    ):
-        # si nos pasan id_pago_conf, úsalo como preferente para confirmados
+    def set_filters(self, *, id_empleado: str = "", id_pago: str = "", id_pago_conf: str = "", preserve_expansion: bool = True):
         id_pago = (id_pago_conf or id_pago or "").strip()
         self.filters["id_empleado"] = (id_empleado or "").strip()
         self.filters["id_pago"] = id_pago
         self.filters["id_pago_conf"] = (id_pago_conf or "").strip()
+
+        # abrir grupo si hay un id de pago único
+        try:
+            ids = self.sort_helper.parse_id_query(id_pago)
+            if len(ids) == 1:
+                r = self.payment_model.get_by_id(ids[0])
+                if r.get("status") == "success":
+                    fecha = str(r["data"].get(self.payment_model.E.FECHA_PAGO.value) or "")
+                    if fecha:
+                        self.open_group(fecha)
+        except Exception:
+            pass
+
         self.reload(preserve_expansion=preserve_expansion)
+
 
     def reload(self, *, preserve_expansion: bool = True):
         self._cargar_paneles(preserve_expansion=preserve_expansion)
@@ -281,50 +287,33 @@ class PagosPagadosExpansibles(ft.UserControl):
         except Exception as ex:
             ModalAlert.mostrar_info("Error", f"No fue posible cargar los grupos: {ex}")
 
-    # ✅ reemplaza COMPLETO este método
+    # Añade este ayudante dentro de la clase
+    def _value_type_for_col(self, key: str) -> str:
+        # tipos de dato por columna para ordenar correctamente
+        if key in ("id_pago", "id_empleado", "horas"):
+            return "int"
+        if key in ("monto_base", "deposito", "efectivo", "saldo", "total", "sueldo_hora"):
+            return "money"
+        return "text"
+
+    # REEMPLAZA COMPLETO este método
     def _build_table_with_click_sort(self) -> ft.DataTable:
-        """
-        Construye DataTable con encabezados clickeables.
-        - Si la versión de Flet soporta DataColumn.on_sort, usa e.ascending.
-        - Si no, hace fallback a GestureDetector (toggle manual).
-        - Además, setea sort_column_index / sort_ascending para mostrar la flecha.
-        """
         cols: List[ft.DataColumn] = []
 
-        def _make_sort_handler(col_key: str):
-            # handler compatible con ambas rutas (on_sort y on_tap)
-            def _handler(e=None, k=col_key):
-                asc = getattr(e, "ascending", None) if e is not None else None
-                self._on_header_sort(k, ascending=asc)
-            return _handler
-
+        # 1) crea columnas sin handlers todavía
         for key in self.COLUMNS:
             w = self.table_builder.DEFAULT_WIDTHS.get(key, 90)
             title = key.replace("_", " ").title()
             text = ft.Text(title, size=self.table_builder.font_size, weight=ft.FontWeight.BOLD)
 
-            if key in self.CLICK_SORT:
-                # Intento usar on_sort (si la versión lo soporta)
-                try:
-                    cols.append(
-                        ft.DataColumn(
-                            label=ft.Container(text, width=w),
-                            on_sort=_make_sort_handler(key),
-                        )
-                    )
-                except TypeError:
-                    # Fallback: label clickeable (toggle manual)
-                    cols.append(
-                        ft.DataColumn(
-                            label=ft.Container(
-                                ft.GestureDetector(on_tap=_make_sort_handler(key), content=text),
-                                width=w,
-                            )
-                        )
-                    )
-            else:
-                cols.append(ft.DataColumn(label=ft.Container(text, width=w)))
+            cols.append(
+                ft.DataColumn(
+                    label=ft.Container(text, width=w),
+                    # handler se inyectará luego, cuando tengamos la instancia de la tabla
+                )
+            )
 
+        # 2) crea la tabla
         table = ft.DataTable(
             columns=cols,
             rows=[],
@@ -334,57 +323,157 @@ class PagosPagadosExpansibles(ft.UserControl):
             column_spacing=self.table_builder.column_spacing,
         )
 
-        # Mostrar flecha de orden activo
+        # 3) vincula handlers ahora que ya tenemos 'table'
+        for i, key in enumerate(self.COLUMNS):
+            if key not in self.CLICK_SORT:
+                continue
+
+            vtype = self._value_type_for_col(key)
+
+            # Handler nativo (si on_sort existe en tu versión)
+            def _on_sort(e, idx=i, k=key, t=vtype, tbl=table):
+                asc = bool(getattr(e, "ascending", True))
+                self._sort_table_inplace(tbl, column_index=idx, value_type=t, ascending=asc)
+                # recuerda último sort global (para crear tablas con flecha correcta)
+                self.sort_key, self.sort_asc = k, asc
+
+            try:
+                table.columns[i].on_sort = _on_sort  # type: ignore[attr-defined]
+            except Exception:
+                # Fallback: click manual sobre el label
+                label = table.columns[i].label
+                if isinstance(label, ft.Container):
+                    label.content = ft.GestureDetector(
+                        on_tap=lambda e, idx=i, k=key, t=vtype, tbl=table: (
+                            self._sort_table_inplace(tbl, column_index=idx, value_type=t, ascending=not tbl.sort_ascending),
+                            setattr(tbl, "sort_column_index", idx),
+                            setattr(tbl, "sort_ascending", not bool(getattr(tbl, "sort_ascending", True))),
+                            tbl.update(),
+                            setattr(self, "sort_key", k),
+                            setattr(self, "sort_asc", bool(tbl.sort_ascending)),
+                        ),
+                        content=label.content,
+                    )
+
+        # 4) flecha inicial (si aplica)
         if self.sort_key in self.IDX:
             table.sort_column_index = self.IDX[self.sort_key]
             table.sort_ascending = self.sort_asc
 
         return table
 
-    # ✅ reemplaza COMPLETO este método
+    # REEMPLAZA COMPLETO este método (ya no recarga todo para ordenar)
     def _on_header_sort(self, key: str, *, ascending: Optional[bool] = None):
-        """
-        Si viene desde DataColumn.on_sort, 'ascending' trae la dirección pedida por Flet.
-        Si viene del fallback (tap), alternamos manualmente.
-        """
-        if ascending is None:
-            # toggle manual
-            if self.sort_key == key:
-                self.sort_asc = not self.sort_asc
-            else:
-                self.sort_key, self.sort_asc = key, True
-        else:
-            # respeta la dirección que envía Flet
-            self.sort_key, self.sort_asc = key, bool(ascending)
+        # Mantenemos compatibilidad si llamas manualmente este método:
+        # busca una tabla visible y aplica sort in-place sobre la columna 'key'
+        try:
+            idx = self.IDX.get(key, None)
+            if idx is None:
+                return
+            # toma la primera tabla expandida o la primera disponible
+            table = None
+            for f, p in self._panel_by_date.items():
+                if p.expanded:
+                    table = self._table_by_date.get(f)
+                    break
+            if not table and self._table_by_date:
+                table = next(iter(self._table_by_date.values()))
 
-        self.reload(preserve_expansion=True)
+            if not table:
+                return
 
-    # ---------- Filtros + Sort (estable, con prioridad) ----------
-    def _filtros_y_sort(self, items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+            asc = self.sort_asc if ascending is None else bool(ascending)
+            vtype = self._value_type_for_col(key)
+            self._sort_table_inplace(table, column_index=idx, value_type=vtype, ascending=asc)
+
+            # guarda estado global para nuevas tablas que se creen
+            self.sort_key, self.sort_asc = key, asc
+        except Exception:
+            # último recurso: recarga (pero ya no debería hacer falta)
+            self.reload(preserve_expansion=True)
+
+    def _sort_table_inplace(self, table: ft.DataTable, *, column_index: int, value_type: str, ascending: bool) -> None:
+        rows = list(table.rows or [])
+
+        # 1) sort por la columna
+        rows = self.sort_helper.sort_rows_inplace(
+            rows, column_index=column_index, value_type=value_type, ascending=ascending
+        )
+
+        # 2) PASS estable para respetar prioridad de filtros
         ide = (self.filters.get("id_empleado") or "").strip()
         idp = (self.filters.get("id_pago_conf") or self.filters.get("id_pago") or "").strip()
 
-        # 1) Orden base por sort_key usando el helper (con compute_total real)
+        if ide or idp:
+            def _match(r: ft.DataRow) -> bool:
+                try:
+                    rid = str(r.cells[self.IDX["id_pago"]].content.value)
+                    emp = str(r.cells[self.IDX["id_empleado"]].content.value)
+                except Exception:
+                    rid, emp = "", ""
+                ok_emp = emp.startswith(ide) if ide else False
+                ok_idp = rid.startswith(idp) if idp else False
+                return ok_emp or ok_idp
+
+            # sort estable: True va después de False, por eso usamos (not _match) como clave
+            rows.sort(key=lambda r: (not _match(r)))
+
+        table.rows = rows
+        table.sort_column_index = column_index
+        table.sort_ascending = ascending
+        table.update()
+
+        # refresca snapshot del grupo dueño
+        try:
+            fecha = next((f for f, t in self._table_by_date.items() if t is table), None)
+            if fecha:
+                self._refresh_table_snapshot(fecha)
+        except Exception:
+            pass
+
+    def _filtros_y_sort(self, items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        ide = (self.filters.get("id_empleado") or "").strip()
+        idp_txt = (self.filters.get("id_pago_conf") or self.filters.get("id_pago") or "").strip()
+
+        # --- 1) FILTRO EXCLUSIVO (si hay algo escrito) ---
+        filtered = items
+
+        # Soporta "1,2,5-9" usando el helper
+        ids_set = set(self.sort_helper.parse_id_query(idp_txt)) if idp_txt else set()
+        if ids_set:
+            filtered = [
+                r for r in filtered
+                if int(r.get("id_pago_nomina") or r.get("id_pago") or 0) in ids_set
+            ]
+        elif ide:
+            # startswith por empleado si NO hay filtro de id_pago
+            filtered = [
+                r for r in filtered
+                if str(r.get("numero_nomina") or "").startswith(ide)
+            ]
+
+        # --- 2) ORDEN base por sort_key (compute_total real) ---
         def compute_total(row: Dict[str, Any]) -> float:
             deposito = float(row.get("deposito") or row.get("pago_deposito") or 0.0)
             calc = self.math.recalc_from_pago_row(row, deposito)
             return float(calc.get("total_vista", 0.0))
 
         ordered = self.sort_helper.sort_records(
-            items,
-            key=self.sort_key,
-            asc=self.sort_asc,
-            compute_total=compute_total,
+            filtered, key=self.sort_key, asc=self.sort_asc, compute_total=compute_total
         )
 
-        # 2) Prioridad estable por filtros (OR)
-        prioritized = self.sort_helper.prioritize_records_by_filters(
-            ordered,
-            id_empleado_prefix=ide,
-            id_pago_prefix=idp,
-            match_mode="or",
-        )
-        return prioritized
+        # --- 3) PRIORIDAD estable (opcional) si escribiste tanto ide como idp_txt ---
+        if ide or idp_txt:
+            ordered = self.sort_helper.prioritize_records_by_filters(
+                ordered,
+                id_empleado_prefix=ide,
+                id_pago_prefix=idp_txt,
+                match_mode="or",
+            )
+
+        return ordered
+
+
 
     # ---------- Fila pagado con edición controlada ----------
     def _build_row_pagado(self, *, pago: Dict[str, Any], calc: Dict[str, float]) -> ft.DataRow:

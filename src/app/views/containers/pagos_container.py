@@ -228,8 +228,6 @@ class PagosContainer(ft.Container):
     # Header / Filtros / Acciones
     # ------------------------------------------------------------
     def _build_header(self):
-        BtnCls = getattr(ft, "FilledTonalButton", ft.ElevatedButton)
-
         self.input_id = ft.TextField(
             label="ID Empleado",
             width=180,

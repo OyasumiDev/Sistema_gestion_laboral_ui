@@ -624,58 +624,63 @@ class PaymentModel:
             q = f"""
                 SELECT 
                     p.{self.E.ID_PAGO_NOMINA.value} AS id_pago_nomina,
-                    p.{self.E.NUMERO_NOMINA.value} AS numero_nomina,
+                    p.{self.E.ID_PAGO_NOMINA.value} AS id_pago,          -- alias para la vista/helper
+                    p.{self.E.NUMERO_NOMINA.value}   AS numero_nomina,
+                    p.{self.E.NUMERO_NOMINA.value}   AS id_empleado,     -- alias para la vista/helper
                     e.nombre_completo,
                     e.sueldo_por_hora,
-                    p.{self.E.GRUPO_PAGO.value} AS grupo_pago,
-                    p.{self.E.FECHA_INICIO.value} AS fecha_inicio,
-                    p.{self.E.FECHA_FIN.value} AS fecha_fin,
-                    p.{self.E.ESTADO_GRUPO.value} AS estado_grupo,
-                    p.{self.E.FECHA_PAGO.value} AS fecha_pago,
+                    p.{self.E.GRUPO_PAGO.value}      AS grupo_pago,
+                    p.{self.E.FECHA_INICIO.value}    AS fecha_inicio,
+                    p.{self.E.FECHA_FIN.value}       AS fecha_fin,
+                    p.{self.E.ESTADO_GRUPO.value}    AS estado_grupo,
+                    p.{self.E.FECHA_PAGO.value}      AS fecha_pago,
                     p.{self.E.TOTAL_HORAS_TRABAJADAS.value} AS horas,
-                    p.{self.E.MONTO_BASE.value} AS monto_base,
-                    p.{self.E.MONTO_TOTAL.value} AS monto_total,
+                    p.{self.E.MONTO_BASE.value}      AS monto_base,
+                    p.{self.E.MONTO_TOTAL.value}     AS monto_total,
                     p.{self.D.MONTO_DESCUENTO.value} AS descuentos,
-                    p.{self.P.PRESTAMO_MONTO.value} AS prestamos,
-                    p.{self.E.SALDO.value} AS saldo,
-                    p.{self.E.PAGO_DEPOSITO.value} AS deposito,
-                    p.{self.E.PAGO_EFECTIVO.value} AS efectivo,
-                    p.{self.E.ESTADO.value} AS estado
+                    p.{self.P.PRESTAMO_MONTO.value}  AS prestamos,
+                    p.{self.E.SALDO.value}           AS saldo,
+                    p.{self.E.PAGO_DEPOSITO.value}   AS deposito,
+                    p.{self.E.PAGO_EFECTIVO.value}   AS efectivo,
+                    p.{self.E.ESTADO.value}          AS estado
                 FROM {self.E.TABLE.value} p
                 JOIN empleados e ON p.{self.E.NUMERO_NOMINA.value} = e.numero_nomina
-                ORDER BY p.{self.E.FECHA_PAGO.value} DESC, e.numero_nomina
+                ORDER BY p.{self.E.FECHA_PAGO.value} DESC, p.{self.E.ID_PAGO_NOMINA.value} DESC
             """
             rows = self.db.get_data_list(q, dictionary=True) or []
             return {"status": "success", "data": rows}
         except Exception as ex:
             return {"status": "error", "message": f"Error al obtener pagos: {ex}"}
 
+
     def get_pagos_por_empleado(self, numero_nomina: int) -> Dict[str, Any]:
         try:
             q = f"""
                 SELECT 
                     p.{self.E.ID_PAGO_NOMINA.value} AS id_pago_nomina,
-                    p.{self.E.NUMERO_NOMINA.value} AS numero_nomina,
+                    p.{self.E.ID_PAGO_NOMINA.value} AS id_pago,          -- alias
+                    p.{self.E.NUMERO_NOMINA.value}   AS numero_nomina,
+                    p.{self.E.NUMERO_NOMINA.value}   AS id_empleado,     -- alias
                     e.nombre_completo,
                     e.sueldo_por_hora,
-                    p.{self.E.GRUPO_PAGO.value} AS grupo_pago,
-                    p.{self.E.FECHA_INICIO.value} AS fecha_inicio,
-                    p.{self.E.FECHA_FIN.value} AS fecha_fin,
-                    p.{self.E.ESTADO_GRUPO.value} AS estado_grupo,
-                    p.{self.E.FECHA_PAGO.value} AS fecha_pago,
+                    p.{self.E.GRUPO_PAGO.value}      AS grupo_pago,
+                    p.{self.E.FECHA_INICIO.value}    AS fecha_inicio,
+                    p.{self.E.FECHA_FIN.value}       AS fecha_fin,
+                    p.{self.E.ESTADO_GRUPO.value}    AS estado_grupo,
+                    p.{self.E.FECHA_PAGO.value}      AS fecha_pago,
                     p.{self.E.TOTAL_HORAS_TRABAJADAS.value} AS horas,
-                    p.{self.E.MONTO_BASE.value} AS monto_base,
-                    p.{self.E.MONTO_TOTAL.value} AS monto_total,
+                    p.{self.E.MONTO_BASE.value}      AS monto_base,
+                    p.{self.E.MONTO_TOTAL.value}     AS monto_total,
                     p.{self.D.MONTO_DESCUENTO.value} AS descuentos,
-                    p.{self.P.PRESTAMO_MONTO.value} AS prestamos,
-                    p.{self.E.SALDO.value} AS saldo,
-                    p.{self.E.PAGO_DEPOSITO.value} AS deposito,
-                    p.{self.E.PAGO_EFECTIVO.value} AS efectivo,
-                    p.{self.E.ESTADO.value} AS estado
+                    p.{self.P.PRESTAMO_MONTO.value}  AS prestamos,
+                    p.{self.E.SALDO.value}           AS saldo,
+                    p.{self.E.PAGO_DEPOSITO.value}   AS deposito,
+                    p.{self.E.PAGO_EFECTIVO.value}   AS efectivo,
+                    p.{self.E.ESTADO.value}          AS estado
                 FROM {self.E.TABLE.value} p
                 JOIN empleados e ON p.{self.E.NUMERO_NOMINA.value} = e.numero_nomina
                 WHERE p.{self.E.NUMERO_NOMINA.value}=%s
-                ORDER BY p.{self.E.FECHA_PAGO.value} DESC
+                ORDER BY p.{self.E.FECHA_PAGO.value} DESC, p.{self.E.ID_PAGO_NOMINA.value} DESC
             """
             rows = self.db.get_data_list(q, (numero_nomina,), dictionary=True) or []
             if not rows:
@@ -696,28 +701,31 @@ class PaymentModel:
         except Exception as ex:
             return {"status": "error", "message": f"Error al obtener pagos por empleado: {ex}"}
 
+
     def get_agrupado_por_empleado(self) -> Dict[str, Any]:
         try:
             q = f"""
                 SELECT 
                     p.{self.E.ID_PAGO_NOMINA.value} AS id_pago_nomina,
-                    p.{self.E.NUMERO_NOMINA.value} AS numero_nomina,
+                    p.{self.E.ID_PAGO_NOMINA.value} AS id_pago,          -- alias
+                    p.{self.E.NUMERO_NOMINA.value}   AS numero_nomina,
+                    p.{self.E.NUMERO_NOMINA.value}   AS id_empleado,     -- alias
                     e.nombre_completo,
                     e.sueldo_por_hora,
-                    p.{self.E.GRUPO_PAGO.value} AS grupo_pago,
-                    p.{self.E.FECHA_PAGO.value} AS fecha_pago,
+                    p.{self.E.GRUPO_PAGO.value}      AS grupo_pago,
+                    p.{self.E.FECHA_PAGO.value}      AS fecha_pago,
                     p.{self.E.TOTAL_HORAS_TRABAJADAS.value} AS horas,
-                    p.{self.E.MONTO_BASE.value} AS monto_base,
-                    p.{self.E.MONTO_TOTAL.value} AS monto_total,
+                    p.{self.E.MONTO_BASE.value}      AS monto_base,
+                    p.{self.E.MONTO_TOTAL.value}     AS monto_total,
                     p.{self.D.MONTO_DESCUENTO.value} AS descuentos,
-                    p.{self.P.PRESTAMO_MONTO.value} AS prestamos,
-                    p.{self.E.SALDO.value} AS saldo,
-                    p.{self.E.PAGO_DEPOSITO.value} AS deposito,
-                    p.{self.E.PAGO_EFECTIVO.value} AS efectivo,
-                    p.{self.E.ESTADO.value} AS estado
+                    p.{self.P.PRESTAMO_MONTO.value}  AS prestamos,
+                    p.{self.E.SALDO.value}           AS saldo,
+                    p.{self.E.PAGO_DEPOSITO.value}   AS deposito,
+                    p.{self.E.PAGO_EFECTIVO.value}   AS efectivo,
+                    p.{self.E.ESTADO.value}          AS estado
                 FROM {self.E.TABLE.value} p
                 JOIN empleados e ON p.{self.E.NUMERO_NOMINA.value} = e.numero_nomina
-                ORDER BY e.numero_nomina, p.{self.E.FECHA_PAGO.value} DESC
+                ORDER BY e.numero_nomina, p.{self.E.FECHA_PAGO.value} DESC, p.{self.E.ID_PAGO_NOMINA.value} DESC
             """
             rows = self.db.get_data_list(q, dictionary=True) or []
             grupos: Dict[int, Dict[str, Any]] = {}
@@ -734,6 +742,7 @@ class PaymentModel:
             return {"status": "success", "data": grupos}
         except Exception as ex:
             return {"status": "error", "message": f"Error al obtener pagos agrupados: {ex}"}
+
 
     # ---------------------- Agrupación por grupo_pago ---------------------
     def get_grupos_pagos(self) -> List[Dict[str, Any]]:
@@ -757,32 +766,37 @@ class PaymentModel:
         except Exception:
             return []
 
+
     def get_pagos_por_grupo(self, grupo_pago: str) -> List[Dict[str, Any]]:
         try:
             q = f"""
                 SELECT 
                     p.{self.E.ID_PAGO_NOMINA.value} AS id_pago_nomina,
-                    p.{self.E.NUMERO_NOMINA.value} AS numero_nomina,
+                    p.{self.E.ID_PAGO_NOMINA.value} AS id_pago,          -- alias
+                    p.{self.E.NUMERO_NOMINA.value}   AS numero_nomina,
+                    p.{self.E.NUMERO_NOMINA.value}   AS id_empleado,     -- alias
                     e.nombre_completo,
                     e.sueldo_por_hora,
-                    p.{self.E.FECHA_PAGO.value} AS fecha_pago,
+                    p.{self.E.FECHA_PAGO.value}      AS fecha_pago,
                     p.{self.E.TOTAL_HORAS_TRABAJADAS.value} AS horas,
-                    p.{self.E.MONTO_BASE.value} AS monto_base,
-                    p.{self.E.MONTO_TOTAL.value} AS monto_total,
+                    p.{self.E.MONTO_BASE.value}      AS monto_base,
+                    p.{self.E.MONTO_TOTAL.value}     AS monto_total,
                     p.{self.D.MONTO_DESCUENTO.value} AS descuentos,
-                    p.{self.P.PRESTAMO_MONTO.value} AS prestamos,
-                    p.{self.E.SALDO.value} AS saldo,
-                    p.{self.E.PAGO_DEPOSITO.value} AS deposito,
-                    p.{self.E.PAGO_EFECTIVO.value} AS efectivo,
-                    p.{self.E.ESTADO.value} AS estado
+                    p.{self.P.PRESTAMO_MONTO.value}  AS prestamos,
+                    p.{self.E.SALDO.value}           AS saldo,
+                    p.{self.E.PAGO_DEPOSITO.value}   AS deposito,
+                    p.{self.E.PAGO_EFECTIVO.value}   AS efectivo,
+                    p.{self.E.ESTADO.value}          AS estado,
+                    p.{self.E.GRUPO_PAGO.value}      AS grupo_pago
                 FROM {self.E.TABLE.value} p
                 JOIN empleados e ON p.{self.E.NUMERO_NOMINA.value} = e.numero_nomina
                 WHERE p.{self.E.GRUPO_PAGO.value}=%s
-                ORDER BY p.{self.E.FECHA_PAGO.value} DESC, e.numero_nomina
+                ORDER BY p.{self.E.FECHA_PAGO.value} DESC, p.{self.E.ID_PAGO_NOMINA.value} DESC
             """
             return self.db.get_data_list(q, (grupo_pago,), dictionary=True) or []
         except Exception:
             return []
+
 
     def cerrar_grupo(self, grupo_pago: str) -> Dict[str, Any]:
         try:
