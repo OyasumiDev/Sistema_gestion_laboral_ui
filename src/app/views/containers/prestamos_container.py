@@ -44,6 +44,15 @@ class PrestamosContainer(ft.Container):
         self.datos_tabla: dict[str, List[ft.Control]] = {}   # filas temporales (ej. "prestamos_global")
         self._pending_scroll_key: str | None = None
 
+        # === NUEVO: filtros y orden ===
+        self.filters = {"id_empleado": "", "id_prestamo": ""}  # prefijos; priorizan sin excluir
+        self.sort_key = "numero"   # numero | nombre | fecha | saldo | monto
+        self.sort_asc = True
+        self._tf_empleado: ft.TextField | None = None
+        self._tf_prestamo: ft.TextField | None = None
+        self._dd_sort: ft.Dropdown | None = None
+        self._btn_dir: ft.IconButton | None = None
+
         # Layout raíz
         self.layout = ft.Column(expand=True)
         self._build()
@@ -64,6 +73,9 @@ class PrestamosContainer(ft.Container):
                 crear_boton_importar(self._importar),
                 crear_boton_exportar(self._exportar),
                 self._build_add_global_button(),
+                ft.Container(width=12),
+                # === NUEVO: filtros/orden ===
+                self._build_filters_toolbar(),
             ],
         )
 
@@ -93,6 +105,52 @@ class PrestamosContainer(ft.Container):
             ),
         )
 
+    # === NUEVO: toolbar de filtros/orden ===
+    def _build_filters_toolbar(self) -> ft.Row:
+        self._tf_empleado = ft.TextField(
+            label="Filtrar No. nómina (prefijo)", width=190, dense=True,
+            on_change=lambda e: self._on_change_filters(id_empleado=e.control.value)
+        )
+        self._tf_prestamo = ft.TextField(
+            label="Filtrar ID préstamo (prefijo)", width=200, dense=True,
+            on_change=lambda e: self._on_change_filters(id_prestamo=e.control.value)
+        )
+        self._dd_sort = ft.Dropdown(
+            label="Ordenar por", width=180, dense=True,
+            value=self.sort_key,
+            options=[
+                ft.dropdown.Option(text="No. nómina", key="numero"),
+                ft.dropdown.Option(text="Nombre", key="nombre"),
+                ft.dropdown.Option(text="Fecha reciente", key="fecha"),
+                ft.dropdown.Option(text="Saldo total", key="saldo"),
+                ft.dropdown.Option(text="Monto total", key="monto"),
+            ],
+            on_change=lambda e: self._on_change_sort(key=e.control.value)
+        )
+        self._btn_dir = ft.IconButton(
+            icon=ft.icons.ARROW_UPWARD if self.sort_asc else ft.icons.ARROW_DOWNWARD,
+            tooltip="Alternar asc/desc",
+            on_click=lambda e: self._on_change_sort(dir_toggle=True)
+        )
+        return ft.Row(spacing=10, controls=[self._tf_empleado, self._tf_prestamo, self._dd_sort, self._btn_dir])
+
+    def _on_change_filters(self, *, id_empleado: str | None = None, id_prestamo: str | None = None):
+        if id_empleado is not None:
+            self.filters["id_empleado"] = (id_empleado or "").strip()
+        if id_prestamo is not None:
+            self.filters["id_prestamo"] = (id_prestamo or "").strip()
+        self._actualizar_vista()
+
+    def _on_change_sort(self, *, key: str | None = None, dir_toggle: bool = False):
+        if key:
+            self.sort_key = key
+        if dir_toggle:
+            self.sort_asc = not self.sort_asc
+            if isinstance(self._btn_dir, ft.IconButton):
+                self._btn_dir.icon = ft.icons.ARROW_UPWARD if self.sort_asc else ft.icons.ARROW_DOWNWARD
+        self._safe_refresh()
+        self._actualizar_vista()
+
     def _safe_refresh(self):
         try:
             if getattr(self.layout, "page", None) is not None:
@@ -118,6 +176,7 @@ class PrestamosContainer(ft.Container):
             return
 
         grupos = resultado.get("data", []) or []
+        grupos = self._apply_filters_y_sort_grupos(grupos)  # <--- NUEVO
 
         if not grupos:
             tiles.append(
@@ -143,8 +202,8 @@ class PrestamosContainer(ft.Container):
 
         for grupo in grupos:
             numero = grupo.get("numero_nomina")
-            nombre = grupo.get("nombre_empleado", "")
-            prestamos = grupo.get("prestamos", []) or []
+            nombre = grupo.get("nombre_empleado", "") or ""
+            prestamos = self._sort_prestamos_en_grupo(grupo.get("prestamos", []) or [])  # <--- NUEVO
 
             prestamos_tiles: List[ft.Control] = []
             for p in prestamos:
@@ -181,8 +240,8 @@ class PrestamosContainer(ft.Container):
                     "id_prestamo": id_prestamo,
                     "numero_nomina": p.get(K_NUM),
                     "nombre_empleado": p.get(K_NOM, nombre) or nombre,
-                    "monto": p.get(K_MONTO, ""),
-                    "saldo": p.get(K_SALDO, "0.00"),
+                    "monto": f"{self._to_float(p.get(K_MONTO, 0)):,.2f}",
+                    "saldo": f"{self._to_float(p.get(K_SALDO, 0)):,.2f}",
                     "pagado": f"{total_pagado:.2f}",
                     "estado": p.get(K_ESTADO, ""),
                     "fecha_solicitud": p.get(K_FECHA, ""),
@@ -466,3 +525,108 @@ class PrestamosContainer(ft.Container):
         else:
             ModalAlert.mostrar_info("Error", res.get("message", "No se pudo eliminar."))
         self._actualizar_vista()
+
+    # ---------------------------------------------------------------------
+    # === NUEVO: utilidades para ordenar/priorizar ===
+    # ---------------------------------------------------------------------
+    @staticmethod
+    def _to_float(x) -> float:
+        try:
+            if isinstance(x, str):
+                return float(x.strip().replace(",", "."))
+            return float(x or 0)
+        except Exception:
+            return 0.0
+
+    @staticmethod
+    def _to_int(x) -> int:
+        try:
+            return int(float(str(x).strip()))
+        except Exception:
+            return 0
+
+    @staticmethod
+    def _to_date_ymd(x) -> date:
+        try:
+            s = (x or "")[:10]
+            y, m, d = s.split("-")
+            return date(int(y), int(m), int(d))
+        except Exception:
+            return date.min
+
+    def _grupo_sort_key(self, grupo: dict) -> tuple:
+        numero = self._to_int(grupo.get("numero_nomina"))
+        nombre = (grupo.get("nombre_empleado") or "").lower()
+        prestamos = (grupo.get("prestamos") or [])[:]
+
+        if self.sort_key == "nombre":
+            return (nombre, numero)
+
+        if self.sort_key == "fecha":
+            fechas = [self._to_date_ymd(p.get(self.E.PRESTAMO_FECHA_SOLICITUD.value) or p.get("fecha_solicitud"))
+                      for p in prestamos]
+            mx = max(fechas) if fechas else date.min
+            return (mx, numero)
+
+        if self.sort_key == "saldo":
+            total_saldo = sum(self._to_float(p.get(self.E.PRESTAMO_SALDO.value) or p.get("saldo", 0)) for p in prestamos)
+            return (total_saldo, numero)
+
+        if self.sort_key == "monto":
+            total_monto = sum(self._to_float(p.get(self.E.PRESTAMO_MONTO.value) or p.get("monto", 0)) for p in prestamos)
+            return (total_monto, numero)
+
+        # default: numero
+        return (numero, nombre)
+
+    def _prestamo_sort_key(self, p: dict) -> tuple:
+        pid = self._to_int(p.get(self.E.PRESTAMO_ID.value) or p.get("id_prestamo"))
+        monto = self._to_float(p.get(self.E.PRESTAMO_MONTO.value) or p.get("monto", 0))
+        saldo = self._to_float(p.get(self.E.PRESTAMO_SALDO.value) or p.get("saldo", 0))
+        fecha = self._to_date_ymd(p.get(self.E.PRESTAMO_FECHA_SOLICITUD.value) or p.get("fecha_solicitud"))
+
+        if self.sort_key == "fecha":
+            return (fecha, pid)
+        if self.sort_key == "saldo":
+            return (saldo, pid)
+        if self.sort_key == "monto":
+            return (monto, pid)
+        if self.sort_key == "nombre":
+            # no aplica en préstamo; cae a id
+            return (pid, fecha)
+        # default numero -> id_prestamo
+        return (pid, fecha)
+
+    def _matches_filtros(self, grupo: dict) -> bool:
+        ide = (self.filters.get("id_empleado") or "").strip()
+        idp = (self.filters.get("id_prestamo") or "").strip()
+        if not (ide or idp):
+            return False
+
+        ok = False
+        if ide:
+            ok |= str(grupo.get("numero_nomina") or "").startswith(ide)
+        if idp:
+            for p in (grupo.get("prestamos") or []):
+                pid = str(p.get(self.E.PRESTAMO_ID.value) or p.get("id_prestamo") or "")
+                if pid.startswith(idp):
+                    ok = True
+                    break
+        return ok
+
+    def _apply_filters_y_sort_grupos(self, grupos: list[dict]) -> list[dict]:
+        # 1) ordenar grupos por clave elegida
+        ordered = sorted(grupos, key=self._grupo_sort_key, reverse=not self.sort_asc)
+        # 2) priorizar (no excluir) por filtros activos
+        matching = [g for g in ordered if self._matches_filtros(g)]
+        non_matching = [g for g in ordered if not self._matches_filtros(g)]
+        return matching + non_matching
+
+    def _sort_prestamos_en_grupo(self, prestamos: list[dict]) -> list[dict]:
+        ordered = sorted(prestamos, key=self._prestamo_sort_key, reverse=not self.sort_asc)
+        idp = (self.filters.get("id_prestamo") or "").strip()
+        if not idp:
+            return ordered
+        m = [p for p in ordered if str(p.get(self.E.PRESTAMO_ID.value) or p.get("id_prestamo") or "").startswith(idp)]
+        n = [p for p in ordered if p not in m]
+        return m + n

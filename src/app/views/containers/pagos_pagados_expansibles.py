@@ -40,6 +40,8 @@ class PagosPagadosExpansibles(ft.UserControl):
     ]
     # columnas con ordenamiento por click en header
     CLICK_SORT = ("id_pago", "id_empleado", "monto_base", "total")
+    # índice rápido por nombre de columna
+    IDX: Dict[str, int] = {k: i for i, k in enumerate(COLUMNS)}
 
     def __init__(
         self,
@@ -162,6 +164,7 @@ class PagosPagadosExpansibles(ft.UserControl):
 
             tabla = self._table_by_date[fecha]
             tabla.rows.append(row)
+            self._refresh_table_snapshot(fecha)  # snapshot listo
 
             # Registros del grupo / totales
             total_vista = float(calc.get("total_vista", 0.0))
@@ -239,6 +242,9 @@ class PagosPagadosExpansibles(ft.UserControl):
                     self._fecha_by_id[pid] = fecha
                     self._ids_by_date.setdefault(fecha, set()).add(pid)
 
+                # snapshot del grupo ya con todas las filas
+                self._refresh_table_snapshot(fecha)
+
                 tabla_scroll = self.table_builder.wrap_scroll(tabla, height=240, width=1600)
 
                 total_lbl = ft.Text(f"Total día: ${total_dia:,.2f}", italic=True, size=11)
@@ -275,16 +281,51 @@ class PagosPagadosExpansibles(ft.UserControl):
         except Exception as ex:
             ModalAlert.mostrar_info("Error", f"No fue posible cargar los grupos: {ex}")
 
+    # ✅ reemplaza COMPLETO este método
     def _build_table_with_click_sort(self) -> ft.DataTable:
+        """
+        Construye DataTable con encabezados clickeables.
+        - Si la versión de Flet soporta DataColumn.on_sort, usa e.ascending.
+        - Si no, hace fallback a GestureDetector (toggle manual).
+        - Además, setea sort_column_index / sort_ascending para mostrar la flecha.
+        """
         cols: List[ft.DataColumn] = []
+
+        def _make_sort_handler(col_key: str):
+            # handler compatible con ambas rutas (on_sort y on_tap)
+            def _handler(e=None, k=col_key):
+                asc = getattr(e, "ascending", None) if e is not None else None
+                self._on_header_sort(k, ascending=asc)
+            return _handler
+
         for key in self.COLUMNS:
-            label = self._make_header_label(key)
-            cols.append(
-                ft.DataColumn(
-                    label=ft.Container(label, width=self.table_builder.DEFAULT_WIDTHS.get(key, 90))
-                )
-            )
-        return ft.DataTable(
+            w = self.table_builder.DEFAULT_WIDTHS.get(key, 90)
+            title = key.replace("_", " ").title()
+            text = ft.Text(title, size=self.table_builder.font_size, weight=ft.FontWeight.BOLD)
+
+            if key in self.CLICK_SORT:
+                # Intento usar on_sort (si la versión lo soporta)
+                try:
+                    cols.append(
+                        ft.DataColumn(
+                            label=ft.Container(text, width=w),
+                            on_sort=_make_sort_handler(key),
+                        )
+                    )
+                except TypeError:
+                    # Fallback: label clickeable (toggle manual)
+                    cols.append(
+                        ft.DataColumn(
+                            label=ft.Container(
+                                ft.GestureDetector(on_tap=_make_sort_handler(key), content=text),
+                                width=w,
+                            )
+                        )
+                    )
+            else:
+                cols.append(ft.DataColumn(label=ft.Container(text, width=w)))
+
+        table = ft.DataTable(
             columns=cols,
             rows=[],
             heading_row_height=self.table_builder.heading_row_height,
@@ -293,57 +334,57 @@ class PagosPagadosExpansibles(ft.UserControl):
             column_spacing=self.table_builder.column_spacing,
         )
 
-    def _make_header_label(self, key: str) -> ft.Control:
-        """Header clickeable sin íconos de flechas: alterna el orden."""
-        title = key.replace("_", " ").title()
-        if key not in self.CLICK_SORT:
-            return ft.Text(title, size=self.table_builder.font_size, weight=ft.FontWeight.BOLD)
+        # Mostrar flecha de orden activo
+        if self.sort_key in self.IDX:
+            table.sort_column_index = self.IDX[self.sort_key]
+            table.sort_ascending = self.sort_asc
 
-        def do_click(_):
+        return table
+
+    # ✅ reemplaza COMPLETO este método
+    def _on_header_sort(self, key: str, *, ascending: Optional[bool] = None):
+        """
+        Si viene desde DataColumn.on_sort, 'ascending' trae la dirección pedida por Flet.
+        Si viene del fallback (tap), alternamos manualmente.
+        """
+        if ascending is None:
+            # toggle manual
             if self.sort_key == key:
                 self.sort_asc = not self.sort_asc
             else:
                 self.sort_key, self.sort_asc = key, True
-            self.reload(preserve_expansion=True)
+        else:
+            # respeta la dirección que envía Flet
+            self.sort_key, self.sort_asc = key, bool(ascending)
 
-        # Contenedor clickeable sin indicador visual de orden
-        return ft.GestureDetector(
-            on_tap=do_click,
-            content=ft.Text(title, size=self.table_builder.font_size, weight=ft.FontWeight.BOLD)
-        )
+        self.reload(preserve_expansion=True)
 
-    # ---------- Filtros + Sort (con prioridad, sin excluir) ----------
+    # ---------- Filtros + Sort (estable, con prioridad) ----------
     def _filtros_y_sort(self, items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """
-        Prioriza por filtros (no excluye) y luego ordena.
-        Filtros: id_empleado (numero_nomina), id_pago o id_pago_conf (prefijo).
-        """
         ide = (self.filters.get("id_empleado") or "").strip()
-        # id_pago_conf es alias preferente
         idp = (self.filters.get("id_pago_conf") or self.filters.get("id_pago") or "").strip()
 
-        # prioriza (matching + non-matching) sin excluir
-        items = self.sort_helper.prioritize_records_by_filters(
+        # 1) Orden base por sort_key usando el helper (con compute_total real)
+        def compute_total(row: Dict[str, Any]) -> float:
+            deposito = float(row.get("deposito") or row.get("pago_deposito") or 0.0)
+            calc = self.math.recalc_from_pago_row(row, deposito)
+            return float(calc.get("total_vista", 0.0))
+
+        ordered = self.sort_helper.sort_records(
             items,
-            id_empleado_prefix=ide,
-            id_pago_prefix=idp,
+            key=self.sort_key,
+            asc=self.sort_asc,
+            compute_total=compute_total,
         )
 
-        # función de orden según sort_key
-        def k(row: Dict[str, Any]):
-            if self.sort_key == "id_pago":
-                return int(row.get("id_pago_nomina") or row.get("id_pago") or 0)
-            if self.sort_key == "id_empleado":
-                return int(row.get("numero_nomina") or 0)
-            if self.sort_key == "monto_base":
-                return float(row.get("monto_base") or 0.0)
-            if self.sort_key == "total":
-                deposito = float(row.get("deposito") or row.get("pago_deposito") or 0.0)
-                calc = self.math.recalc_from_pago_row(row, deposito)
-                return float(calc.get("total_vista", 0.0))
-            return 0
-
-        return sorted(items, key=k, reverse=not self.sort_asc)
+        # 2) Prioridad estable por filtros (OR)
+        prioritized = self.sort_helper.prioritize_records_by_filters(
+            ordered,
+            id_empleado_prefix=ide,
+            id_pago_prefix=idp,
+            match_mode="or",
+        )
+        return prioritized
 
     # ---------- Fila pagado con edición controlada ----------
     def _build_row_pagado(self, *, pago: Dict[str, Any], calc: Dict[str, float]) -> ft.DataRow:
@@ -355,6 +396,7 @@ class PagosPagadosExpansibles(ft.UserControl):
         sueldo_h = float(pago.get("sueldo_por_hora") or 0.0)
         monto_base = float(pago.get("monto_base") or 0.0)
 
+        # ✅ corrección: usar 'pago' (no 'p')
         deposito_actual = float(pago.get("deposito") or pago.get("pago_deposito") or 0.0)
         efectivo_actual = float(pago.get("efectivo") or pago.get("pago_efectivo") or 0.0)
         total_vista = float(calc.get("total_vista", 0.0))
@@ -382,24 +424,19 @@ class PagosPagadosExpansibles(ft.UserControl):
         txt_desc = ft.Text(money(calc.get("descuentos_view", 0.0)), size=font)
         txt_prest = ft.Text(money(calc.get("prestamos_view", 0.0)), size=font)
 
-        # EDITABLES: si enfocas uno, se activa edición automáticamente
-        def _ensure_edit_mode(pid: int):
-            if pid not in self._edit_rows:
-                self._activar_edicion(pid)
-
+        # EDITABLES: se habilitan solo cuando está en edición
         tf_deposito = ft.TextField(
             value=f"{dep_ui:.2f}",
             width=90, height=28, text_align=ft.TextAlign.RIGHT, dense=True, text_size=font,
-            read_only=not en_edicion,
-            autofocus=en_edicion,  # ayuda a editar inmediatamente
-            on_focus=lambda e, pid=id_pago: _ensure_edit_mode(pid),
+            read_only=False,
+            disabled=not en_edicion,
             on_change=lambda e, pid=id_pago: self._on_edit_change(pid, "deposito", e.control.value),
         )
         tf_efectivo = ft.TextField(
             value=f"{efe_ui:.2f}",
             width=90, height=28, text_align=ft.TextAlign.RIGHT, dense=True, text_size=font,
-            read_only=not en_edicion,
-            on_focus=lambda e, pid=id_pago: _ensure_edit_mode(pid),
+            read_only=False,
+            disabled=not en_edicion,
             on_change=lambda e, pid=id_pago: self._on_edit_change(pid, "efectivo", e.control.value),
         )
 
@@ -519,15 +556,87 @@ class PagosPagadosExpansibles(ft.UserControl):
                 }
         except Exception:
             self._edit_buffer.setdefault(id_pago, {"deposito": 0.0, "efectivo": 0.0})
-        self.reload(preserve_expansion=True)
+
+        # cambia la fila a modo edición inline (sin recargar todo)
+        self._toggle_inline_edit(id_pago, True)
 
     def _cancelar_edicion(self, id_pago: int):
         self._edit_rows.discard(id_pago)
         self._edit_buffer.pop(id_pago, None)
-        self.reload(preserve_expansion=True)
+        self._toggle_inline_edit(id_pago, False)
+
+    def _toggle_inline_edit(self, id_pago: int, editing: bool):
+        """Activa/Desactiva edición en la fila SIN recargar toda la tabla."""
+        row = self.row_refresh.get_row(None, id_pago)
+        if not row:
+            self.reload(preserve_expansion=True)
+            return
+
+        # 1) Toggle de los TextField (NO llamar tf.update() aquí)
+        dep_cell = row.cells[self.IDX["deposito"]].content
+        efe_cell = row.cells[self.IDX["efectivo"]].content
+        for tf in (dep_cell, efe_cell):
+            if isinstance(tf, ft.TextField):
+                tf.disabled = not editing
+                tf.read_only = False
+
+        # 2) Reemplazo de botones de acciones
+        acciones: ft.Row = row.cells[self.IDX["acciones"]].content
+        if isinstance(acciones, ft.Row):
+            base_btns, delete_btn = [], None
+            for c in acciones.controls:
+                if isinstance(c, ft.IconButton) and c.icon == ft.icons.DELETE_OUTLINE:
+                    delete_btn = c
+                elif isinstance(c, ft.IconButton) and c.icon in (
+                    ft.icons.REMOVE_CIRCLE_OUTLINE, ft.icons.ACCOUNT_BALANCE_WALLET
+                ):
+                    base_btns.append(c)
+
+            acciones.controls.clear()
+            acciones.controls.extend(base_btns)
+
+            if editing:
+                acciones.controls.append(
+                    ft.IconButton(
+                        icon=ft.icons.CHECK,
+                        icon_color=ft.colors.GREEN_600,
+                        tooltip="Guardar",
+                        on_click=lambda e, pid=id_pago: self._guardar_edicion_pagado(pid),
+                    )
+                )
+                acciones.controls.append(
+                    ft.IconButton(
+                        icon=ft.icons.CLOSE,
+                        icon_color=ft.colors.GREY_700,
+                        tooltip="Cancelar",
+                        on_click=lambda e, pid=id_pago: self._cancelar_edicion(pid),
+                    )
+                )
+            else:
+                acciones.controls.append(
+                    ft.IconButton(
+                        icon=ft.icons.EDIT,
+                        tooltip="Editar depósito/efectivo",
+                        on_click=lambda e, pid=id_pago: self._activar_edicion(pid),
+                    )
+                )
+            if delete_btn:
+                acciones.controls.append(delete_btn)
+
+        # 3) Actualiza SOLO la fila / tabla (no el TextField individual)
+        row.update()
+        if self.page:
+            self.page.update()
+
+        # 4) Foco "seguro" al entrar a edición (solo si ya está en la página)
+        if editing and isinstance(dep_cell, ft.TextField) and getattr(dep_cell, "page", None):
+            try:
+                dep_cell.focus()
+            except Exception:
+                pass
 
     def _on_edit_change(self, id_pago: int, campo: str, value: str):
-        # si el usuario tipeó sin activar, activamos edición automáticamente
+        # si por alguna razón llega un change sin estar en edición, lo activamos
         if id_pago not in self._edit_rows:
             self._activar_edicion(id_pago)
 
@@ -588,6 +697,9 @@ class PagosPagadosExpansibles(ft.UserControl):
             self._edit_buffer.pop(id_pago, None)
             self._refrescar_fila(id_pago)  # también ajusta total del día
             self.open_group(self._fecha_by_id.get(id_pago, ""))  # mantener expandido
+
+            # volver a modo vista sin recargar todo
+            self._toggle_inline_edit(id_pago, False)
         except Exception as ex:
             ModalAlert.mostrar_info("Error", f"No se pudo guardar la edición: {ex}")
 
@@ -629,7 +741,7 @@ class PagosPagadosExpansibles(ft.UserControl):
             "estado": pago_row.get("estado"),
         }
         def on_ok(_):
-            self._refrescar_descuentos_y_totales(p["id_pago"])  # 👈 aquí
+            self._refrescar_descuentos_y_totales(p["id_pago"])
         ModalDescuentos(pago_data=p, on_confirmar=on_ok).mostrar()
 
     def _abrir_modal_prestamos(self, pago_row: Dict[str, Any]):
@@ -937,6 +1049,10 @@ class PagosPagadosExpansibles(ft.UserControl):
             row = self.row_refresh.get_row(None, id_pago)
             if row and row in tabla.rows:
                 tabla.rows.remove(row)
+        if fecha:
+            self._refresh_table_snapshot(fecha)
+        else:
+            self._refresh_table_snapshot()  # refresca todas por seguridad
 
     def _update_total_label_for(self, fecha: str):
         ids = self._ids_by_date.get(fecha, set())
@@ -999,3 +1115,27 @@ class PagosPagadosExpansibles(ft.UserControl):
                 self.page.update()
         except Exception as ex:
             ModalAlert.mostrar_info("Descuentos", f"No se pudo actualizar: {ex}")
+
+    def _refresh_table_snapshot(self, fecha: Optional[str] = None) -> None:
+        """
+        Mantiene sincronizado el snapshot interno de PaymentSortFilterHelper
+        con las filas actualmente visibles en la DataTable.
+
+        Úsalo SIEMPRE que agregues, quites o reemplaces filas en una tabla.
+        - Si pasas `fecha`, refresca solo la tabla de ese grupo.
+        - Si lo llamas sin argumentos, refresca todas las tablas cargadas.
+        """
+        try:
+            if fecha is None:
+                for t in self._table_by_date.values():
+                    try:
+                        self.sort_helper.refresh_snapshot(t)
+                    except Exception:
+                        pass
+            else:
+                t = self._table_by_date.get(fecha)
+                if t:
+                    self.sort_helper.refresh_snapshot(t)
+        except Exception:
+            # no romper el flujo de UI por un snapshot fallido
+            pass

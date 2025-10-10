@@ -80,7 +80,9 @@ class PagosContainer(ft.Container):
             detalles_prestamo_model=self.detalles_prestamo_model,
         )
         self.table_builder = PaymentTableBuilder()
-        self.row_refresh = PaymentRowRefresh()
+        # Refrescos separados para evitar colisiones entre tablas
+        self.row_refresh_pend = PaymentRowRefresh()
+        self.row_refresh_conf = PaymentRowRefresh()
         self.scroll = PagosScrollHelper()
 
         # --------- Módulos UI ----------
@@ -109,7 +111,7 @@ class PagosContainer(ft.Container):
             detalles_prestamo_model=self.detalles_prestamo_model,
             math=self.math,
             table_builder=self.table_builder,
-            row_refresh=self.row_refresh,
+            row_refresh=self.row_refresh_pend,
             on_data_changed=self._on_data_changed,
             # estos dos nombres son tolerantes: el módulo puede implementar uno o ignorarlos
             on_pago_confirmado=self._on_pago_confirmado_desde_pendientes,
@@ -121,15 +123,21 @@ class PagosContainer(ft.Container):
             PagosPagadosExpansibles,
             repo=self.repo,
             payment_model=self.payment_model,
+            discount_model=self.discount_model,
+            loan_model=self.loan_model,
+            loan_payment_model=self.loan_payment_model,
+            detalles_desc_model=self.detalles_desc_model,
+            detalles_prestamo_model=self.detalles_prestamo_model,
             math=self.math,
             table_builder=self.table_builder,
-            row_refresh=self.row_refresh,
+            row_refresh=self.row_refresh_conf,
             on_data_changed=self._on_data_changed,  # si su módulo emite cambios globales
         )
 
         # --------- Estado de filtros ----------
         self.filters_pend = {"id_empleado": "", "id_pago": ""}
-        self.filters_conf = {"id_empleado": "", "id_pago": ""}
+        # IMPORTANTE: confirmados usan id_pago_conf como clave principal
+        self.filters_conf = {"id_empleado": "", "id_pago_conf": ""}
 
         # --------- Selectores / modales ----------
         self.selector_rango = DateModalSelector(on_dates_confirmed=self._generar_por_fechas)
@@ -222,21 +230,6 @@ class PagosContainer(ft.Container):
     def _build_header(self):
         BtnCls = getattr(ft, "FilledTonalButton", ft.ElevatedButton)
 
-        def _header_tonal_button(text: str, icon: str, on_click):
-            return BtnCls(
-                on_click=on_click,
-                height=36,
-                content=ft.Row(
-                    [ft.Icon(icon, size=16), ft.Text(text)],
-                    spacing=8,
-                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                ),
-                style=ft.ButtonStyle(
-                    padding=ft.padding.symmetric(horizontal=12, vertical=0),
-                    shape=ft.RoundedRectangleBorder(radius=8),
-                ),
-            )
-
         self.input_id = ft.TextField(
             label="ID Empleado",
             width=180,
@@ -262,7 +255,8 @@ class PagosContainer(ft.Container):
             dense=True,
             content_padding=ft.padding.only(left=10, right=10),
             border_color=ft.colors.OUTLINE,
-            on_change=lambda e: self._on_filter_change(scope="conf", key="id_pago", value=e.control.value),
+            # 🔧 ahora escribe en id_pago_conf
+            on_change=lambda e: self._on_filter_change(scope="conf", key="id_pago_conf", value=e.control.value),
         )
 
         header_bar = ft.Row(
@@ -270,7 +264,6 @@ class PagosContainer(ft.Container):
                 crear_boton_importar(lambda: self._no_impl("Importar")),
                 crear_boton_exportar(lambda: self._no_impl("Exportar")),
                 crear_boton_agregar(self._abrir_modal_rango),
-                # Botón 'pill' consistente con los otros:
                 crear_boton_agregar_fechas_pagadas(self._abrir_modal_grupo_pagado),
                 ft.Container(width=20),
                 ft.Text("Filtros (prioritarios):", size=12, italic=True),
@@ -321,7 +314,10 @@ class PagosContainer(ft.Container):
             self.confirmados_ui,
             ["set_filters", "apply_filters", "filtrar"],
             id_empleado=self.filters_conf.get("id_empleado", ""),
-            id_pago=self.filters_conf.get("id_pago", ""),
+            # 🔧 clave correcta para confirmados:
+            id_pago_conf=self.filters_conf.get("id_pago_conf", ""),
+            # compat: algunos módulos aceptan id_pago como alias
+            id_pago=self.filters_conf.get("id_pago_conf", ""),
             preserve_expansion=True,
         )
         self._actualizar_resumen()
@@ -340,7 +336,8 @@ class PagosContainer(ft.Container):
             self.confirmados_ui,
             ["reload", "refresh", "load", "render"],
             id_empleado=self.filters_conf.get("id_empleado", ""),
-            id_pago=self.filters_conf.get("id_pago", ""),
+            id_pago_conf=self.filters_conf.get("id_pago_conf", ""),
+            id_pago=self.filters_conf.get("id_pago_conf", ""),
             preserve_expansion=preserve_expansion,
         )
         self._actualizar_resumen()

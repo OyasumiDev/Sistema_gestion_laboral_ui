@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Dict, Optional, Iterable, Tuple, List
+from typing import Any, Dict, Optional, Iterable, Tuple
 import math
 import flet as ft
 
@@ -9,27 +9,34 @@ class PaymentRowRefresh:
     """
     Utilidad de refresco granular para filas y grupos de pagos.
 
-    Qué resuelve:
-    - Refrescar celdas de una fila (descuentos, préstamos, saldo, efectivo, total).
-    - Controlar el TextField de depósito (valor y borde de error).
-    - Marcar estado visual (PENDIENTE / PAGADO) y bloquear el depósito si aplica.
-    - Insertar / eliminar filas de una DataTable y recalcular totales visibles.
-    - Registrar grupos (p. ej. '2025-05-09') con su tabla y label de total del día.
-    - Recalcular el total de un grupo desde la propia tabla.
-    - Validar que rangos de fechas de grupos no se traslapen.
+    - Refresca celdas de una fila (descuentos, préstamos, saldo, efectivo, total).
+    - Controla el TextField de depósito (valor y borde de error).
+    - Marca estado visual (PENDIENTE / PAGADO) y bloquea depósito si aplica.
+    - Inserta / elimina filas de DataTable y recalcula totales visibles.
+    - Registra grupos (p. ej. '2025-05-09') con su tabla y label de total del día.
+    - Recalcula el total de un grupo desde la propia tabla.
+    - Valida traslapes de rangos de fechas.
 
-    NOTA: Este helper NO toca la base de datos; sólo actualiza la UI.
-    Las operaciones de crear/editar/eliminar se hacen en tus repos/modelos,
-    y luego se llama a estos métodos para reflejar el resultado en pantalla.
+    NOTA: No toca la BD; sólo UI.
     """
 
     # -------------------- Inicialización --------------------
     def __init__(self):
         # cache: id_pago -> referencias a controles de la fila
         self._rows: Dict[int, Dict[str, Any]] = {}
-        # cache de grupos: key cualquier string (p. ej. '2025-05-09' o 'GP-...') -> refs
+        # cache grupos: key (fecha/token) -> refs
         self._groups: Dict[str, Dict[str, Any]] = {}
         self._default_border = ft.colors.OUTLINE
+
+    # ==================== UTIL SEGURO ====================
+    @staticmethod
+    def _safe_update(ctrl: Optional[ft.Control]) -> None:
+        """Evita AssertionError si el control aún no está en la page."""
+        try:
+            if ctrl is not None and getattr(ctrl, "page", None) is not None:
+                ctrl.update()
+        except Exception:
+            pass
 
     # ==================== REGISTROS ====================
 
@@ -58,23 +65,28 @@ class PaymentRowRefresh:
             "txt_total": txt_total,
             "estado_chip": estado_chip,
         }
-        row._id_pago = id_pago  # type: ignore
+        row._id_pago = id_pago  # type: ignore[attr-defined]
 
     def unregister_row(self, id_pago: int) -> None:
         """Saca una fila del caché (útil tras eliminarla de la tabla)."""
         self._rows.pop(id_pago, None)
 
-    def get_row(self, datatable: ft.DataTable, id_pago: int) -> Optional[ft.DataRow]:
-        """Busca la fila en caché o, como fallback, en la tabla."""
+    def get_row(self, datatable: Optional[ft.DataTable], id_pago: int) -> Optional[ft.DataRow]:
+        """
+        Busca la fila en caché o, como fallback, en la tabla (si se provee).
+        Soporta datatable=None (sólo caché).
+        """
         if id_pago in self._rows:
             return self._rows[id_pago].get("row")
-        for r in datatable.rows:
-            try:
-                rid = int(str(r.cells[0].content.value))
-                if rid == id_pago:
-                    return r
-            except Exception:
-                continue
+
+        if datatable is not None:
+            for r in datatable.rows:
+                try:
+                    rid = int(str(r.cells[0].content.value))
+                    if rid == id_pago:
+                        return r
+                except Exception:
+                    continue
         return None
 
     # ---- Grupos ----
@@ -166,9 +178,11 @@ class PaymentRowRefresh:
         if chip and isinstance(chip.content, ft.Text):
             chip.content.value = "PAGADO"
             chip.bgcolor = ft.colors.GREEN_100
+            self._safe_update(chip)
         tf: ft.TextField = c.get("tf_deposito")
         if tf:
             tf.read_only = True
+            # no forzamos update del TextField: Flet exige que esté en page
 
     def set_estado_pendiente(self, row: ft.DataRow) -> None:
         """Marca visual como PENDIENTE y habilita el depósito."""
@@ -179,6 +193,7 @@ class PaymentRowRefresh:
         if chip and isinstance(chip.content, ft.Text):
             chip.content.value = "PENDIENTE"
             chip.bgcolor = ft.colors.GREY_200
+            self._safe_update(chip)
         tf: ft.TextField = c.get("tf_deposito")
         if tf:
             tf.read_only = False
@@ -211,7 +226,7 @@ class PaymentRowRefresh:
             self.set_deposito_value(row, deposito)
             self.set_deposito_border_color(row, ft.colors.RED if deposito_excede_total else None)
 
-        row.update()
+        self._safe_update(row)
 
     # ==================== TABLAS / GRUPOS ====================
 
@@ -223,7 +238,7 @@ class PaymentRowRefresh:
             table.rows.append(row)
         else:
             table.rows.insert(index, row)
-        table.update()
+        self._safe_update(table)
 
     def remove_row_by_id(self, table: ft.DataTable, id_pago: int) -> bool:
         """
@@ -238,7 +253,7 @@ class PaymentRowRefresh:
                 break
         if removed:
             self.unregister_row(id_pago)
-            table.update()
+            self._safe_update(table)
         return removed
 
     def compute_table_total(self, table: ft.DataTable, total_col_index: int) -> float:
@@ -266,7 +281,7 @@ class PaymentRowRefresh:
         if lbl:
             # Convención usada en tu UI: "Total día: $X"
             lbl.value = f"Total día: {self._fmt_money(total_value)}"
-            lbl.update()
+            self._safe_update(lbl)
 
     def recalc_and_paint_group_total(self, group_key: str, *, total_col_index: int) -> float:
         """
@@ -305,13 +320,35 @@ class PaymentRowRefresh:
                 return False, (ei, ef)
         return True, None
 
+    # ==================== LIMPIEZA DE CACHÉ ====================
+
+    def clear(self) -> None:
+        """Limpia filas y grupos (alias de reset/invalidate)."""
+        self._rows.clear()
+        self._groups.clear()
+
+    # Aliases cómodos (para usar desde el container sin importar el nombre)
+    reset = clear
+    invalidate = clear
+
+    def clear_rows(self) -> None:
+        """Sólo filas."""
+        self._rows.clear()
+
+    def clear_groups(self) -> None:
+        """Sólo grupos."""
+        self._groups.clear()
+
     # ==================== UTILS INTERNOS ====================
 
     def _find_controls(self, row: ft.DataRow) -> Optional[Dict[str, Any]]:
         id_pago = getattr(row, "_id_pago", None)
         if id_pago is None:
             id_pago = self._try_row_id(row)
-        return self._rows.get(int(id_pago)) if id_pago is not None else None
+        try:
+            return self._rows.get(int(id_pago)) if id_pago is not None else None
+        except Exception:
+            return None
 
     @staticmethod
     def _try_row_id(row: ft.DataRow) -> Optional[int]:
@@ -335,13 +372,20 @@ class PaymentRowRefresh:
     @staticmethod
     def _parse_money(txt: Any) -> float:
         """
-        Convierte textos como "$9,950.00" o "9,950.00" a float seguro.
+        Convierte textos como "$9,950.00", "9.950,00", " 9 950.00 " a float seguro.
         """
         try:
-            s = str(txt).strip()
+            s = str(txt).strip().replace(" ", "")
             if not s:
                 return 0.0
-            s = s.replace("$", "").replace(",", "")
+            s = s.replace("$", "")
+            # Normaliza miles/comas comunes
+            if "," in s and "." in s:
+                # heurística: si hay ambos, asume coma como miles y punto como decimal
+                s = s.replace(",", "")
+            else:
+                # si solo hay coma, trátala como decimal
+                s = s.replace(",", ".")
             return float(s)
         except Exception:
             return 0.0
