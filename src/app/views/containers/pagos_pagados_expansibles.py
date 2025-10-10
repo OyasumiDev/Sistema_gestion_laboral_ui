@@ -143,48 +143,62 @@ class PagosPagadosExpansibles(ft.UserControl):
             if self.page:
                 self.page.update()
 
-    # === Push incremental desde "Pendientes" ===
+    # ACTUALIZADO: asegura panel, inserta fila, resort/prioridad y totales
     def push_pago_pagado(self, pago_row: Dict[str, Any], *, keep_expanded: bool = True):
         """
         Inserta/actualiza una fila 'pagada' en su panel de fecha SIN recargar todo.
-        Mantiene abierta la expansión del grupo afectado.
+        - Crea el panel/tabla por fecha si no existe.
+        - Upsert de la fila (si existía, la remueve antes).
+        - Reaplica orden y prioridad según sort y filtros activos.
+        - Actualiza mapas de totales y etiqueta "Total día".
+        - Mantiene abierto el grupo afectado si keep_expanded=True.
         """
         try:
             if not pago_row:
                 return
+
             id_pago = int(pago_row.get("id_pago_nomina") or pago_row.get("id_pago") or 0)
             fecha = str(pago_row.get("fecha_pago") or "")
             if id_pago <= 0 or not fecha:
                 return
 
-            # Asegurar panel/tabla para la fecha
+            # 1) Asegurar panel/tabla para la fecha (crea si no existe)
             self._ensure_panel_for_date(fecha, expand=True)
 
-            # Si ya existía esa fila, primero la quitamos para hacer "upsert"
+            # 2) Upsert: si ya existía esa fila en cualquier grupo, la quitamos primero
             self._remove_row_if_exists(id_pago)
 
-            # Calculo con depósito actual (si viene como 'deposito' o 'pago_deposito')
+            # 3) Construcción de la fila con cálculo fresco (usando depósito del row)
             deposito = float(pago_row.get("deposito") or pago_row.get("pago_deposito") or 0.0)
             calc = self.math.recalc_from_pago_row(pago_row, deposito)
             row = self._build_row_pagado(pago=pago_row, calc=calc)
 
+            # 4) Append, resort/prioridad y flechas coherentes
             tabla = self._table_by_date[fecha]
             tabla.rows.append(row)
-            self._refresh_table_snapshot(fecha)  # snapshot listo
 
-            # Registros del grupo / totales
+            # Reaplica el sort activo y la pasada de prioridad por filtros
+            self._apply_current_sort_and_priority(tabla)
+
+            # 5) Mapas y totales de día (solo con lo visible en la tabla)
             total_vista = float(calc.get("total_vista", 0.0))
             self._row_total[id_pago] = total_vista
             self._fecha_by_id[id_pago] = fecha
             self._ids_by_date.setdefault(fecha, set()).add(id_pago)
             self._update_total_label_for(fecha)
 
+            # 6) Snapshot listo (aunque _sort_table_inplace ya refresca, no sobra)
+            self._refresh_table_snapshot(fecha)
+
+            # 7) Mantiene el grupo expandido y refresca UI
             if keep_expanded:
                 self.open_group(fecha)
             if self.page:
                 self.page.update()
+
         except Exception as ex:
             ModalAlert.mostrar_info("Push pagado", f"No se pudo insertar la fila: {ex}")
+
 
     # ---------- Ciclo Flet ----------
     def build(self):
@@ -1056,12 +1070,15 @@ class PagosPagadosExpansibles(ft.UserControl):
         except Exception as ex:
             ModalAlert.mostrar_info("Error", f"No se pudo crear el pago: {ex}")
 
-    # ---------- Helpers internos ----------
+        # ---------- Helpers internos ----------
+    # ACTUALIZADO: leve mejora al crear panel, garantizando su estado inicial coherente
     def _ensure_panel_for_date(self, fecha: str, *, expand: bool = False):
-        """Crea panel vacío si no existe."""
+        """Crea panel vacío si no existe (con DataTable ya preparado para sort por header)."""
         if fecha in self._panel_by_date:
             if expand:
                 self._panel_by_date[fecha].expanded = True
+                if self.page:
+                    self.page.update()
             return
 
         tabla = self._build_table_with_click_sort()
@@ -1090,7 +1107,7 @@ class PagosPagadosExpansibles(ft.UserControl):
 
         panel = ft.ExpansionPanel(header=header, content=tabla_scroll, expanded=expand)
 
-        # Insertar en orden (lista descendente por fecha)
+        # Insertar en orden (descendente por fecha)
         inserted = False
         for i, p in enumerate(self.view.controls):
             try:
@@ -1105,11 +1122,16 @@ class PagosPagadosExpansibles(ft.UserControl):
         if not inserted:
             self.view.controls.append(panel)
 
-        # guardar refs
+        # Guardar refs
         self._panel_by_date[fecha] = panel
         self._table_by_date[fecha] = tabla
         self._total_lbl_by_date[fecha] = total_lbl
         self._ids_by_date.setdefault(fecha, set())
+
+        # Ajuste visual al crear (flecha/estado ya vienen desde _build_table_with_click_sort)
+        if self.page:
+            self.page.update()
+
 
     def _remove_panel(self, fecha: str):
         p = self._panel_by_date.pop(fecha, None)
@@ -1227,4 +1249,23 @@ class PagosPagadosExpansibles(ft.UserControl):
                     self.sort_helper.refresh_snapshot(t)
         except Exception:
             # no romper el flujo de UI por un snapshot fallido
+            pass
+
+
+    # NUEVO: resort/prioridad usando el sort activo + filtros
+    def _apply_current_sort_and_priority(self, table: ft.DataTable) -> None:
+        """
+        Reaplica el orden actual (self.sort_key/self.sort_asc) sobre 'table' y
+        la pasada de prioridad por filtros (empleado / id_pago_conf|id_pago).
+        Delega en _sort_table_inplace, que además refresca el snapshot del grupo.
+        """
+        try:
+            key = self.sort_key if self.sort_key in self.IDX else "id_pago"
+            idx = self.IDX[key]
+            vtype = self._value_type_for_col(key)
+            self._sort_table_inplace(
+                table, column_index=idx, value_type=vtype, ascending=self.sort_asc
+            )
+        except Exception:
+            # no romper UI si algo sale mal
             pass
