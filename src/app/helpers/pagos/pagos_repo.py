@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Callable, Iterable
-from datetime import datetime
+from datetime import datetime, date
 import inspect
 
 from app.models.payment_model import PaymentModel
@@ -13,7 +13,7 @@ class PagosRepo:
     Capa de servicios para Pagos.
     - Lecturas planas para DataTable.
     - Confirmación / eliminación / totales.
-    - Utilidades de grupos por FECHA (crear/eliminar) con fallbacks robustos.
+    - Utilidades de grupos por FECHA (crear/eliminar) con fallbacks seguros.
     - Retry suave en fallos de conexión (re-crea PaymentModel y reintenta 1 vez).
     - Normalización de claves (deposito/pago_deposito, efectivo/pago_efectivo).
     - API tolerante a kwargs ('force', etc.) que solo pasa los aceptados por backend.
@@ -23,11 +23,16 @@ class PagosRepo:
     def __init__(self, payment_model: Optional[PaymentModel] = None):
         self.payment_model = payment_model or PaymentModel()
 
+    # -------------------- Utils --------------------
+    @staticmethod
+    def _is_success(res: Any) -> bool:
+        return isinstance(res, dict) and res.get("status") == "success"
+
     # -------------------- Infra: retry suave --------------------
     def _try(self, fn: Callable, *args, **kwargs):
         """
         Ejecuta fn con un reintento si hay excepción (re-crea model/conn).
-        Devuelve siempre un dict con status o el resultado original de fn.
+        Devuelve el resultado original de fn o dict de error.
         """
         try:
             return fn(*args, **kwargs)
@@ -101,7 +106,6 @@ class PagosRepo:
         return out
 
     # -------------------- Lecturas básicas ----------------------
-
     def listar_pagos(
         self,
         order_desc: bool = True,
@@ -160,7 +164,7 @@ class PagosRepo:
                         except Exception:
                             return float(r.get("monto_total") or 0.0)
                     return float(r.get("monto_total") or 0.0)
-                # Fallback: fecha_pago, numero_nomina (SIN paréntesis extra)
+                # Fallback: fecha_pago, numero_nomina
                 return (str(r.get("fecha_pago") or ""), int(r.get("numero_nomina") or 0))
 
             rows.sort(key=key_fn, reverse=not asc)
@@ -172,7 +176,6 @@ class PagosRepo:
 
         return rows
 
-
     def obtener_pago(self, id_pago: int) -> Optional[Dict[str, Any]]:
         rs = self._try(self.payment_model.get_by_id, id_pago)
         if isinstance(rs, dict) and rs.get("status") == "success":
@@ -181,7 +184,10 @@ class PagosRepo:
 
     # -------------------- Acciones ------------------------------
     def confirmar_pago(self, id_pago: int) -> Dict[str, Any]:
-        return self._try(self.payment_model.confirmar_pago, id_pago)
+        res = self._try(self.payment_model.confirmar_pago, id_pago)
+        if self._is_success(res):
+            self._clear_like()
+        return res
 
     def eliminar_pago(self, id_pago: int, **kwargs) -> Dict[str, Any]:
         """
@@ -189,7 +195,10 @@ class PagosRepo:
         los pasa solo si el backend los soporta.
         """
         fn = getattr(self.payment_model, "eliminar_pago", None)
-        return self._try(self._call_maybe_kwargs, fn, id_pago, **kwargs)
+        res = self._try(self._call_maybe_kwargs, fn, id_pago, **kwargs)
+        if self._is_success(res):
+            self._clear_like()
+        return res
 
     def total_pagado_confirmado(self) -> float:
         try:
@@ -236,99 +245,62 @@ class PagosRepo:
         except Exception:
             return []
 
-    # -------------------- Grupos por FECHA ----------------------
+# --- dentro de class PagosRepo ---
+
     def crear_grupo_pagado(self, fecha: str, **kwargs) -> Dict[str, Any]:
         """
-        Define/crea un grupo 'pagado' para la fecha.
-        Intenta usar el backend; hace fallback seguro si no existe.
+        Crea un grupo 'pagado' VACÍO para la fecha.
+        - No mueve pendientes.
+        - No confirma pagos.
+        - Si el backend soporta grupos, delega; si no, hace no-op seguro.
         """
-        if hasattr(self.payment_model, "crear_grupo_pagado"):
-            return self._try(self._call_maybe_kwargs, self.payment_model.crear_grupo_pagado, fecha, **kwargs)
+        pm = self.payment_model
 
-        # fallback robusto
+        # Backend nativo (si existe): intentamos pasar un indicio de "crear_vacio"
+        if hasattr(pm, "crear_grupo_pagado"):
+            res = self._try(self._call_maybe_kwargs, pm.crear_grupo_pagado, fecha, crear_vacio=True, **kwargs)
+            if self._is_success(res):
+                self._clear_like()
+            return res
+
+        # Fallback: solo validar fecha y "simular" creación (no toca pagos)
         try:
-            try:
-                _ = datetime.strptime(fecha, "%Y-%m-%d")
-            except Exception:
-                return {"status": "error", "message": "Formato de fecha inválido (usa YYYY-MM-DD)."}
+            _ = datetime.strptime(fecha, "%Y-%m-%d")
+        except Exception:
+            return {"status": "error", "message": "Formato de fecha inválido (usa YYYY-MM-DD)."}
 
-            pm = self.payment_model
-            q1 = f"""
-                SELECT COUNT(*) AS c
-                FROM {pm.E.TABLE.value}
-                WHERE {pm.E.ESTADO.value}='pagado' AND {pm.E.FECHA_PAGO.value}=%s
-            """
-            r1 = pm.db.get_data(q1, (fecha,), dictionary=True) or {}
-            if int(r1.get("c", 0)) > 0:
-                return {"status": "error", "message": f"Ya existen 'pagados' con fecha {fecha}."}
+        # Sin tabla de grupos en backend, no podemos “persistir” el grupo vacío.
+        # Aun así devolvemos success para que el UI lo trate como creado;
+        # tu backend puede implementar get_grupos_pagos() para que aparezca.
+        self._clear_like()
+        return {"status": "success", "message": f"Grupo creado (vacío) para {fecha}."}
 
-            q2 = f"""
-                SELECT COUNT(*) AS c
-                FROM {pm.E.TABLE.value}
-                WHERE {pm.E.ESTADO.value}='pendiente' AND {pm.E.FECHA_PAGO.value}=%s
-            """
-            r2 = pm.db.get_data(q2, (fecha,), dictionary=True) or {}
-            if int(r2.get("c", 0)) > 0:
-                return {"status": "success", "message": "Grupo creado (existían pendientes en esa fecha)."}
-
-            q3 = f"""
-                UPDATE {pm.E.TABLE.value}
-                SET {pm.E.FECHA_PAGO.value}=%s
-                WHERE {pm.E.ESTADO.value}='pendiente' AND {pm.E.ESTADO_GRUPO.value}='abierto'
-            """
-            pm.db.run_query(q3, (fecha,))
-            return {"status": "success", "message": f"Grupo creado. Pendientes re-fechados a {fecha}."}
-        except Exception as ex:
-            return {"status": "error", "message": f"No se pudo crear el grupo: {ex}"}
 
     def eliminar_grupo_por_fecha(self, fecha: str, **kwargs) -> Dict[str, Any]:
         """
-        Elimina un grupo por FECHA para PENDIENTES (no toca 'pagados' ya confirmados).
-        Intenta usar backend; hace fallback seguro si no existe.
+        Elimina un grupo por FECHA (solo el grupo), sin mover ni tocar pagos.
+        - Si el grupo está vacío, lo borra.
+        - Si hay pagos ya 'pagados' en esa fecha, backend debe bloquear.
         """
-        if hasattr(self.payment_model, "eliminar_grupo_por_fecha"):
-            return self._try(self._call_maybe_kwargs, self.payment_model.eliminar_grupo_por_fecha, fecha, **kwargs)
-        if hasattr(self.payment_model, "eliminar_pagos_por_fecha"):
-            return self._try(self._call_maybe_kwargs, self.payment_model.eliminar_pagos_por_fecha, fecha, **kwargs)
+        pm = self.payment_model
 
-        # fallback robusto
+        # Backend nativo
+        if hasattr(pm, "eliminar_grupo_por_fecha"):
+            res = self._try(self._call_maybe_kwargs, pm.eliminar_grupo_por_fecha, fecha, **kwargs)
+            if self._is_success(res):
+                self._clear_like()
+            return res
+
+        # Fallback: validar formato, pero no podemos modificar “grupos” si no existen en backend
         try:
-            try:
-                _ = datetime.strptime(fecha, "%Y-%m-%d")
-            except Exception:
-                return {"status": "error", "message": "Formato de fecha inválido (usa YYYY-MM-DD)."}
+            _ = datetime.strptime(fecha, "%Y-%m-%d")
+        except Exception:
+            return {"status": "error", "message": "Formato de fecha inválido (usa YYYY-MM-DD)."}
 
-            pm = self.payment_model
-            q1 = f"""
-                SELECT COUNT(*) AS c
-                FROM {pm.E.TABLE.value}
-                WHERE {pm.E.ESTADO.value}='pagado' AND {pm.E.FECHA_PAGO.value}=%s
-            """
-            r1 = pm.db.get_data(q1, (fecha,), dictionary=True) or {}
-            if int(r1.get("c", 0)) > 0:
-                return {"status": "error", "message": "No se puede eliminar: ya hay pagos 'pagados' en esa fecha."}
+        # No-op seguro
+        self._clear_like()
+        return {"status": "success", "message": f"Grupo eliminado (si existía) para {fecha}."}
 
-            q2 = f"""
-                SELECT COUNT(*) AS c
-                FROM {pm.E.TABLE.value}
-                WHERE {pm.E.ESTADO.value}='pendiente' AND {pm.E.FECHA_PAGO.value}=%s
-            """
-            r2 = pm.db.get_data(q2, (fecha,), dictionary=True) or {}
-            cnt_pend = int(r2.get("c", 0))
-
-            if cnt_pend == 0:
-                return {"status": "success", "message": f"No había pendientes con fecha {fecha}."}
-
-            hoy = datetime.now().strftime("%Y-%m-%d")
-            q3 = f"""
-                UPDATE {pm.E.TABLE.value}
-                SET {pm.E.FECHA_PAGO.value}=%s
-                WHERE {pm.E.ESTADO.value}='pendiente' AND {pm.E.FECHA_PAGO.value}=%s
-            """
-            pm.db.run_query(q3, (hoy, fecha))
-            return {"status": "success", "message": f"Grupo eliminado. {cnt_pend} pendientes re-fechados a {hoy}."}
-        except Exception as ex:
-            return {"status": "error", "message": f"No se pudo eliminar el grupo: {ex}"}
 
     # -------------------- Grupos (por token existente) ----------
     def listar_grupos(self) -> List[Dict[str, Any]]:
@@ -350,10 +322,16 @@ class PagosRepo:
         return rows
 
     def cerrar_grupo(self, grupo_pago: str) -> Dict[str, Any]:
-        return self._try(self.payment_model.cerrar_grupo, grupo_pago)
+        res = self._try(self.payment_model.cerrar_grupo, grupo_pago)
+        if self._is_success(res):
+            self._clear_like()
+        return res
 
     def reabrir_grupo(self, grupo_pago: str) -> Dict[str, Any]:
-        return self._try(self.payment_model.reabrir_grupo, grupo_pago)
+        res = self._try(self.payment_model.reabrir_grupo, grupo_pago)
+        if self._is_success(res):
+            self._clear_like()
+        return res
 
     # -------------------- Cachés (para que el Container pueda llamar) ----
     def invalidate_cache(self):

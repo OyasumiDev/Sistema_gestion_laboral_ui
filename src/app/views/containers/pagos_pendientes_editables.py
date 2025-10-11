@@ -259,6 +259,7 @@ class PagosPendientesEditables(ft.UserControl):
         except Exception as ex:
             print(f"⚠️ recalculo UI (pend): {ex}")
 
+
     def _actualizar_fila(self, id_pago_nomina: int, *, persist: bool):
         try:
             row = self.row_refresh.get_row(self.table, id_pago_nomina)
@@ -274,20 +275,26 @@ class PagosPendientesEditables(ft.UserControl):
             if not p_db:
                 return
 
+            # Valor de depósito desde buffer o DB
             raw = self._deposito_buffer.get(id_pago_nomina, None)
             deposito_ui = (
                 self._sanitize_float(raw)
                 if raw is not None
                 else self._sanitize_float(p_db.get("pago_deposito", 0.0))
             )
+            # Nunca negativo
+            if deposito_ui < 0:
+                deposito_ui = 0.0
+
+            # Recalcular vista con datos actuales
             calc = self.math.recalc_from_pago_row(p_db, deposito_ui)
 
+            # Refrescar UI
             self.row_refresh.set_descuentos(row, calc["descuentos_view"])
             self.row_refresh.set_prestamos(row, calc["prestamos_view"])
             self.row_refresh.set_saldo(row, calc["saldo_ajuste"])
             self.row_refresh.set_efectivo(row, calc["efectivo"])
             self.row_refresh.set_total(row, calc["total_vista"])
-
             self.row_refresh.set_deposito_border_color(
                 row, ft.colors.RED if deposito_ui > calc["total_vista"] + 1e-9 else None
             )
@@ -297,12 +304,9 @@ class PagosPendientesEditables(ft.UserControl):
             if not persist:
                 return
 
-            payload = {
-                "pago_deposito": float(deposito_ui),
-                "pago_efectivo": float(calc["efectivo"]),
-                "saldo": float(calc["saldo_ajuste"]),
-                "monto_total": float(calc["total_vista"]),
-            }
+            # ⚠️ Persistencia: SOLO depósito. Deja que el backend derive efectivo y saldo
+            payload = { "pago_deposito": float(deposito_ui) }
+
             ok = False
             try:
                 if hasattr(self.repo, "actualizar_montos_ui"):
@@ -318,8 +322,11 @@ class PagosPendientesEditables(ft.UserControl):
                 ModalAlert.mostrar_info("Atención", "No se pudo guardar los montos en DB. Revisa PaymentModel/Repo.")
                 return
 
+            # Limpiar buffer y releer para reflejar SALDO real desde DB
             self._deposito_buffer.pop(id_pago_nomina, None)
+            # Recalcular/repintar con persist=False para tomar lo que guardó el backend
             self._actualizar_fila(id_pago_nomina, persist=False)
+
         except Exception as ex:
             print(f"❌ Error al actualizar fila: {ex}")
 
