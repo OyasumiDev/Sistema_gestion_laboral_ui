@@ -1,9 +1,10 @@
 # app/helpers/pagos/pagos_repo.py
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Callable, Iterable
-from datetime import datetime, date
+from typing import Any, Dict, List, Optional, Callable, Iterable, Tuple
+from datetime import datetime
 import inspect
+
 
 from app.models.payment_model import PaymentModel
 
@@ -17,29 +18,126 @@ class PagosRepo:
     - Retry suave en fallos de conexión (re-crea PaymentModel y reintenta 1 vez).
     - Normalización de claves (deposito/pago_deposito, efectivo/pago_efectivo).
     - API tolerante a kwargs ('force', etc.) que solo pasa los aceptados por backend.
+    - ⚡ Auto-refresh: invalida caché y notifica listeners tras cualquier cambio.
+    - 🧭 Detección de cambios de ESQUEMA y refresh automático.
     """
 
     # -------------------- Init --------------------
     def __init__(self, payment_model: Optional[PaymentModel] = None):
         self.payment_model = payment_model or PaymentModel()
 
+        # listeners de cambios (para contenedores/UI)
+        self._listeners: List[Callable[[str, Dict[str, Any]], None]] = []
+        self._version: int = 0  # puedes leerlo para saber si hubo cambios
+
+        # snapshot del esquema para detectar altas/bajas de tablas
+        self._schema_sig: Tuple[str, ...] = self._schema_signature()
+
+    # -------------------- Suscripción cambios --------------------
+    def add_change_listener(self, fn: Callable[[str, Dict[str, Any]], None]) -> None:
+        """Registra una función que se invoca tras cambios de datos/esquema."""
+        if callable(fn) and fn not in self._listeners:
+            self._listeners.append(fn)
+
+    def remove_change_listener(self, fn: Callable[[str, Dict[str, Any]], None]) -> None:
+        if fn in self._listeners:
+            self._listeners.remove(fn)
+
+    def get_version(self) -> int:
+        """Número que aumenta cada vez que hay cambios relevantes."""
+        return self._version
+
+    def _emit_change(self, kind: str, **payload) -> None:
+        """Notifica a listeners y sube versión."""
+        self._version += 1
+        for fn in list(self._listeners):
+            try:
+                fn(kind, payload)
+            except Exception:
+                # nunca romper por un listener
+                pass
+
     # -------------------- Utils --------------------
     @staticmethod
     def _is_success(res: Any) -> bool:
         return isinstance(res, dict) and res.get("status") == "success"
+
+    def _table_exists(self, table: str) -> bool:
+        """Consulta rápida en information_schema; tolerante a errores."""
+        try:
+            q = """
+                SELECT COUNT(*) AS c
+                FROM information_schema.tables
+                WHERE table_schema=%s AND table_name=%s
+            """
+            r = self.payment_model.db.get_data(q, (self.payment_model.db.database, table), dictionary=True)
+            return int((r or {}).get("c", 0)) > 0
+        except Exception:
+            return False
+
+    def _schema_signature(self) -> Tuple[str, ...]:
+        """
+        Huella ligera del esquema relevante: existencia de tablas clave.
+        Útil para detectar si se creó/eliminó algo y refrescar UI/cachés.
+        """
+        # tablas más usadas por la vista/operaciones
+        tables = (
+            self.payment_model.E.TABLE.value,  # pagos
+            "descuentos",
+            "detalles_pagos_prestamo",
+            "pagos_prestamo",
+            "grupos_pagos",
+            "empleados",
+        )
+        sig: List[str] = []
+        for t in tables:
+            sig.append(f"{t}:{'1' if self._table_exists(t) else '0'}")
+        return tuple(sig)
+
+    def _refresh_if_schema_changed(self) -> None:
+        """Si detecta cambios de tablas, limpia cachés y notifica."""
+        try:
+            new_sig = self._schema_signature()
+            if new_sig != self._schema_sig:
+                self._schema_sig = new_sig
+                # limpiar caches en model si expone helpers
+                self._clear_like()
+                self._emit_change("schema_changed", signature=new_sig)
+        except Exception:
+            # no romper las lecturas
+            pass
 
     # -------------------- Infra: retry suave --------------------
     def _try(self, fn: Callable, *args, **kwargs):
         """
         Ejecuta fn con un reintento si hay excepción (re-crea model/conn).
         Devuelve el resultado original de fn o dict de error.
+        Además, si el fallo suena a esquema → fuerza verificación/creación mínima.
         """
         try:
-            return fn(*args, **kwargs)
+            out = fn(*args, **kwargs)
+            # tras una llamada, revisar esquema (por si hubo migrations fuera)
+            self._refresh_if_schema_changed()
+            return out
         except Exception:
+            # reintento reconstruyendo modelo/conexión
             try:
+                # algunos modelos tienen utilidades de chequeo/creación
+                # garantizamos al menos la tabla principal y grupos
                 self.payment_model = PaymentModel()
-                return fn(*args, **kwargs)
+                # si existen estos métodos, ejecútalos (idempotentes)
+                try:
+                    self.payment_model.check_table()
+                except Exception:
+                    pass
+                try:
+                    self.payment_model._ensure_grupos_table()
+                except Exception:
+                    pass
+
+                out = fn(*args, **kwargs)
+                self._refresh_if_schema_changed()
+                return out
             except Exception as ex2:
                 return {"status": "error", "message": f"Falla de conexión/operación: {ex2}"}
 
@@ -123,6 +221,9 @@ class PagosRepo:
         - `filtros`: dict opcional {'id_empleado': '...', 'id_pago': '...', 'estado': '...'}.
         - `compute_total`: callback opcional para ordenar por 'total' si se solicita.
         """
+        # antes de leer, detecta si el esquema cambió (alta/baja de tablas)
+        self._refresh_if_schema_changed()
+
         rs = self._try(self.payment_model.get_all_pagos)
         if not isinstance(rs, dict) or rs.get("status") != "success":
             return []
@@ -177,16 +278,29 @@ class PagosRepo:
         return rows
 
     def obtener_pago(self, id_pago: int) -> Optional[Dict[str, Any]]:
+        # si el esquema cambió desde la última vez, refresca caches
+        self._refresh_if_schema_changed()
         rs = self._try(self.payment_model.get_by_id, id_pago)
         if isinstance(rs, dict) and rs.get("status") == "success":
             return self._normalize_row_keys(rs["data"])
         return None
 
-    # -------------------- Acciones ------------------------------
+    # -------------------- Acciones (mutaciones) ------------------------------
+    def _after_change(self, kind: str, **payload) -> None:
+        """
+        Lógica común post-mutación:
+        - Invalida cachés del modelo.
+        - Revisa esquema (por si la operación lo creó/eliminó).
+        - Emite evento de cambio para que la UI se recargue.
+        """
+        self._clear_like()
+        self._refresh_if_schema_changed()
+        self._emit_change(kind, **payload)
+
     def confirmar_pago(self, id_pago: int) -> Dict[str, Any]:
         res = self._try(self.payment_model.confirmar_pago, id_pago)
         if self._is_success(res):
-            self._clear_like()
+            self._after_change("confirmar_pago", id_pago=id_pago)
         return res
 
     def eliminar_pago(self, id_pago: int, **kwargs) -> Dict[str, Any]:
@@ -197,9 +311,72 @@ class PagosRepo:
         fn = getattr(self.payment_model, "eliminar_pago", None)
         res = self._try(self._call_maybe_kwargs, fn, id_pago, **kwargs)
         if self._is_success(res):
-            self._clear_like()
+            self._after_change("eliminar_pago", id_pago=id_pago)
         return res
 
+    # ---- Grupos por fecha ----
+    def crear_grupo_pagado(self, fecha: str, **kwargs) -> Dict[str, Any]:
+        """
+        Crea un grupo 'pagado' VACÍO para la fecha.
+        - No mueve pendientes.
+        - No confirma pagos.
+        - Si el backend soporta grupos, delega; si no, hace no-op seguro.
+        """
+        pm = self.payment_model
+
+        # Backend nativo (si existe): intentamos pasar un indicio de "crear_vacio"
+        if hasattr(pm, "crear_grupo_pagado"):
+            res = self._try(self._call_maybe_kwargs, pm.crear_grupo_pagado, fecha, crear_vacio=True, **kwargs)
+            if self._is_success(res):
+                self._after_change("crear_grupo_pagado", fecha=fecha)
+            return res
+
+        # Fallback: validar fecha y "simular" creación (no toca pagos)
+        try:
+            _ = datetime.strptime(fecha, "%Y-%m-%d")
+        except Exception:
+            return {"status": "error", "message": "Formato de fecha inválido (usa YYYY-MM-DD)."}
+
+        self._after_change("crear_grupo_pagado_fallback", fecha=fecha)
+        return {"status": "success", "message": f"Grupo creado (vacío) para {fecha}."}
+
+    def eliminar_grupo_por_fecha(self, fecha: str, **kwargs) -> Dict[str, Any]:
+        """
+        Elimina un grupo por FECHA (solo el grupo), sin mover ni tocar pagos.
+        - Si el grupo está vacío, lo borra.
+        - Si hay pagos ya 'pagados' en esa fecha, backend debe bloquear.
+        """
+        pm = self.payment_model
+
+        # Backend nativo
+        if hasattr(pm, "eliminar_grupo_por_fecha"):
+            res = self._try(self._call_maybe_kwargs, pm.eliminar_grupo_por_fecha, fecha, **kwargs)
+            if self._is_success(res):
+                self._after_change("eliminar_grupo", fecha=fecha)
+            return res
+
+        # Fallback
+        try:
+            _ = datetime.strptime(fecha, "%Y-%m-%d")
+        except Exception:
+            return {"status": "error", "message": "Formato de fecha inválido (usa YYYY-MM-DD)."}
+
+        self._after_change("eliminar_grupo_fallback", fecha=fecha)
+        return {"status": "success", "message": f"Grupo eliminado (si existía) para {fecha}."}
+
+    def cerrar_grupo(self, grupo_pago: str) -> Dict[str, Any]:
+        res = self._try(self.payment_model.cerrar_grupo, grupo_pago)
+        if self._is_success(res):
+            self._after_change("cerrar_grupo", grupo_pago=grupo_pago)
+        return res
+
+    def reabrir_grupo(self, grupo_pago: str) -> Dict[str, Any]:
+        res = self._try(self.payment_model.reabrir_grupo, grupo_pago)
+        if self._is_success(res):
+            self._after_change("reabrir_grupo", grupo_pago=grupo_pago)
+        return res
+
+    # -------------------- Totales / fechas auxiliares ---------------------
     def total_pagado_confirmado(self) -> float:
         try:
             q = f"""
@@ -212,9 +389,9 @@ class PagosRepo:
         except Exception:
             return 0.0
 
-    # -------------------- Fechas auxiliares ---------------------
     def get_fechas_pagadas(self) -> List[str]:
         """Fechas (YYYY-MM-DD) con pagos confirmados."""
+        self._refresh_if_schema_changed()
         if hasattr(self.payment_model, "get_fechas_pagadas"):
             rs = self._try(self.payment_model.get_fechas_pagadas)
             return list(rs or [])
@@ -231,6 +408,7 @@ class PagosRepo:
 
     def get_fechas_pendientes(self) -> List[str]:
         """Fechas (YYYY-MM-DD) con pagos pendientes."""
+        self._refresh_if_schema_changed()
         if hasattr(self.payment_model, "get_fechas_pendientes"):
             rs = self._try(self.payment_model.get_fechas_pendientes)
             return list(rs or [])
@@ -245,71 +423,16 @@ class PagosRepo:
         except Exception:
             return []
 
-# --- dentro de class PagosRepo ---
-
-    def crear_grupo_pagado(self, fecha: str, **kwargs) -> Dict[str, Any]:
-        """
-        Crea un grupo 'pagado' VACÍO para la fecha.
-        - No mueve pendientes.
-        - No confirma pagos.
-        - Si el backend soporta grupos, delega; si no, hace no-op seguro.
-        """
-        pm = self.payment_model
-
-        # Backend nativo (si existe): intentamos pasar un indicio de "crear_vacio"
-        if hasattr(pm, "crear_grupo_pagado"):
-            res = self._try(self._call_maybe_kwargs, pm.crear_grupo_pagado, fecha, crear_vacio=True, **kwargs)
-            if self._is_success(res):
-                self._clear_like()
-            return res
-
-        # Fallback: solo validar fecha y "simular" creación (no toca pagos)
-        try:
-            _ = datetime.strptime(fecha, "%Y-%m-%d")
-        except Exception:
-            return {"status": "error", "message": "Formato de fecha inválido (usa YYYY-MM-DD)."}
-
-        # Sin tabla de grupos en backend, no podemos “persistir” el grupo vacío.
-        # Aun así devolvemos success para que el UI lo trate como creado;
-        # tu backend puede implementar get_grupos_pagos() para que aparezca.
-        self._clear_like()
-        return {"status": "success", "message": f"Grupo creado (vacío) para {fecha}."}
-
-
-    def eliminar_grupo_por_fecha(self, fecha: str, **kwargs) -> Dict[str, Any]:
-        """
-        Elimina un grupo por FECHA (solo el grupo), sin mover ni tocar pagos.
-        - Si el grupo está vacío, lo borra.
-        - Si hay pagos ya 'pagados' en esa fecha, backend debe bloquear.
-        """
-        pm = self.payment_model
-
-        # Backend nativo
-        if hasattr(pm, "eliminar_grupo_por_fecha"):
-            res = self._try(self._call_maybe_kwargs, pm.eliminar_grupo_por_fecha, fecha, **kwargs)
-            if self._is_success(res):
-                self._clear_like()
-            return res
-
-        # Fallback: validar formato, pero no podemos modificar “grupos” si no existen en backend
-        try:
-            _ = datetime.strptime(fecha, "%Y-%m-%d")
-        except Exception:
-            return {"status": "error", "message": "Formato de fecha inválido (usa YYYY-MM-DD)."}
-
-        # No-op seguro
-        self._clear_like()
-        return {"status": "success", "message": f"Grupo eliminado (si existía) para {fecha}."}
-
-
     # -------------------- Grupos (por token existente) ----------
     def listar_grupos(self) -> List[Dict[str, Any]]:
+        self._refresh_if_schema_changed()
         try:
             return self.payment_model.get_grupos_pagos()
         except Exception:
             return []
 
     def listar_pagos_por_grupo(self, grupo_pago: str, *, order: str = "fecha_desc") -> List[Dict[str, Any]]:
+        self._refresh_if_schema_changed()
         rows = self._normalize_list(self.payment_model.get_pagos_por_grupo(grupo_pago) or [])
         if order == "fecha_desc":
             rows.sort(key=lambda x: (str(x.get("fecha_pago") or ""), int(x.get("numero_nomina") or 0)), reverse=True)
@@ -321,31 +444,21 @@ class PagosRepo:
             rows.sort(key=lambda x: (str(x.get("nombre_completo") or ""), str(x.get("fecha_pago") or "")), reverse=True)
         return rows
 
-    def cerrar_grupo(self, grupo_pago: str) -> Dict[str, Any]:
-        res = self._try(self.payment_model.cerrar_grupo, grupo_pago)
-        if self._is_success(res):
-            self._clear_like()
-        return res
-
-    def reabrir_grupo(self, grupo_pago: str) -> Dict[str, Any]:
-        res = self._try(self.payment_model.reabrir_grupo, grupo_pago)
-        if self._is_success(res):
-            self._clear_like()
-        return res
-
     # -------------------- Cachés (para que el Container pueda llamar) ----
     def invalidate_cache(self):
         """Compat: algunos contenedores llaman a este nombre."""
         self._clear_like()
+        self._refresh_if_schema_changed()
+        self._emit_change("invalidate_cache")
 
     def clear_cache(self):
-        self._clear_like()
+        self.invalidate_cache()
 
     def refresh_cache(self):
-        self._clear_like()
+        self.invalidate_cache()
 
     def reset_cache(self):
-        self._clear_like()
+        self.invalidate_cache()
 
     def _clear_like(self):
         for nm in ("invalidate_cache", "clear_cache", "reset_cache", "refresh_cache"):

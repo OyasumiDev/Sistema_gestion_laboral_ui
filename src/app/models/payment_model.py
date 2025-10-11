@@ -1085,35 +1085,52 @@ class PaymentModel:
             return {"status": "error", "message": f"Error al confirmar/cerrar grupo por fecha: {ex}"}
 
 
-    def eliminar_pago(self, id_pago: int) -> Dict[str, Any]:
+    # --- reimplementa eliminar_pago con chequeo de existencia de tablas ---
+    def eliminar_pago(self, id_pago: int, force: bool = False) -> dict:
         """
-        Elimina un pago si no está confirmado.
-        Limpia detalles de préstamos y borrador de descuentos asociados.
+        Elimina un pago. Si el pago está 'pagado' requiere force=True.
+        Limpia dependencias reales del esquema:
+        - detalles_pagos_prestamo (borrador)
+        - pagos_prestamo (confirmados)  [solo si existe]
+        - descuentos (finales)          [solo si existe]
+        - borrador de descuentos via modelo (si existe)
+        Todo es 'safe': no se intenta borrar en tablas inexistentes.
         """
         try:
-            pago = self.get_by_id(id_pago)
-            if pago.get("status") != "success":
-                return pago
-            p = pago["data"]
-            if str(p.get(self.E.ESTADO.value, "")).lower() == "pagado":
-                return {"status": "error", "message": "No se puede eliminar un pago ya confirmado."}
+            r = self.get_by_id(id_pago)
+            if r.get("status") != "success":
+                return {"status": "error", "message": "Pago no encontrado."}
+            row = r["data"]
+            estado = str(row.get(self.E.ESTADO.value) or "").lower()
+            if estado == "pagado" and not force:
+                return {"status": "error", "message": "Pago confirmado: usa force=True para eliminarlo."}
 
-            # borra detalles de préstamo pendientes
-            dq = f"DELETE FROM detalles_pagos_prestamo WHERE {E_DET.ID_PAGO.value}=%s"
-            self.db.run_query(dq, (id_pago,))
+            # columnas/tabla principales
+            pagos_tab = self.E.TABLE.value                      # p.ej. 'pagos'
+            id_col    = self.E.ID_PAGO_NOMINA.value             # 'id_pago_nomina'
 
-            # borra borrador de descuentos (si existe)
+            # 1) limpiar dependencias que SÍ existen en tu esquema
+            # borradores de préstamo
+            self._safe_delete_by_pago("detalles_pagos_prestamo", id_col, id_pago)
+            # pagos de préstamo confirmados (si existe en tu DB)
+            self._safe_delete_by_pago("pagos_prestamo", id_col, id_pago)
+            # descuentos finales (si existe en tu DB)
+            self._safe_delete_by_pago("descuentos", id_col, id_pago)
+
+            # borrador de descuentos via modelo (si lo tienes)
             try:
-                self.detalles_desc_model.eliminar_por_id_pago(id_pago)
+                if self.detalles_desc_model:
+                    self.detalles_desc_model.eliminar_por_id_pago(id_pago)
             except Exception:
                 pass
 
-            # borra pago
-            q = f"DELETE FROM {self.E.TABLE.value} WHERE {self.E.ID_PAGO_NOMINA.value}=%s"
-            self.db.run_query(q, (id_pago,))
-            return {"status": "success", "message": "Pago eliminado correctamente."}
+            # 2) borra el registro principal
+            self.db.run_query(f"DELETE FROM {pagos_tab} WHERE {id_col}=%s", (id_pago,))
+
+            return {"status": "success", "message": f"Pago #{id_pago} eliminado correctamente."}
         except Exception as ex:
-            return {"status": "error", "message": f"Error al eliminar pago: {ex}"}
+            return {"status": "error", "message": f"No se pudo eliminar el pago: {ex}"}
+
 
     # ---------------------------------------------------------------------
     # Lecturas auxiliares / básicos
@@ -1377,3 +1394,27 @@ class PaymentModel:
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
         """
         self.db.run_query(q)
+
+    # --- helpers internos seguros ---
+    def _table_exists(self, table_name: str) -> bool:
+        try:
+            q = """
+                SELECT COUNT(*) AS c
+                FROM information_schema.tables
+                WHERE table_schema = %s AND table_name = %s
+            """
+            r = self.db.get_data(q, (self.db.database, table_name), dictionary=True)
+            return int((r or {}).get("c", 0)) > 0
+        except Exception:
+            return False
+
+    def _safe_delete_by_pago(self, table: str, id_col: str, id_pago: int) -> None:
+        """Borra filas en `table` por `id_col=id_pago` SOLO si la tabla existe."""
+        if not self._table_exists(table):
+            return
+        try:
+            self.db.run_query(f"DELETE FROM {table} WHERE {id_col}=%s", (id_pago,))
+        except Exception:
+            # Silencioso para no ensuciar logs si hay FKs/otros detalles
+            pass
+

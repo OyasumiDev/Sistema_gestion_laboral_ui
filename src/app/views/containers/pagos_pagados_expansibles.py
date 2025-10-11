@@ -24,6 +24,7 @@ from app.helpers.pagos.payment_table_builder import PaymentTableBuilder
 from app.helpers.pagos.row_refresh import PaymentRowRefresh
 from app.helpers.pagos.scroll_pagos_helper import PagosScrollHelper
 from app.helpers.pagos.sorting_filter_payment_helper import PaymentSortFilterHelper
+from app.helpers.pagos.pagos_repo import PagosRepo
 
 
 class PagosPagadosExpansibles(ft.UserControl):
@@ -74,7 +75,18 @@ class PagosPagadosExpansibles(ft.UserControl):
             loan_payment_model=self.loan_payment_model,
             detalles_prestamo_model=self.detalles_prestamo_model,
         )
-        self.repo = repo  # puede venir None; hay fallbacks al payment_model
+
+        # ⚡ Repo con eventos de cambio (auto-refresh)
+        self.repo = repo or PagosRepo(payment_model=self.payment_model)
+        self._repo_listener = None
+        if hasattr(self.repo, "add_change_listener"):
+            def _listener(kind: str, payload: Dict[str, Any]):
+                self._on_repo_change(kind, payload)
+            self._repo_listener = _listener
+            try:
+                self.repo.add_change_listener(self._repo_listener)
+            except Exception:
+                self._repo_listener = None
 
         # --------- Helpers UI ----------
         self.table_builder = table_builder or PaymentTableBuilder()
@@ -85,7 +97,6 @@ class PagosPagadosExpansibles(ft.UserControl):
         # --------- Estado global de sort / filtros ----------
         self.sort_key: str = "id_pago"
         self.sort_asc: bool = True
-        # Nota: confirmados aceptan id_pago_conf como alias de filtro principal
         self.filters: Dict[str, str] = {"id_empleado": "", "id_pago": "", "id_pago_conf": ""}
 
         # --------- Estado de edición inline ----------
@@ -97,17 +108,16 @@ class PagosPagadosExpansibles(ft.UserControl):
         self._table_by_date: Dict[str, ft.DataTable] = {}
         self._total_lbl_by_date: Dict[str, ft.Text] = {}
         self._ids_by_date: Dict[str, set[int]] = {}
-        self._row_total: Dict[int, float] = {}   # total_vista por fila (para totales de día)
-        self._fecha_by_id: Dict[int, str] = {}   # fecha_pago por id_pago
-
-        # Grupo “manual” (vacío) creado desde UI que debe persistir aunque no haya filas aún
+        self._row_total: Dict[int, float] = {}
+        self._fecha_by_id: Dict[int, str] = {}
         self._manual_panels: set[str] = set()
 
         # --------- Raíz visual ----------
         self.view = ft.ExpansionPanelList(expand=True, controls=[])
 
-        # --------- Modal para crear grupos por fecha ----------
+        # --------- Modal ----------
         self.modal_grupo = ModalFechaGrupoPagado(on_date_confirmed=self._crear_grupo_pagado)
+
 
 
     # ---------- Integración pública ----------
@@ -896,7 +906,7 @@ class PagosPagadosExpansibles(ft.UserControl):
         except Exception as ex:
             ModalAlert.mostrar_info("Error", f"No se pudo guardar la edición: {ex}")
 
-    # ---------- Eliminar ----------
+    # 1) Eliminar un pago: añade refresh tras self.page.update()
     def _eliminar_pago_pagado(self, id_pago: int):
         def ok():
             try:
@@ -916,6 +926,8 @@ class PagosPagadosExpansibles(ft.UserControl):
                         self._update_total_label_for(fecha)
                     if self.page:
                         self.page.update()
+                    # 👇 refresh solicitado
+                    self._refresh_now(self._fecha_by_id.get(id_pago, None))
                 else:
                     ModalAlert.mostrar_info("Error", "Backend no permite eliminar el pago.")
             except Exception as ex:
@@ -925,6 +937,7 @@ class PagosPagadosExpansibles(ft.UserControl):
             message=f"¿Eliminar el pago #{id_pago}? Esta acción es permanente.",
             on_confirm=ok
         ).mostrar()
+
 
     def _abrir_modal_descuentos(self, pago_row: Dict[str, Any]):
         # 1) Evitar datos stale en el modal
@@ -1002,7 +1015,7 @@ class PagosPagadosExpansibles(ft.UserControl):
         except Exception:
             pass
 
-    # ---------- CRUD grupos ----------
+    # 2) Crear grupo: añade refresh tras abrir el diálogo o asegurar el panel
     def _crear_grupo_pagado(self, f: date):
         fecha = f.strftime("%Y-%m-%d")
         try:
@@ -1021,9 +1034,12 @@ class PagosPagadosExpansibles(ft.UserControl):
                 return
             self._ensure_panel_for_date(fecha, expand=True)
             self._abrir_dialogo_alta_pago_pagado(fecha)
+            # 👇 refresh solicitado
+            self._refresh_now(fecha)
         except Exception as ex:
             ModalAlert.mostrar_info("Error", f"No se pudo crear el grupo: {ex}")
 
+    # 3) Eliminar grupo: añade refresh tras quitar el panel
     def _eliminar_grupo_fecha(self, fecha: str):
         def ok():
             try:
@@ -1039,6 +1055,8 @@ class PagosPagadosExpansibles(ft.UserControl):
                     self._remove_panel(fecha)
                     if self.page:
                         self.page.update()
+                    # 👇 refresh solicitado
+                    self._refresh_now()
                 else:
                     ModalAlert.mostrar_info("Error", "No existe método backend para eliminar el grupo por fecha.")
             except Exception as ex:
@@ -1048,6 +1066,7 @@ class PagosPagadosExpansibles(ft.UserControl):
             message=f"¿Eliminar TODOS los pagos del {fecha}? Esta acción no se puede deshacer.",
             on_confirm=ok
         ).mostrar()
+
 
     # ---------- Alta manual de pago pagado ----------
     def _abrir_dialogo_alta_pago_pagado(self, fecha: str):
@@ -1108,6 +1127,7 @@ class PagosPagadosExpansibles(ft.UserControl):
         dlg.open = False
         self.page.update()
 
+    # 4) Alta manual de pago pagado: añade refresh tras push
     def _crear_pago_pagado_en_grupo(self, fecha: str, numero_nomina: int, horas: float, deposito: float, efectivo: float):
         """Crea un PAGO PAGADO para 'fecha' validando duplicados y lo inserta en UI."""
         try:
@@ -1183,21 +1203,53 @@ class PagosPagadosExpansibles(ft.UserControl):
                 p_db["efectivo"] = efectivo
                 self.push_pago_pagado(p_db)
                 self.open_group(fecha)
+                # 👇 refresh solicitado
+                self._refresh_now(fecha)
         except Exception as ex:
             ModalAlert.mostrar_info("Error", f"No se pudo crear el pago: {ex}")
 
-        # ---------- Helpers internos ----------
-    # ACTUALIZADO: leve mejora al crear panel, garantizando su estado inicial coherente
+
+    # ACTUALIZA ESTE MÉTODO DENTRO DE PagosPagadosExpansibles
     def _ensure_panel_for_date(self, fecha: str, *, expand: bool = False):
-        """Crea panel vacío si no existe (con DataTable ya preparado para sort por header)."""
-        if fecha in self._panel_by_date:
-            if expand:
-                self._panel_by_date[fecha].expanded = True
-                if self.page:
-                    self.page.update()
+        """
+        Crea el panel (si no existe) y **lo hidrata** inmediatamente con los datos
+        de la fecha desde DB, dejándolo listo y visible en pantalla.
+        También refresca el snapshot para que el sort por encabezados funcione
+        sin tener que recargar toda la vista.
+        """
+        if not fecha:
             return
 
+        # Si ya existe, opcionalmente expándelo y, si está vacío, hidrátalo.
+        existing_panel = self._panel_by_date.get(fecha)
+        if existing_panel:
+            if expand:
+                existing_panel.expanded = True
+            tabla = self._table_by_date.get(fecha)
+            if tabla is not None and not (tabla.rows or []):
+                # hidrata si estaba vacío (primer uso)
+                self._refill_table_for_date(fecha)
+                self._refresh_table_snapshot(fecha)
+            # refresco seguro
+            try:
+                if getattr(self.view, "page", None):
+                    self.view.update()
+                elif self.page:
+                    self.page.update()
+                else:
+                    self.update()
+            except Exception:
+                pass
+            return
+
+        # --- Crear tabla y panel nuevos ---
         tabla = self._build_table_with_click_sort()
+
+        # Flecha de orden consistente con la preferencia actual
+        if self.sort_key in self.IDX:
+            tabla.sort_column_index = self.IDX[self.sort_key]
+            tabla.sort_ascending = self.sort_asc
+
         tabla_scroll = self.table_builder.wrap_scroll(tabla, height=240, width=1600)
 
         total_lbl = ft.Text("Total día: $0.00", italic=True, size=11)
@@ -1223,13 +1275,13 @@ class PagosPagadosExpansibles(ft.UserControl):
 
         panel = ft.ExpansionPanel(header=header, content=tabla_scroll, expanded=expand)
 
-        # Insertar en orden (descendente por fecha)
+        # Insertar manteniendo orden descendente YYYY-MM-DD
         inserted = False
         for i, p in enumerate(self.view.controls):
             try:
                 t = p.header.controls[0]
-                existing = (t.value or "").split()[-1]
-                if fecha > existing:  # string YYYY-MM-DD compara bien
+                existing_date = (t.value or "").split()[-1]
+                if fecha > existing_date:
                     self.view.controls.insert(i, panel)
                     inserted = True
                     break
@@ -1238,15 +1290,29 @@ class PagosPagadosExpansibles(ft.UserControl):
         if not inserted:
             self.view.controls.append(panel)
 
-        # Guardar refs
+        # Registrar referencias
         self._panel_by_date[fecha] = panel
         self._table_by_date[fecha] = tabla
         self._total_lbl_by_date[fecha] = total_lbl
         self._ids_by_date.setdefault(fecha, set())
 
-        # Ajuste visual al crear (flecha/estado ya vienen desde _build_table_with_click_sort)
-        if self.page:
-            self.page.update()
+        # **Hidratar inmediatamente** con los pagos de esa fecha (si existen)
+        self._refill_table_for_date(fecha)
+
+        # Snapshot para ordenar/filtrar correctamente desde el primer render
+        self._refresh_table_snapshot(fecha)
+
+        # Refrescar la UI de forma segura (soporta primer render)
+        try:
+            if getattr(self.view, "page", None):
+                self.view.update()
+            elif self.page:
+                self.page.update()
+            else:
+                self.update()
+        except Exception:
+            pass
+
 
     def ensure_group_panel(self, fecha: str, expand: bool = True):
         """API pública: garantiza que exista el panel para 'fecha' (vacío o no)."""
@@ -1389,4 +1455,60 @@ class PagosPagadosExpansibles(ft.UserControl):
             )
         except Exception:
             # no romper UI si algo sale mal
+            pass
+
+    def did_mount(self):
+        """Se llama al insertar el control en la página: carga inicial fresca."""
+        try:
+            self.reload(preserve_expansion=True)
+        except Exception:
+            pass
+
+    def will_unmount(self):
+        """Evita fugas: desuscríbete del repo al destruir el control."""
+        try:
+            if self._repo_listener and hasattr(self.repo, "remove_change_listener"):
+                self.repo.remove_change_listener(self._repo_listener)
+        except Exception:
+            pass
+
+    def _on_repo_change(self, kind: str, payload: Dict[str, Any]):
+        """
+        Se invoca cuando el repo detecta cambios (crear/eliminar grupo/pago,
+        confirmaciones, invalidación de cache o cambios de esquema).
+        """
+        try:
+            # Si se afecta una fecha concreta, garantízala y expándela
+            fecha = payload.get("fecha")
+            if fecha:
+                self.ensure_group_panel(str(fecha), expand=True)
+
+            # Refresca sin perder expansiones
+            self.reload(preserve_expansion=True)
+
+            # Opcional: enfocar el grupo afectado
+            if fecha:
+                self.open_group(str(fecha))
+
+            # Seguridad: refresco visual
+            if self.page:
+                self.page.update()
+        except Exception:
+            # fallback simple
+            try:
+                self.reload(preserve_expansion=True)
+            except Exception:
+                pass
+
+    def _refresh_now(self, fecha: Optional[str] = None):
+        """Refresca la vista manteniendo paneles abiertos; abre 'fecha' si se pasa."""
+        try:
+            if fecha:
+                self.ensure_group_panel(fecha, expand=True)
+            self.reload(preserve_expansion=True)
+            if fecha:
+                self.open_group(fecha)
+            if self.page:
+                self.page.update()
+        except Exception:
             pass
