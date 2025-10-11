@@ -15,31 +15,39 @@ class ModalDescuentos(ft.AlertDialog):
     """
     Modal de descuentos:
     - Si el pago de nómina está 'pendiente' -> editar libremente y re-confirmar cuantas veces sea necesario.
-    - Si el pago de nómina está 'pagado'     -> solo lectura.
+    - Si el pago de nómina está 'pagado'     -> solo lectura (pero al cerrar notifica para refrescar la tabla).
     - 'Cancelar' guarda/actualiza BORRADOR (no afecta totales del pago).
     - 'Aceptar' aplica el borrador -> descuentos confirmados y actualiza el pago.
     """
 
-    def __init__(self, pago_data: dict, on_confirmar=None):
+    def __init__(self, pago_data: dict, on_confirmar=None, modo: str | None = None):
         super().__init__(modal=True, title=ft.Text("Cargando..."), open=False)
 
         self.page = AppState().page
         self.pago_data = dict(pago_data or {})
         self.on_confirmar = on_confirmar
+        self._notificado = False  # evita notificar 2 veces
+        self._modo = (modo or "").strip().lower()
 
         # Espera keys: id_pago (== id_pago_nomina), numero_nomina
         self.id_pago = int(self.pago_data.get("id_pago"))
-        self.numero_nomina = int(self.pago_data.get("numero_nomina"))
+        self.numero_nomina = int(self.pago_data.get("numero_nomina", 0))
 
         # Modelos
         self.discount_model = DiscountModel()
         self.detalles_model = DescuentoDetallesModel()
         self.payment_model = PaymentModel()
 
-        # Estado de pago
-        self.pagado = not self._es_pago_pendiente()  # True => solo lectura SIEMPRE
+        # Estado de pago: si viene en payload o por modo, úsalo; si no, pregunta a DB
+        estado_payload = str(self.pago_data.get("estado") or "").strip().lower()
+        if self._modo == "confirmado" or estado_payload == "pagado":
+            self.pagado = True
+        elif self._modo == "pendiente":
+            self.pagado = False
+        else:
+            self.pagado = not self._es_pago_pendiente()
 
-        # ¿Hay confirmados? (solo para precargar la UI, ya NO bloquea edición)
+        # ¿Hay confirmados? (para precargar UI)
         self.tiene_desc_confirmados = self.discount_model.tiene_descuentos_guardados(self.id_pago)
 
         # Controles UI
@@ -76,7 +84,7 @@ class ModalDescuentos(ft.AlertDialog):
         )
 
         self.btn_cancelar = ft.TextButton("Cancelar", on_click=self._cancelar)
-        # ✅ Se deshabilita SOLO si el pago ya está pagado
+        # Deshabilitado SOLO si el pago ya está pagado
         self.btn_aceptar = ft.ElevatedButton("Aceptar", on_click=self._aceptar, disabled=self.pagado)
         self.actions = [self.btn_cancelar, self.btn_aceptar]
 
@@ -88,18 +96,28 @@ class ModalDescuentos(ft.AlertDialog):
 
     # ---------------- Public API ----------------
     def mostrar(self):
-        # Usar page.dialog es más estable para modales
         if self.page:
             self.page.dialog = self
             self.open = True
             self.page.update()
 
     def close(self):
+        # Si el pago está pagado, notifica al contenedor para que refresque la fila/tabla
+        if self.pagado:
+            self._notify()
         self.open = False
         if self.page:
             self.page.update()
 
     # ---------------- Internos: datos ----------------
+    def _notify(self):
+        if callable(self.on_confirmar) and not self._notificado:
+            try:
+                self.on_confirmar({"id_pago": self.id_pago})
+            except Exception:
+                pass
+            self._notificado = True
+
     def _set_titulo_empleado(self):
         nombre_empleado = self._obtener_nombre_empleado()
         self.title = ft.Text(f"Descuentos del trabajador: {nombre_empleado} (ID: {self.numero_nomina})")
@@ -176,9 +194,9 @@ class ModalDescuentos(ft.AlertDialog):
         if not self.pagado:
             return
         # Solo lectura si el pago ya está pagado
-        self.aplicado_imss.disabled = True;     self.monto_imss.read_only = True
+        self.aplicado_imss.disabled = True;       self.monto_imss.read_only = True
         self.aplicado_transporte.disabled = True; self.monto_transporte.read_only = True
-        self.aplicado_extra.disabled = True;    self.monto_extra.read_only = True
+        self.aplicado_extra.disabled = True;      self.monto_extra.read_only = True
         self.descripcion_extra.read_only = True
         self.btn_aceptar.disabled = True
         if self.page:
@@ -222,6 +240,9 @@ class ModalDescuentos(ft.AlertDialog):
         # Guardar BORRADOR solo si el pago está pendiente
         if not self.pagado:
             self._guardar_borrador()
+        # En modo pagado, notifica para que el contenedor refresque la fila/tabla
+        if self.pagado:
+            self._notify()
         self.close()
 
     def _aceptar(self, _):
@@ -231,6 +252,8 @@ class ModalDescuentos(ft.AlertDialog):
         """
         try:
             if self.pagado:
+                # Solo visualización; refrescamos por si el contenedor quiere reconsultar
+                self._notify()
                 self.close()
                 return
 
@@ -246,10 +269,9 @@ class ModalDescuentos(ft.AlertDialog):
             self._recalcular_y_actualizar_pago()
 
             # 4) Notificar al contenedor para refrescar la fila/tabla
-            if self.on_confirmar:
-                self.on_confirmar({"id_pago": self.id_pago})
+            self._notify()
 
-            # 5) Cerrar (seguirá editable en próximas aperturas mientras el pago esté pendiente)
+            # 5) Cerrar
             self.close()
         except Exception as ex:
             print(f"❌ Error al confirmar descuentos: {ex}")
