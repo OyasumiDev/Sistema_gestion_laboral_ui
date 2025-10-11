@@ -914,10 +914,12 @@ class PaymentModel:
             return False
 
 
-    # --- REEMPLAZO COMPLETO ---
+        # --- REEMPLAZO COMPLETO ---
     def confirmar_pago(self, id_pago: int, fecha_real_pago: Optional[str] = None) -> Dict[str, Any]:
         """
-        Confirma el pago y fija fecha_pago = fecha_real (por defecto HOY).
+        Confirma el pago y fija fecha_pago.
+        ⚠️ Si NO se especifica `fecha_real_pago`, se respeta la `fecha_pago` que ya trae el registro,
+        en lugar de forzar 'hoy'. Así preservamos el “grupo por fecha” definido antes.
         """
         try:
             pago = self.get_by_id(id_pago)
@@ -928,29 +930,38 @@ class PaymentModel:
                 return {"status": "success", "message": "El pago ya estaba confirmado."}
 
             numero_nomina = int(p.get(self.E.NUMERO_NOMINA.value))
-            fecha_pago_guardada = str(p.get(self.E.FECHA_PAGO.value))
-            fecha_real = fecha_real_pago or self._today_str()
+            fecha_guardada = str(p.get(self.E.FECHA_PAGO.value))  # fecha elegida al crear el grupo
+            # 👉 prioridad: parámetro explícito > fecha_guardada > HOY
+            fecha_real = fecha_real_pago or (fecha_guardada if fecha_guardada else self._today_str())
 
-            # 1) Aplicar y limpiar borrador de descuentos
-            self.detalles_desc_model.aplicar_a_descuentos_y_limpiar(id_pago, self.discount_model)
+            # 1) aplicar/limpiar borrador de descuentos
+            try:
+                if self.detalles_desc_model is not None:
+                    self.detalles_desc_model.aplicar_a_descuentos_y_limpiar(id_pago, self.discount_model)
+            except Exception as _ex:
+                print(f"⚠️ No se pudo aplicar/limpiar borrador de descuentos: {_ex}")
 
-            # 2) Aplicar detalles de préstamos -> pagos_prestamo
+            # 2) aplicar detalles préstamo -> pagos_prestamo
             self._aplicar_detalles_prestamo_de_pago(
                 id_pago_nomina=id_pago,
-                fecha_pago=fecha_pago_guardada,
+                fecha_pago=fecha_guardada,
                 fecha_real=fecha_real
             )
 
-            # 3) Recalcular totales reales
-            total_desc = float(self.discount_model.get_total_descuentos_por_pago(id_pago) or 0.0)
+            # 3) recalcular totales reales (descuentos + préstamos)
+            try:
+                total_desc = float(self.discount_model.get_total_descuentos_por_pago(id_pago) or 0.0)
+            except Exception:
+                total_desc = 0.0
+
             total_prest = self._get_prestamos_totales_para_pago(
-                id_pago=id_pago, numero_nomina=numero_nomina, fecha_fin=fecha_pago_guardada
+                id_pago=id_pago, numero_nomina=numero_nomina, fecha_fin=fecha_guardada
             )
             monto_base = float(p.get(self.E.MONTO_BASE.value) or 0)
             nuevo_total = max(0.0, round(monto_base - total_desc - total_prest, 2))
 
             self.update_pago(id_pago, {
-                self.E.FECHA_PAGO.value: fecha_real,     # <- fija fecha real de pago
+                self.E.FECHA_PAGO.value: fecha_real,
                 self.E.MONTO_TOTAL.value: nuevo_total,
                 self.D.MONTO_DESCUENTO.value: total_desc,
                 self.P.PRESTAMO_MONTO.value: total_prest,
@@ -960,6 +971,69 @@ class PaymentModel:
             return {"status": "success", "message": "Pago confirmado correctamente."}
         except Exception as ex:
             return {"status": "error", "message": f"Error al confirmar pago: {ex}"}
+
+
+    def crear_grupo_pagado(self, fecha: str) -> Dict[str, Any]:
+        """
+        Reemplazo SEGURO de 'crear_grupo_pagado':
+        - NO inserta filas en `pagos`.
+        - Busca todos los pagos PENDIENTES con fecha_pago = `fecha`.
+        - Confirma cada pago (aplica borrador de descuentos y detalles de préstamo).
+        - Cierra el grupo (`estado_grupo='cerrado'`) para esa fecha.
+        - Devuelve conteo de confirmados y errores.
+
+        Requisitos de esquema:
+        - pagos.estado ENUM('pendiente','pagado','cancelado')
+        - pagos.fecha_pago DATE
+        """
+        try:
+            # Validación simple de fecha (YYYY-MM-DD)
+            try:
+                datetime.strptime(fecha, "%Y-%m-%d")
+            except Exception:
+                return {"status": "error", "message": "Fecha no válida. Formato esperado YYYY-MM-DD."}
+
+            # 1) Tomar IDs de pagos pendientes del día indicado
+            q_ids = f"""
+                SELECT {self.E.ID_PAGO_NOMINA.value} AS id
+                FROM {self.E.TABLE.value}
+                WHERE {self.E.FECHA_PAGO.value}=%s
+                AND {self.E.ESTADO.value}='pendiente'
+                ORDER BY {self.E.NUMERO_NOMINA.value} ASC, {self.E.ID_PAGO_NOMINA.value} ASC
+            """
+            filas = self.db.get_data_list(q_ids, (fecha,), dictionary=True) or []
+            if not filas:
+                return {"status": "error", "message": f"No hay pagos PENDIENTES con fecha_pago = {fecha}."}
+
+            # 2) Confirmar cada pago (esto aplica borrador de descuentos y préstamos)
+            confirmados, errores = 0, 0
+            fallos: list[dict] = []
+            for r in filas:
+                pid = int(r["id"])
+                res = self.confirmar_pago(pid, fecha_real_pago=fecha)
+                if res.get("status") == "success":
+                    confirmados += 1
+                else:
+                    errores += 1
+                    fallos.append({"id_pago": pid, "error": res.get("message", "Error desconocido")})
+
+            # 3) Cerrar grupo (solo marca 'cerrado' a los que tengan esa fecha)
+            q_close = f"""
+                UPDATE {self.E.TABLE.value}
+                SET {self.E.ESTADO_GRUPO.value}='cerrado'
+                WHERE {self.E.FECHA_PAGO.value}=%s
+            """
+            self.db.run_query(q_close, (fecha,))
+
+            out = {
+                "status": "success",
+                "message": f"Grupo {fecha}: {confirmados} pagos confirmados, {errores} con error.",
+                "detalle_errores": fallos
+            }
+            return out
+
+        except Exception as ex:
+            return {"status": "error", "message": f"Error al confirmar/cerrar grupo por fecha: {ex}"}
 
 
     def eliminar_pago(self, id_pago: int) -> Dict[str, Any]:
@@ -1067,7 +1141,8 @@ class PaymentModel:
     ) -> dict:
         """
         Persistencia compacta:
-        - Si llega `descuentos` (legacy), guarda total agregado y recalcula MONTO_TOTAL.
+        - Si llega `descuentos` (legacy), guarda UNA fila agregada en `descuentos`
+        y recalcula MONTO_TOTAL = MONTO_BASE - total_desc - prestamos.
         - Para `deposito`, delega en update_pago (que recalcula efectivo/saldo).
         - Permite actualizar `estado`.
         """
@@ -1078,40 +1153,48 @@ class PaymentModel:
                 return 0.0
 
         try:
+            # Traer pago para obtener numero_nomina y datos base
+            cur_rs = self.get_by_id(id_pago)
+            if cur_rs.get("status") != "success":
+                return {"status": "error", "message": "Pago no encontrado para cargar descuentos."}
+            cur = cur_rs["data"]
+
+            num_nomina = int(cur.get(self.E.NUMERO_NOMINA.value))
+            if num_nomina <= 0:
+                return {"status": "error", "message": "El pago no tiene numero_nomina válido."}
+
             cambios = {}
 
-            # 1) Descuentos legacy (opcional)
-            total_desc = None
+            # 1) Descuentos legacy (opcional) -> UNA fila agregada 'totales'
             if descuentos is not None:
-                total_desc = round(
-                    _f(descuentos.get("monto_imss", descuentos.get("imss"))) +
-                    _f(descuentos.get("monto_transporte", descuentos.get("transporte"))) +
-                    _f(descuentos.get("monto_extra", descuentos.get("extra"))),
-                    2
-                )
-                # Limpia y sube una fila agregada (si tu tabla es por-línea, este bloque se puede omitir)
+                imss = _f(descuentos.get("monto_imss", descuentos.get("imss")))
+                trans = _f(descuentos.get("monto_transporte", descuentos.get("transporte")))
+                extra = _f(descuentos.get("monto_extra", descuentos.get("extra")))
+                total_desc = round(imss + trans + extra, 2)
+
+                # Limpia descuentos previos asociados a este pago
                 del_q = "DELETE FROM descuentos WHERE id_pago_nomina=%s"
                 self.db.run_query(del_q, (id_pago,))
-                ins_q = """
-                    INSERT INTO descuentos (id_pago_nomina, tipo, descripcion, monto_descuento, fecha_aplicacion)
-                    VALUES (%s,'totales','carga_legacy',%s, CURRENT_DATE())
-                """
-                self.db.run_query(ins_q, (id_pago, total_desc))
 
-                # Recalcular MONTO_TOTAL = MONTO_BASE - total_desc - prestamos_confirmados/pending
-                cur_rs = self.get_by_id(id_pago)
-                if cur_rs.get("status") == "success":
-                    cur = cur_rs["data"]
-                    base = _f(cur.get(self.E.MONTO_BASE.value))
-                    prest = self._get_prestamos_totales_para_pago(
-                        id_pago=id_pago,
-                        numero_nomina=int(cur.get(self.E.NUMERO_NOMINA.value)),
-                        fecha_fin=str(cur.get(self.E.FECHA_PAGO.value)),
-                    )
-                    nuevo_total = max(0.0, round(base - total_desc - prest, 2))
-                    cambios[self.E.MONTO_TOTAL.value] = nuevo_total
-                    cambios[self.D.MONTO_DESCUENTO.value] = total_desc
-                    cambios[self.P.PRESTAMO_MONTO.value] = prest
+                # Inserta fila agregada CUMPLIENDO el esquema real
+                ins_q = """
+                    INSERT INTO descuentos
+                    (numero_nomina, id_pago_nomina, tipo_descuento, descripcion, monto_descuento, fecha_aplicacion)
+                    VALUES (%s, %s, %s, %s, %s, CURRENT_DATE())
+                """
+                self.db.run_query(ins_q, (num_nomina, id_pago, 'totales', 'carga_legacy', total_desc))
+
+                # Recalcular totales del pago
+                base = _f(cur.get(self.E.MONTO_BASE.value))
+                prest = self._get_prestamos_totales_para_pago(
+                    id_pago=id_pago,
+                    numero_nomina=num_nomina,
+                    fecha_fin=str(cur.get(self.E.FECHA_PAGO.value)),
+                )
+                nuevo_total = max(0.0, round(base - total_desc - prest, 2))
+                cambios[self.E.MONTO_TOTAL.value] = nuevo_total
+                cambios[self.D.MONTO_DESCUENTO.value] = total_desc
+                cambios[self.P.PRESTAMO_MONTO.value] = prest
 
             # 2) Estado (opcional)
             if estado is not None:
@@ -1147,3 +1230,88 @@ class PaymentModel:
             return [str(r["f"]) for r in rows if r and r.get("f")]
         except Exception:
             return []
+
+    # ---------------------- Grupos por FECHA (confirmados) ----------------------
+    def get_fechas_pagadas(self) -> list[str]:
+        """Fechas (YYYY-MM-DD) que ya tienen pagos CONFIRMADOS."""
+        try:
+            q = f"SELECT DISTINCT {self.E.FECHA_PAGO.value} AS f FROM {self.E.TABLE.value} WHERE {self.E.ESTADO.value}='pagado'"
+            rows = self.db.get_data_list(q, dictionary=True) or []
+            return [str(r["f"]) for r in rows if r and r.get("f")]
+        except Exception:
+            return []
+
+    def get_fechas_pendientes(self) -> list[str]:
+        """Fechas (YYYY-MM-DD) que tienen pagos PENDIENTES."""
+        try:
+            q = f"SELECT DISTINCT {self.E.FECHA_PAGO.value} AS f FROM {self.E.TABLE.value} WHERE {self.E.ESTADO.value}='pendiente'"
+            rows = self.db.get_data_list(q, dictionary=True) or []
+            return [str(r["f"]) for r in rows if r and r.get("f")]
+        except Exception:
+            return []
+
+    def crear_grupo_pagado(self, fecha: str) -> dict:
+        """
+        Define una FECHA de agrupación para futuros 'pagados'.
+        - No requiere que existan pendientes con esa fecha.
+        - Re-fecha los pagos PENDIENTES de grupos 'abiertos' para que usen esa fecha.
+        - Si ya hay PAGADOS con esa fecha, no permite crear (ya existe el grupo real).
+        """
+        try:
+            # normaliza/valida formato
+            try:
+                _ = datetime.strptime(fecha, "%Y-%m-%d")
+            except Exception:
+                return {"status": "error", "message": "Formato de fecha inválido (usa YYYY-MM-DD)."}
+
+            # si ya hay confirmados con esa fecha -> grupo real existente
+            if fecha in set(self.get_fechas_pagadas()):
+                return {"status": "error", "message": f"Ya existen pagos 'pagados' con fecha_pago = {fecha}."}
+
+            # si ya hay PENDIENTES con esa fecha, listo
+            if fecha in set(self.get_fechas_pendientes()):
+                return {"status": "success", "message": "Grupo creado (ya había pendientes en esa fecha)."}
+
+            # estrategia: llevar TODOS los pendientes de grupos abiertos a esa fecha
+            q = f"""
+                UPDATE {self.E.TABLE.value}
+                SET {self.E.FECHA_PAGO.value}=%s
+                WHERE {self.E.ESTADO.value}='pendiente' AND {self.E.ESTADO_GRUPO.value}='abierto'
+            """
+            self.db.run_query(q, (fecha,))
+            return {"status": "success", "message": f"Grupo creado. Pendientes re-fechados a {fecha}."}
+        except Exception as ex:
+            return {"status": "error", "message": f"No fue posible crear el grupo: {ex}"}
+
+    def eliminar_grupo_por_fecha(self, fecha: str) -> dict:
+        """
+        Elimina un 'grupo por fecha' para pagos NO confirmados:
+        - Si hay PAGADOS con esa fecha -> se rechaza (seguro).
+        - Para PENDIENTES con esa fecha, los re-fecha a HOY.
+        """
+        try:
+            try:
+                _ = datetime.strptime(fecha, "%Y-%m-%d")
+            except Exception:
+                return {"status": "error", "message": "Formato de fecha inválido (usa YYYY-MM-DD)."}
+
+            # si hay confirmados con esa fecha, no se puede “eliminar” el grupo
+            q_chk = f"""
+                SELECT COUNT(*) AS c
+                FROM {self.E.TABLE.value}
+                WHERE {self.E.ESTADO.value}='pagado' AND {self.E.FECHA_PAGO.value}=%s
+            """
+            r = self.db.get_data(q_chk, (fecha,), dictionary=True) or {}
+            if int(r.get("c", 0)) > 0:
+                return {"status": "error", "message": "No se puede eliminar: ya hay pagos 'pagados' en esa fecha."}
+
+            hoy = self._today_str()
+            q_up = f"""
+                UPDATE {self.E.TABLE.value}
+                SET {self.E.FECHA_PAGO.value}=%s
+                WHERE {self.E.ESTADO.value}='pendiente' AND {self.E.FECHA_PAGO.value}=%s
+            """
+            self.db.run_query(q_up, (hoy, fecha))
+            return {"status": "success", "message": "Grupo eliminado para pendientes (re-fechados a hoy)."}
+        except Exception as ex:
+            return {"status": "error", "message": f"No fue posible eliminar el grupo: {ex}"}

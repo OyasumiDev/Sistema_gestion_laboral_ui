@@ -245,39 +245,70 @@ class ModalPrestamosNomina:
             self.page.update()
 
     def _set_inputs_enabled(self, enabled: bool):
+        # Deshabilita si nómina pagada o préstamo terminado
+        global_lock = self._solo_lectura_global()
         for ctrl in (self.monto_input, self.interes_input, self.obs_input):
             if ctrl:
-                ctrl.disabled = not enabled
+                ctrl.disabled = global_lock or not enabled
+
 
     def _on_change_prestamo(self, e, initial: bool = False):
-        # Auto-save del anterior
+        """
+        Maneja el cambio de préstamo seleccionado en el dropdown.
+        - Guarda automáticamente el préstamo anterior (si editable).
+        - Carga historial y buffers del nuevo préstamo.
+        - Aplica bloqueos visuales y lógicos según estado.
+        """
+        # 🔒 Guarda el préstamo anterior si es editable
         if (not initial) and (self.current_prestamo_id is not None):
             self._auto_upsert(self.current_prestamo_id)
 
-        # Nuevo seleccionado
+        # 🎯 Nuevo préstamo seleccionado
         try:
             pid = int(self.dropdown.value)
         except Exception:
             pid = None
         self.current_prestamo_id = pid
 
-        # Cargar valores guardados/buffer
+        # 📦 Cargar datos guardados
         self._cargar_inputs_desde_buffer(pid)
 
-        # Historial + preview
+        # 📜 Refrescar historial y preview
         self._refrescar_historial(pid)
         self._recalcular_preview(pid)
 
-        # Reglas de edición: SOLO se bloquea si nómina ya pagada o préstamo eliminado
-        editable = (not self._solo_lectura_global()) and (pid is not None) and (not self._prestamo_eliminado(pid))
+        # 🚫 Reglas de edición (bloqueos)
+        editable = (
+            pid is not None
+            and not self._solo_lectura_global()
+            and not self._prestamo_eliminado(pid)
+            and not self._prestamo_terminado(pid)
+        )
         self._set_inputs_enabled(editable)
 
-        # Feedback si “terminado”
-        if pid is not None and self._prestamo_terminado(pid):
-            self.resumen_text.value = "ℹ️ Préstamo marcado como terminado; aún puedes ajustar el detalle antes de confirmar nómina."
+        # 💬 Mensajes de estado
+        if pid is not None:
+            if self._solo_lectura_global():
+                self.resumen_text.value = (
+                    "🔒 La nómina ya está pagada; no se pueden modificar los detalles de préstamos."
+                )
+            elif self._prestamo_terminado(pid):
+                self.resumen_text.value = (
+                    "ℹ️ Este préstamo está terminado; solo puedes consultar el historial."
+                )
+            elif self._prestamo_eliminado(pid):
+                self.resumen_text.value = (
+                    "❌ Este préstamo fue eliminado y no puede editarse."
+                )
+            else:
+                self.resumen_text.value = (
+                    "✏️ Puedes editar los montos o el interés. Se guardará automáticamente."
+                )
 
+        # ⚙️ Actualizar visualmente
         if self.page:
             self.page.update()
+
 
     def _cargar_inputs_desde_buffer(self, pid: Optional[int]):
         buf = self.buffers.get(pid, {})
@@ -389,33 +420,44 @@ class ModalPrestamosNomina:
 
     # ---------------- AUTO-GUARDADO ----------------
     def _auto_upsert(self, pid: int):
-        if self._solo_lectura_global() or self._prestamo_eliminado(pid):
+        """
+        Guarda el detalle temporal del préstamo (solo si editable).
+        Evita sobreescribir datos ya confirmados o de préstamos terminados.
+        """
+        # Bloqueo completo si la nómina ya fue pagada o el préstamo está cerrado
+        if self._solo_lectura_global() or self._prestamo_eliminado(pid) or self._prestamo_terminado(pid):
+            # Conserva buffers locales pero no escribe nada
+            self._guardar_buffer_local(pid)
+            self.resumen_text.value = "🔒 Este préstamo está cerrado o la nómina ya fue pagada. No se guardarán cambios."
+            if self.page:
+                self.page.update()
             return
 
-        # Parseo
+        # Parseo y validaciones
         try:
             interes = float((self.interes_input.value or "0").replace(",", "."))
         except Exception:
-            return
+            interes = 0.0
         try:
             monto = float((self.monto_input.value or "0").replace(",", "."))
         except Exception:
-            return
-
+            monto = 0.0
         obs = (self.obs_input.value or "").strip()
 
-        # Validación
         prev = self._calc_preview(pid, monto, interes)
-        if (monto <= 0) or (monto > prev["saldo_con_interes"]):
+        if monto <= 0 or monto > prev["saldo_con_interes"]:
+            self.resumen_text.value = "⚠️ Monto inválido o superior al saldo con interés."
+            if self.page:
+                self.page.update()
             return
 
-        # Evitar upsert redundante
+        # Evita guardar duplicado exacto
         snapshot = (round(monto, 2), int(round(interes)), obs)
         if self.ultimos_guardados.get(pid) == snapshot:
             self._guardar_buffer_local(pid)
             return
 
-        # Guardar
+        # Guardado temporal (solo si editable)
         res = self.detalles_model.upsert_detalle(
             id_pago=self.id_pago,
             id_prestamo=pid,
@@ -426,22 +468,13 @@ class ModalPrestamosNomina:
         if res.get("status") == "success":
             self._guardar_buffer_local(pid)
             self.ultimos_guardados[pid] = snapshot
-
-            try:
-                m = Decimal(str(monto))
-                restante = Decimal(str(prev["saldo_con_interes"])) - m
-                self.resumen_text.value = f"✓ guardado • 💸 ${m:.2f} | 🔚 Restante con interés: ${restante:.2f}"
-            except Exception:
-                self.resumen_text.value = "✓ guardado"
-
-            # Notificar contenedor para recálculo inmediato
+            self.resumen_text.value = f"✓ guardado • 💸 ${monto:.2f} | 🔚 Restante con interés: ${prev['saldo_con_interes'] - monto:.2f}"
             self._notify_parent_refresh()
-
-            if self.page:
-                self.page.update()
         else:
-            # Feedback mínimo en caso de fallo
-            ModalAlert.mostrar_info("Detalle de préstamo", res.get("message", "No se pudo guardar el detalle."))
+            self.resumen_text.value = f"❌ No se pudo guardar: {res.get('message','Error desconocido')}"
+
+        if self.page:
+            self.page.update()
 
     # ---------------- Notificación al contenedor ----------------
     def _notify_parent_refresh(self):

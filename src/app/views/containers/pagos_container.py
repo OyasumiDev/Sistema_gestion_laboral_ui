@@ -407,36 +407,55 @@ class PagosContainer(ft.Container):
                     pass
         return []
 
-    # ---------------- Generación por rango ----------------
     def _abrir_modal_rango(self):
-        try:
-            bloqueadas = self._fechas_grupos_pagados()
-            self.selector_rango.set_fechas_bloqueadas(bloqueadas)
+        # Verificación rápida: selector cargado
+        if not getattr(self, "selector_rango", None):
+            ModalAlert.mostrar_info("No disponible", "No está cargado el selector de fechas.")
+            return
 
+        try:
+            # 1) Fechas bloqueadas (grupos ya pagados) normalizadas a date
+            bloqueadas_set = set(self._parse_fechas(self._fechas_grupos_pagados()))
+            self.selector_rango.set_fechas_bloqueadas(sorted(bloqueadas_set))
+
+            # 2) Rango mínimo/máximo de asistencias
             fi = self.assistance_model.get_fecha_minima_asistencia()
             ff = self.assistance_model.get_fecha_maxima_asistencia()
-            if not fi or not ff:
+            if not fi or not ff:  # <-- corregido (antes tenía "o r")
                 ModalAlert.mostrar_info("Sin asistencias", "No hay registros de asistencias disponibles.")
                 return
 
+            # 3) Estado de asistencias por fecha (completo/incompleto)
             if hasattr(self.assistance_model, "get_fechas_estado_completo_y_incompleto"):
-                fechas_estado = self.assistance_model.get_fechas_estado_completo_y_incompleto(fi, ff)
+                fechas_estado = self.assistance_model.get_fechas_estado_completo_y_incompleto(fi, ff) or {}
             else:
-                fechas_estado = self.assistance_model.get_fechas_estado(fi, ff)
+                fechas_estado = self.assistance_model.get_fechas_estado(fi, ff) or {}
             self.selector_rango.set_asistencias(fechas_estado)
 
+            # 4) Fechas disponibles para pagar (normalizadas, sin bloqueadas)
             disponibles = self.assistance_model.get_fechas_disponibles_para_pago() or []
-            disponibles = [d for d in disponibles if d not in set(bloqueadas)]
+            disponibles = set(self._parse_fechas(disponibles))
 
+            # Opcional: sumar “vacías” del rango si el backend lo expone
             if hasattr(self.assistance_model, "get_fechas_vacias"):
-                disponibles.extend(self.assistance_model.get_fechas_vacias(fi, ff))
+                vacias = self.assistance_model.get_fechas_vacias(fi, ff) or []
+                disponibles |= set(self._parse_fechas(vacias))
 
-            self.selector_rango.set_fechas_disponibles(sorted(set(disponibles)))
+            # Quitar bloqueadas y ordenar
+            disponibles = sorted(d for d in disponibles if d not in bloqueadas_set)
 
+            if not disponibles:
+                ModalAlert.mostrar_info("Sin fechas", "No hay fechas disponibles para generar nómina.")
+                return
+
+            self.selector_rango.set_fechas_disponibles(disponibles)
+
+            # 5) Abrir diálogo
             self.selector_rango.abrir_dialogo(reset_selection=True)
 
         except Exception as ex:
             ModalAlert.mostrar_info("Error", f"No se pudo abrir el calendario: {str(ex)}")
+
 
     def _get_fechas_disponibles_para_pago(self) -> List[date]:
         try:
@@ -510,34 +529,52 @@ class PagosContainer(ft.Container):
         self.modal_fecha_grupo.abrir_dialogo(reset_selection=True)
 
     def _crear_grupo_pagado(self, f: date):
+        """
+        Cierra/Confirma todos los pagos PENDIENTES con la fecha seleccionada,
+        sin crear filas vacías ni duplicar registros.
+        También garantiza un panel vacío en Confirmados si no hay filas aún.
+        """
         fecha = f.strftime("%Y-%m-%d")
-        usadas = self.payment_model.get_fechas_utilizadas() or []
-        usadas = [str(u) for u in usadas]
-        if fecha in usadas:
-            ModalAlert.mostrar_info("Fecha ocupada", f"Ya existe un grupo para {fecha}.")
-            return
 
         try:
-            ok = False
-            if hasattr(self.repo, "crear_grupo_pagado"):
-                r = self.repo.crear_grupo_pagado(fecha)
-                ok = (r or {}).get("status") == "success"
-            elif hasattr(self.payment_model, "crear_grupo_pagado"):
-                r = self.payment_model.crear_grupo_pagado(fecha)
-                ok = (r or {}).get("status") == "success"
-            elif hasattr(self.payment_model, "crear_grupo_por_fecha"):
-                r = self.payment_model.crear_grupo_por_fecha(fecha, estado="pagado")
-                ok = (r or {}).get("status") == "success"
-
-            if not ok:
-                ModalAlert.mostrar_info("No disponible", "Backend no soporta crear grupos pagados.")
+            # Verifica si ya está cerrado ese grupo
+            grupos_existentes = []
+            if hasattr(self.payment_model, "get_fechas_utilizadas"):
+                grupos_existentes = [str(g) for g in (self.payment_model.get_fechas_utilizadas() or [])]
+            if fecha in grupos_existentes:
+                # Asegura panel en confirmados (aunque esté vacío), y lo abre
+                self._call(self.confirmados_ui, ["ensure_group_panel", "ensure_panel", "create_panel"], fecha, expand=True)
+                self._call(self.confirmados_ui, ["open_group", "expand_group"], fecha)
+                ModalAlert.mostrar_info("Ya cerrado", f"El grupo del {fecha} ya fue confirmado previamente.")
                 return
+
+            # Intenta confirmar pagos pendientes por esa fecha
+            if hasattr(self.payment_model, "crear_grupo_pagado"):
+                res = self.payment_model.crear_grupo_pagado(fecha)
+            elif hasattr(self.repo, "crear_grupo_pagado"):
+                res = self.repo.crear_grupo_pagado(fecha)
+            else:
+                ModalAlert.mostrar_info("Sin soporte", "No se encontró un método válido para confirmar el grupo.")
+                return
+
+            if (res or {}).get("status") == "success":
+                ModalAlert.mostrar_info("Confirmación de pagos", res.get("message", f"Pagos del {fecha} confirmados correctamente."))
+            else:
+                msg = (res or {}).get("message", "Error al confirmar pagos.")
+                ModalAlert.mostrar_info("Error", msg)
+                return
+
+            # Asegura panel (vacío o no) y recarga vistas
+            self._call(self.confirmados_ui, ["ensure_group_panel", "ensure_panel", "create_panel"], fecha, expand=True)
 
             self._invalidate_caches()
             self._recargar_todo(preserve_expansion=True)
+
+            # Abre el grupo recién creado/confirmado
             self._call(self.confirmados_ui, ["open_group", "expand_group"], fecha)
+
         except Exception as ex:
-            ModalAlert.mostrar_info("Error", f"No se pudo crear el grupo: {str(ex)}")
+            ModalAlert.mostrar_info("Error", f"No se pudo confirmar el grupo: {str(ex)}")
 
     # ---------------- Eventos desde PagosPendientesEditables ----------------
     def _on_pago_confirmado_desde_pendientes(self, pago_ok: Dict[str, Any] | None = None):
@@ -553,6 +590,12 @@ class PagosContainer(ft.Container):
                     p = self.repo.obtener_pago(pid) or p
 
             if p:
+                fecha = str(p.get("fecha_pago") or "")
+
+                # Asegura panel para confirmados (por si no existe aún o está vacío)
+                if fecha:
+                    self._call(self.confirmados_ui, ["ensure_group_panel", "ensure_panel", "create_panel"], fecha, expand=True)
+
                 # preferido: push incremental (pago_row=...)
                 self._call(self.confirmados_ui, ["push_pago_pagado"], pago_row=p, keep_expanded=True)
 
@@ -562,7 +605,6 @@ class PagosContainer(ft.Container):
                 # último recurso: recarga con expansión
                 self._call(self.confirmados_ui, ["reload"], preserve_expansion=True)
 
-                fecha = str(p.get("fecha_pago") or "")
                 if fecha:
                     self._call(self.confirmados_ui, ["open_group", "expand_group"], fecha)
 

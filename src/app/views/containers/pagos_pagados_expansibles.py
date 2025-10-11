@@ -60,7 +60,7 @@ class PagosPagadosExpansibles(ft.UserControl):
         super().__init__()
         self.page = AppState().page
 
-        # modelos / helpers
+        # --------- Modelos / helpers de negocio ----------
         self.payment_model = payment_model or PaymentModel()
         self.discount_model = discount_model or DiscountModel()
         self.loan_model = loan_model or LoanModel()
@@ -74,35 +74,41 @@ class PagosPagadosExpansibles(ft.UserControl):
             loan_payment_model=self.loan_payment_model,
             detalles_prestamo_model=self.detalles_prestamo_model,
         )
-        self.repo = repo
+        self.repo = repo  # puede venir None; hay fallbacks al payment_model
 
+        # --------- Helpers UI ----------
         self.table_builder = table_builder or PaymentTableBuilder()
         self.row_refresh = row_refresh or PaymentRowRefresh()
         self.scroll = PagosScrollHelper()
         self.sort_helper = PaymentSortFilterHelper()
 
-        # estado
-        self.sort_key, self.sort_asc = "id_pago", True
-        # añade id_pago_conf como alias de filtro para confirmados
-        self.filters = {"id_empleado": "", "id_pago": "", "id_pago_conf": ""}
+        # --------- Estado global de sort / filtros ----------
+        self.sort_key: str = "id_pago"
+        self.sort_asc: bool = True
+        # Nota: confirmados aceptan id_pago_conf como alias de filtro principal
+        self.filters: Dict[str, str] = {"id_empleado": "", "id_pago": "", "id_pago_conf": ""}
 
-        # edición por fila
+        # --------- Estado de edición inline ----------
         self._edit_rows: set[int] = set()
         self._edit_buffer: dict[int, Dict[str, float]] = {}
 
-        # mapeos por fecha / fila
+        # --------- Estructuras por grupo(fecha) ----------
         self._panel_by_date: Dict[str, ft.ExpansionPanel] = {}
         self._table_by_date: Dict[str, ft.DataTable] = {}
         self._total_lbl_by_date: Dict[str, ft.Text] = {}
         self._ids_by_date: Dict[str, set[int]] = {}
-        self._row_total: Dict[int, float] = {}      # total_vista por fila
-        self._fecha_by_id: Dict[int, str] = {}      # fecha_pago por id
+        self._row_total: Dict[int, float] = {}   # total_vista por fila (para totales de día)
+        self._fecha_by_id: Dict[int, str] = {}   # fecha_pago por id_pago
 
-        # raíz UI
+        # Grupo “manual” (vacío) creado desde UI que debe persistir aunque no haya filas aún
+        self._manual_panels: set[str] = set()
+
+        # --------- Raíz visual ----------
         self.view = ft.ExpansionPanelList(expand=True, controls=[])
 
-        # modal crear grupo pagado
+        # --------- Modal para crear grupos por fecha ----------
         self.modal_grupo = ModalFechaGrupoPagado(on_date_confirmed=self._crear_grupo_pagado)
+
 
     # ---------- Integración pública ----------
     def get_control(self) -> ft.Control:
@@ -114,7 +120,7 @@ class PagosPagadosExpansibles(ft.UserControl):
         self.filters["id_pago"] = id_pago
         self.filters["id_pago_conf"] = (id_pago_conf or "").strip()
 
-        # abrir grupo si hay un id de pago único
+        # Si el filtro apunta a un id único, abrimos el grupo correspondiente
         try:
             ids = self.sort_helper.parse_id_query(id_pago)
             if len(ids) == 1:
@@ -122,15 +128,113 @@ class PagosPagadosExpansibles(ft.UserControl):
                 if r.get("status") == "success":
                     fecha = str(r["data"].get(self.payment_model.E.FECHA_PAGO.value) or "")
                     if fecha:
-                        self.open_group(fecha)
+                        self.ensure_group_panel(fecha, expand=True)
         except Exception:
             pass
 
-        self.reload(preserve_expansion=preserve_expansion)
+        # Refiltrar/ordenar en vivo las tablas ya creadas (sin destruir paneles)
+        self._refill_all_tables(preserve_expansion=preserve_expansion)
+
 
 
     def reload(self, *, preserve_expansion: bool = True):
-        self._cargar_paneles(preserve_expansion=preserve_expansion)
+        # sincroniza paneles con lo que ve la DB + los paneles ya presentes (incluye vacíos)
+        self._sync_panels_with_db_dates(preserve_expansion=preserve_expansion)
+        # y luego rellena/ordena cada tabla con los filtros actuales
+        self._refill_all_tables(preserve_expansion=preserve_expansion)
+
+    def _sync_panels_with_db_dates(self, *, preserve_expansion: bool):
+        # 1) guardar expansiones actuales si procede
+        expanded_dates = set()
+        if preserve_expansion:
+            for p in self.view.controls:
+                try:
+                    if p.expanded:
+                        t = p.header.controls[0]
+                        if isinstance(t, ft.Text):
+                            expanded_dates.add((t.value or "").split()[-1])
+                except Exception:
+                    pass
+
+        # 2) fechas con pagados en DB
+        try:
+            rs = self.payment_model.get_all_pagos() or {}
+            todos: List[Dict[str, Any]] = rs.get("data") or []
+            fechas_db = {str(p.get("fecha_pago")) for p in todos if str(p.get("estado","")).lower() == "pagado" and p.get("fecha_pago")}
+        except Exception:
+            fechas_db = set()
+
+        # 3) unimos con las fechas que ya están en UI (paneles vacíos incluidos)
+        fechas_actuales = set(self._panel_by_date.keys())
+        todas = sorted(fechas_db | fechas_actuales | self._manual_panels, reverse=True)
+
+        # 4) crea los paneles que falten, en orden
+        for f in todas:
+            self._ensure_panel_for_date(f, expand=(f in expanded_dates))
+
+        # (opcional) quitar paneles que ya no existan en union —no lo hacemos para no perder vacíos manuales
+        if self.page:
+            self.page.update()
+
+
+    def _refill_all_tables(self, *, preserve_expansion: bool = True):
+        if not self._table_by_date:
+            self._cargar_paneles(preserve_expansion=preserve_expansion)
+            return
+        for fecha in list(self._table_by_date.keys()):
+            self._refill_table_for_date(fecha)
+        if self.page:
+            self.page.update()
+
+
+    def _refill_table_for_date(self, fecha: str):
+        """Reconstruye SOLO la tabla del grupo 'fecha' aplicando filtros y orden actual."""
+        tabla = self._table_by_date.get(fecha)
+        if not tabla:
+            return
+
+        # limpia filas y mapas para esa fecha
+        tabla.rows.clear()
+        ids_prev = self._ids_by_date.get(fecha, set())
+        for pid in list(ids_prev):
+            self._row_total.pop(pid, None)
+            self._fecha_by_id.pop(pid, None)
+        self._ids_by_date[fecha] = set()
+
+        # lee DB y filtra a esa fecha + estado pagado
+        try:
+            rs = self.payment_model.get_all_pagos() or {}
+            todos: List[Dict[str, Any]] = rs.get("data") or []
+            items = [p for p in todos if str(p.get("estado","")).lower() == "pagado" and str(p.get("fecha_pago") or "") == fecha]
+        except Exception:
+            items = []
+
+        # aplica filtros + sort consistentes con el resto
+        items = self._filtros_y_sort(items)
+
+        # reconstituye filas
+        total_dia = 0.0
+        for p in items:
+            deposito = float(p.get("deposito") or p.get("pago_deposito") or 0.0)
+            calc = self.math.recalc_from_pago_row(p, deposito)
+            total_vista = float(calc.get("total_vista", 0.0))
+            total_dia += total_vista
+
+            row = self._build_row_pagado(pago=p, calc=calc)
+            tabla.rows.append(row)
+
+            pid = int(p.get("id_pago_nomina") or p.get("id_pago") or 0)
+            self._row_total[pid] = total_vista
+            self._fecha_by_id[pid] = fecha
+            self._ids_by_date[fecha].add(pid)
+
+        # resort según sort activo (asegura prioridad por filtros)
+        self._apply_current_sort_and_priority(tabla)
+
+        # total del día + snapshot
+        self._update_total_label_for(fecha)
+        self._refresh_table_snapshot(fecha)
+
 
     # wrapper tolerante; tu contenedor puede llamarlo
     def add_or_update_pagado(self, pago_row: Dict[str, Any], keep_expanded: bool = True):
@@ -376,34 +480,20 @@ class PagosPagadosExpansibles(ft.UserControl):
 
         return table
 
-    # REEMPLAZA COMPLETO este método (ya no recarga todo para ordenar)
     def _on_header_sort(self, key: str, *, ascending: Optional[bool] = None):
-        # Mantenemos compatibilidad si llamas manualmente este método:
-        # busca una tabla visible y aplica sort in-place sobre la columna 'key'
         try:
             idx = self.IDX.get(key, None)
             if idx is None:
                 return
-            # toma la primera tabla expandida o la primera disponible
-            table = None
-            for f, p in self._panel_by_date.items():
-                if p.expanded:
-                    table = self._table_by_date.get(f)
-                    break
-            if not table and self._table_by_date:
-                table = next(iter(self._table_by_date.values()))
-
-            if not table:
-                return
-
             asc = self.sort_asc if ascending is None else bool(ascending)
             vtype = self._value_type_for_col(key)
-            self._sort_table_inplace(table, column_index=idx, value_type=vtype, ascending=asc)
 
-            # guarda estado global para nuevas tablas que se creen
+            for fecha, table in self._table_by_date.items():
+                self._sort_table_inplace(table, column_index=idx, value_type=vtype, ascending=asc)
+
+            # recuerda preferencia global
             self.sort_key, self.sort_asc = key, asc
         except Exception:
-            # último recurso: recarga (pero ya no debería hacer falta)
             self.reload(preserve_expansion=True)
 
     def _sort_table_inplace(self, table: ft.DataTable, *, column_index: int, value_type: str, ascending: bool) -> None:
@@ -838,14 +928,41 @@ class PagosPagadosExpansibles(ft.UserControl):
 
     # ---------- Modales ----------
     def _abrir_modal_descuentos(self, pago_row: Dict[str, Any]):
-        p = {
-            "id_pago": int(pago_row.get("id_pago_nomina") or pago_row.get("id_pago")),
-            "numero_nomina": int(pago_row.get("numero_nomina") or 0),
-            "estado": pago_row.get("estado"),
+        # 1) Evitar datos stale en el modal
+        try:
+            self._invalidate_caches()
+        except Exception:
+            pass
+
+        # 2) Normalizar/enriquecer el payload que consume el modal
+        id_pago = int(pago_row.get("id_pago_nomina") or pago_row.get("id_pago") or 0)
+        num = int(pago_row.get("numero_nomina") or 0)
+        estado = str(pago_row.get("estado") or "pagado").lower() or "pagado"
+        if estado != "pagado":
+            estado = "pagado"  # estamos en confirmados
+
+        payload = {
+            # claves “compat” para distintas versiones del modal
+            "id_pago": id_pago,
+            "id_pago_nomina": id_pago,
+            "numero_nomina": num,
+            "estado": estado,
+            # extras que algunos modales usan para render inicial
+            "fecha_pago": str(pago_row.get("fecha_pago") or self._fecha_by_id.get(id_pago) or ""),
+            "grupo_pago": str(pago_row.get("grupo_pago") or pago_row.get("grupo") or ""),
+            "nombre_empleado": pago_row.get("nombre_completo") or pago_row.get("nombre_empleado") or "",
         }
+
         def on_ok(_):
-            self._refrescar_descuentos_y_totales(p["id_pago"])
-        ModalDescuentos(pago_data=p, on_confirmar=on_ok).mostrar()
+            # tras guardar en el modal, refresca la fila y totales del día
+            self._refrescar_descuentos_y_totales(id_pago)
+
+        # 3) Invocar el modal (con y sin parámetro 'modo' según soporte)
+        try:
+            ModalDescuentos(pago_data=payload, modo="confirmado", on_confirmar=on_ok).mostrar()
+        except TypeError:
+            ModalDescuentos(pago_data=payload, on_confirmar=on_ok).mostrar()
+
 
     def _abrir_modal_prestamos(self, pago_row: Dict[str, Any]):
         num = int(pago_row.get("numero_nomina") or 0)
@@ -1131,6 +1248,11 @@ class PagosPagadosExpansibles(ft.UserControl):
         # Ajuste visual al crear (flecha/estado ya vienen desde _build_table_with_click_sort)
         if self.page:
             self.page.update()
+
+    def ensure_group_panel(self, fecha: str, expand: bool = True):
+        """API pública: garantiza que exista el panel para 'fecha' (vacío o no)."""
+        self._ensure_panel_for_date(fecha, expand=expand)
+        self._manual_panels.add(fecha)
 
 
     def _remove_panel(self, fecha: str):
