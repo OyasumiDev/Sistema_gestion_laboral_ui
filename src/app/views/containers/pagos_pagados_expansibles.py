@@ -926,7 +926,6 @@ class PagosPagadosExpansibles(ft.UserControl):
             on_confirm=ok
         ).mostrar()
 
-    # ---------- Modales ----------
     def _abrir_modal_descuentos(self, pago_row: Dict[str, Any]):
         # 1) Evitar datos stale en el modal
         try:
@@ -954,15 +953,15 @@ class PagosPagadosExpansibles(ft.UserControl):
         }
 
         def on_ok(_):
-            # tras guardar en el modal, refresca la fila y totales del día
+            # tras cerrar/aceptar en el modal, refresca la fila y los totales del día
             self._refrescar_descuentos_y_totales(id_pago)
 
         # 3) Invocar el modal (con y sin parámetro 'modo' según soporte)
         try:
             ModalDescuentos(pago_data=payload, modo="confirmado", on_confirmar=on_ok).mostrar()
         except TypeError:
+            # compat con versiones del modal que no aceptan 'modo'
             ModalDescuentos(pago_data=payload, on_confirmar=on_ok).mostrar()
-
 
     def _abrir_modal_prestamos(self, pago_row: Dict[str, Any]):
         num = int(pago_row.get("numero_nomina") or 0)

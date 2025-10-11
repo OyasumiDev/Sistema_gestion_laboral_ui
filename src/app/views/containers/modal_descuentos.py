@@ -146,6 +146,7 @@ class ModalDescuentos(ft.AlertDialog):
         except Exception:
             return False
 
+
     def _cargar_estado_inicial(self):
         """
         Si hay descuentos confirmados -> precargar la UI con esos valores.
@@ -153,25 +154,54 @@ class ModalDescuentos(ft.AlertDialog):
         """
         if self.tiene_desc_confirmados:
             dlist = self.discount_model.get_descuentos_por_pago(self.id_pago) or []
-            # Reset
-            self.aplicado_imss.value = False; self.monto_imss.value = "0.0"
-            self.aplicado_transporte.value = False; self.monto_transporte.value = "0.0"
-            self.aplicado_extra.value = False; self.monto_extra.value = "0.0"
+
+            # Reset UI
+            self.aplicado_imss.value = False;        self.monto_imss.value = "0.0"
+            self.aplicado_transporte.value = False;  self.monto_transporte.value = "0.0"
+            self.aplicado_extra.value = False;       self.monto_extra.value = "0.0"
             self.descripcion_extra.value = ""
+
+            hubo_match_detallado = False
+            total_agg = 0.0
+            legacy_desc = None
+
             for d in dlist:
-                tipo = str(d.get(E_DISCOUNT.TIPO.value, ""))
-                monto = float(d.get(E_DISCOUNT.MONTO_DESCUENTO.value, 0) or 0)
-                if tipo == "retenciones_imss":
-                    self.aplicado_imss.value = True; self.monto_imss.value = f"{monto:.2f}"
+                tipo = str(
+                    d.get(E_DISCOUNT.TIPO.value) or d.get("tipo") or ""
+                ).lower()
+                try:
+                    monto = float(d.get(E_DISCOUNT.MONTO_DESCUENTO.value) or d.get("monto") or 0.0)
+                except Exception:
+                    monto = 0.0
+                desc = (d.get(E_DISCOUNT.DESCRIPCION.value) or d.get("descripcion") or "").strip()
+                total_agg += max(0.0, monto)
+
+                if tipo in ("retenciones_imss", "imss"):
+                    self.aplicado_imss.value = True
+                    self.monto_imss.value = f"{monto:.2f}"
+                    hubo_match_detallado = True
                 elif tipo == "transporte":
-                    self.aplicado_transporte.value = True; self.monto_transporte.value = f"{monto:.2f}"
+                    self.aplicado_transporte.value = True
+                    self.monto_transporte.value = f"{monto:.2f}"
+                    hubo_match_detallado = True
                 elif tipo == "descuento_extra":
-                    self.aplicado_extra.value = True; self.monto_extra.value = f"{monto:.2f}"
-                    self.descripcion_extra.value = d.get(E_DISCOUNT.DESCRIPCION.value) or ""
+                    self.aplicado_extra.value = True
+                    self.monto_extra.value = f"{monto:.2f}"
+                    self.descripcion_extra.value = desc
+                    hubo_match_detallado = True
+                elif tipo in ("totales", "total", "total_descuentos"):
+                    legacy_desc = desc or "Descuentos totales (legacy)"
+
+            # ⚠️ Si no hubo ningún match por-línea pero sí hay filas, es el caso 'totales'
+            if not hubo_match_detallado and dlist:
+                self.aplicado_extra.value = True
+                self.monto_extra.value = f"{total_agg:.2f}"
+                self.descripcion_extra.value = legacy_desc or "Descuentos totales (legacy)"
+
             self.monto_transporte.visible = self.aplicado_transporte.value
             return
 
-        # Sin confirmados: traer/crear borrador
+        # --- Sin confirmados: usar/crear borrador como ya tenías ---
         det = self.detalles_model.obtener_por_id_pago(self.id_pago) or {}
         if det:
             self.aplicado_imss.value = bool(det.get(self.detalles_model.COL_APLICADO_IMSS, False))
@@ -188,6 +218,7 @@ class ModalDescuentos(ft.AlertDialog):
             self.aplicado_imss.value = True;  self.monto_imss.value = "50.0"
             self.aplicado_transporte.value = False; self.monto_transporte.value = "0.0"; self.monto_transporte.visible = False
             self.aplicado_extra.value = False; self.monto_extra.value = "0.0"; self.descripcion_extra.value = ""
+
 
     # ---------------- Internos: UI / validación ----------------
     def _apply_readonly_if_needed(self):
