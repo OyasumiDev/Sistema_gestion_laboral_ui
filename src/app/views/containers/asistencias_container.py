@@ -12,6 +12,8 @@ from app.views.containers.modal_alert import ModalAlert
 
 # ⬇️ usamos el column builder especializado para asistencias
 from app.helpers.asistencias_column_builder import AsistenciasColumnBuilder
+from app.models.employes_model import EmployesModel  # ← para resolver nombre por nómina
+
 from app.helpers.asistencias_row_helper import AsistenciasRowHelper
 from app.helpers.calculo_horas_helper import CalculoHorasHelper
 from app.helpers.boton_factory import crear_boton_importar, crear_boton_exportar
@@ -36,8 +38,8 @@ class AsistenciasContainer(ft.Container):
     _BASE_MIN_WIDTH = 1450
     _PAGE_MARGIN_W = 80
     _HEADER_ESTIMATE = 180
-    _PANEL_MIN_H = 300
-    _PANEL_MAX_H = 520
+    _PANEL_MIN_H = 400
+    _PANEL_MAX_H = 550
 
     # Anchos por columna para evitar recortes (coherentes con encabezados)
     _COL_WIDTHS = {
@@ -51,7 +53,6 @@ class AsistenciasContainer(ft.Container):
         "estado": 160,   # 🔥 antes 120 → ahora más ancho
     }
 
-
     def __init__(self):
         super().__init__(expand=True, padding=16, alignment=ft.alignment.top_center)
 
@@ -61,26 +62,26 @@ class AsistenciasContainer(ft.Container):
         self.theme_ctrl = ThemeController()
         self.calculo_helper = CalculoHorasHelper()
         self.window_snackbar = WindowSnackbar(self.page)
+        self.employees_model = EmployesModel()  # resolver nombre por nómina
 
         # Estado
         self.editando: dict = {}
         self.datos_por_grupo: dict = {}
         self.grupos_expandido: dict = {}
 
-        # ⛳ Estado de scroll por grupo: {grupo: {"v": float, "h": float}}
+        # Scroll per group
         self._scroll_state: dict[str, dict[str, float]] = {}
+        self._vcols_by_group: dict[str, ft.Column] = {}  # ⬅️ NUEVO: referencia al Column con scroll vertical por grupo
 
-        # 🔀 Estado de ordenamiento por GRUPO
+        # Ordenamiento y filtros
         self._group_sort: dict[str, dict] = {}
-
-        # 🎯 Filtros globales (priorización transversal)
         self.sort_id_filter: str | None = None
         self.sort_name_filter: str | None = None
 
-        # alias para evitar AttributeError si algún helper intenta llamar activar_edicion
+        # alias
         self.activar_edicion = self._activar_edicion
 
-        # ⛳ Estado de tablas por grupo para refrescar solo filas
+        # tablas por grupo
         self._tablas_por_grupo: dict[str, ft.DataTable] = {}
 
         # Helpers
@@ -118,7 +119,7 @@ class AsistenciasContainer(ft.Container):
         self.import_button = crear_boton_importar(on_click=lambda: self.import_controller.file_invoker.open())
         self.export_button = crear_boton_exportar(on_click=lambda: self.save_invoker.open_save())
 
-        # ---- Toolbar ----
+        # Toolbar
         self.sort_id_input = ft.TextField(
             label="Ordenar por ID nómina",
             hint_text="Escribe un ID y presiona Enter",
@@ -156,7 +157,7 @@ class AsistenciasContainer(ft.Container):
         )
         self.content = ft.Container(expand=True, content=self._root_column)
 
-        # caches de ancho/alto calculados
+        # caches
         self._page_w = 0
         self._page_h = 0
         self._panel_scroll_w = self._BASE_MIN_WIDTH
@@ -167,8 +168,8 @@ class AsistenciasContainer(ft.Container):
 
         # 🔥 Primera carga
         self._recompute_layout_sizes()
-        self._construir_paneles_iniciales()   # ✅ construye los paneles una sola vez
-        self._actualizar_tabla()              # ✅ refresca filas según datos
+        self._construir_paneles_iniciales()   # construye paneles (y llena _vcols_by_group)
+        self._actualizar_tabla()
         self._update_panels_viewport_sizes()
         if self.page:
             self.page.update()
@@ -530,7 +531,7 @@ class AsistenciasContainer(ft.Container):
 
             cols = self.crear_columnas(grupo)
             tabla = ft.DataTable(columns=cols, rows=[], column_spacing=12,
-                                data_row_max_height=38, heading_row_height=40)
+                                data_row_max_height=50, heading_row_height=40)
             self._tablas_por_grupo[grupo] = tabla
 
             encabezado = ft.Row([
@@ -798,15 +799,32 @@ class AsistenciasContainer(ft.Container):
             "descanso": "MD",
             "tiempo_trabajo": "0.00",
             "estado": "PENDIENTE",
+            "__duplicado": False,
+            "__horas_invalidas": True,  # ⬅️ hasta que el cálculo sea OK
         }
         self.grupos_expandido[grupo_importacion] = True
         self._actualizar_tabla()
         if self.page:
             self.page.update()
 
+
     def _guardar_fila_nueva(self, grupo: str):
         try:
             fila = self.editando.get(("nuevo", grupo), {})
+            # Bloqueos duros antes de tocar DB
+            if fila.get("__duplicado", False):
+                ModalAlert(
+                    title_text="No se puede guardar",
+                    message="❌ Este número de nómina ya existe para la fecha indicada.",
+                ).mostrar()
+                return
+            if fila.get("__horas_invalidas", True):
+                ModalAlert(
+                    title_text="No se puede guardar",
+                    message="❌ Las horas son inválidas. Verifica formato y que la salida sea mayor a la entrada.",
+                ).mostrar()
+                return
+
             numero = str(fila.get("numero_nomina", "")).strip()
             if not numero.isdigit():
                 self.window_snackbar.show_error("❌ Número de nómina inválido.")
@@ -815,12 +833,14 @@ class AsistenciasContainer(ft.Container):
 
             fecha_str = str(fila.get("fecha", "")).strip()
             try:
-                fecha_dt = datetime.strptime(fecha_str, "%d/%m/%Y")
+                # admite DD/MM/YYYY y YYYY-MM-DD (se normaliza a ISO)
+                if "/" in fecha_str:
+                    fecha_dt = datetime.strptime(fecha_str, "%d/%m/%Y")
+                else:
+                    fecha_dt = datetime.strptime(fecha_str, "%Y-%m-%d")
                 fecha_iso = fecha_dt.strftime("%Y-%m-%d")
             except Exception:
-                self.window_snackbar.show_error(
-                    "❌ Formato de fecha inválido. Usa DD/MM/AAAA."
-                )
+                self.window_snackbar.show_error("❌ Formato de fecha inválido. Usa DD/MM/AAAA.")
                 return
 
             hora_entrada = self.calculo_helper.sanitizar_hora(fila.get("hora_entrada"))
@@ -836,12 +856,16 @@ class AsistenciasContainer(ft.Container):
                 )
                 return
 
+            # Validación de DUPLICADOS a nivel de grupo por si cambiaron datos justo antes de guardar
             registros_del_grupo = self.datos_por_grupo.get(grupo, [])
             valido, errores = self.calculo_helper.validar_numero_fecha_en_grupo(
                 registros_del_grupo, numero, fecha_str, registro_actual=fila
             )
             if not valido:
-                self.window_snackbar.show_error("❌ " + " ".join(errores))
+                ModalAlert(
+                    title_text="No se puede guardar",
+                    message="❌ " + " ".join(errores),
+                ).mostrar()
                 return
 
             resultado_db = self.asistencia_model.add(
@@ -853,9 +877,7 @@ class AsistenciasContainer(ft.Container):
                 grupo_importacion=grupo,
             )
             if not resultado_db or resultado_db.get("status") != "success":
-                self.window_snackbar.show_error(
-                    "❌ Error al guardar en la base de datos."
-                )
+                self.window_snackbar.show_error("❌ Error al guardar en la base de datos.")
                 return
 
             self.window_snackbar.show_success("✅ Asistencia guardada correctamente.")
@@ -1090,6 +1112,25 @@ class AsistenciasContainer(ft.Container):
         except Exception:
             return date.min
 
+    def _resolver_nombre_por_numero(self, numero: int) -> str:
+        """
+        Devuelve el nombre del empleado por número de nómina.
+        Si tu modelo usa otras llaves, ajusta los campos de abajo.
+        """
+        try:
+            emp = EmployesModel()
+            data = emp.get_by_numero_nomina(numero)  # dict con datos del empleado
+            if isinstance(data, dict) and data:
+                # Intenta usar 'nombre_completo' y si no existe, compónlo
+                nombre = data.get("nombre_completo")
+                if not nombre:
+                    nombre = f"{(data.get('nombres') or '').strip()} {(data.get('apellidos') or '').strip()}".strip()
+                return nombre or ""
+        except Exception:
+            pass
+        return ""
+
+
     # alias real llamado por AsistenciasColumnBuilder
     def _activar_edicion(self, numero_nomina, fecha):
         """
@@ -1141,7 +1182,7 @@ class AsistenciasContainer(ft.Container):
                 columns=cols,
                 rows=filas,
                 column_spacing=12,
-                data_row_max_height=38,
+                data_row_max_height=50,
                 heading_row_height=40,
             )
             self._tablas_por_grupo[grupo] = tabla
@@ -1208,7 +1249,6 @@ class AsistenciasContainer(ft.Container):
         if self.page:
             self.page.update()
 
-
     def _refrescar_filas_grupo(self, grupo: str):
         """Actualiza las filas de la tabla de un grupo sin reconstruir paneles."""
         tabla = self._tablas_por_grupo.get(grupo)
@@ -1218,19 +1258,19 @@ class AsistenciasContainer(ft.Container):
         registros = self.datos_por_grupo.get(grupo, [])
         registros_ordenados = self._ordenar_lista(list(registros), grupo)
 
-        filas = []
+        filas: list[ft.DataRow] = []
+
+        # 🔁 Primero: filas existentes (vista / edición)
         for reg in registros_ordenados:
-            # 🔹 Descanso por defecto = "MD"
             if not reg.get("descanso") or reg.get("descanso") in (0, "0", "SN", "", None):
                 reg["descanso"] = "MD"
 
-            # 🔹 Recalcular horas
             hora_entrada = self.calculo_helper.sanitizar_hora(reg.get("hora_entrada"))
             hora_salida = self.calculo_helper.sanitizar_hora(reg.get("hora_salida"))
             resultado = self.calculo_helper.recalcular_con_estado(
                 hora_entrada,
                 hora_salida,
-                reg.get("descanso", "MD")
+                reg.get("descanso", "MD"),
             )
 
             if resultado["estado"] == "ok":
@@ -1242,21 +1282,9 @@ class AsistenciasContainer(ft.Container):
                 reg["__error_horas"] = True
                 reg["estado"] = "INCOMPLETO"
 
-            # 🔹 Estado inicial si aún no hay
             if not reg.get("estado"):
                 reg["estado"] = "INCOMPLETO" if Sworting.is_asistencia_incomplete(reg) else "COMPLETO"
 
-            # 🔹 Texto del estado con color y centrado
-            estado_text = ft.Text(
-                reg.get("estado", "").upper(),
-                text_align=ft.TextAlign.CENTER,
-                color=ft.colors.RED if reg["estado"] == "INCOMPLETO"
-                    else ft.colors.GREEN if reg["estado"] == "COMPLETO"
-                    else ft.colors.GREY
-            )
-            reg["__estado_text_widget"] = estado_text  # opcional, por si necesitas reusar
-
-            # 🔹 Construcción de filas
             if self._es_editando(reg):
                 fila = self.row_helper.build_fila_edicion(
                     registro=reg,
@@ -1274,6 +1302,70 @@ class AsistenciasContainer(ft.Container):
 
             filas.append(fila)
 
+        # ⬇️ Al final: inyectar fila NUEVA (si existe) para que aparezca "abajo"
+        fila_nueva_data = self.editando.get(("nuevo", grupo))
+        hay_fila_nueva = fila_nueva_data is not None
+        if hay_fila_nueva:
+            def _resolver_nombre_local(numero: int) -> str:
+                try:
+                    data = self.employees_model.get_by_numero_nomina(numero)
+                    if isinstance(data, dict) and data:
+                        nombre = data.get("nombre_completo")
+                        if not nombre:
+                            nombre = f"{(data.get('nombres') or '').strip()} {(data.get('apellidos') or '').strip()}".strip()
+                        return nombre or ""
+                except Exception:
+                    pass
+                return ""
+
+            fila_ui = self.row_helper.build_fila_agregar_por_id(
+                grupo_importacion=grupo,
+                registro=fila_nueva_data,
+                on_save=lambda g=grupo: self._guardar_fila_nueva(g),
+                on_cancel=lambda g=grupo: self._cancelar_fila_nueva(g),
+                registros_del_grupo=registros,
+                resolver_nombre=_resolver_nombre_local,
+            )
+            self._estilizar_fila(fila_ui, editable=True, incompleto=True)
+            filas.append(fila_ui)
+
+        # Aplicar filas a la tabla
         tabla.rows = filas
         if self.page:
             self.page.update()
+
+        # 🚀 Auto-scroll al fondo cuando se está agregando una nueva fila
+        if hay_fila_nueva:
+            # Intento 1: si guardaste el Column con scroll vertical del grupo.
+            vcol = self._vcols_by_group.get(grupo)
+
+            # Intento 2: si no existe en el mapa, localizarlo recorriendo el árbol (robusto)
+            if vcol is None:
+                try:
+                    epl = next((c for c in self._root_column.controls if isinstance(c, ft.ExpansionPanelList)), None)
+                    if epl:
+                        for p in epl.controls:
+                            if isinstance(p, ft.ExpansionPanel) and isinstance(p.content, ft.Column):
+                                # anchor con key = grupo en content.controls[0]
+                                anchor = p.content.controls[0]
+                                if isinstance(anchor, ft.Container) and str(anchor.key) == str(grupo):
+                                    viewport_container: ft.Container = p.content.controls[1]
+                                    hrow: ft.Row = viewport_container.content  # Row con scroll horizontal
+                                    inner_w_container: ft.Container = hrow.controls[0]
+                                    vcol = inner_w_container.content  # Column con scroll vertical
+                                    break
+                except Exception:
+                    vcol = None
+
+            try:
+                if vcol is not None:
+                    # Empuja al fondo; valor grande para asegurar bottom
+                    vcol.scroll_to(offset=10**9, duration=150)
+                    if self.page:
+                        self.page.update()
+                else:
+                    # Fallback: guarda memoria de scroll para que el próximo restore te lleve abajo
+                    st = self._scroll_state.setdefault(grupo, {})
+                    st["v"] = float(10**9)
+            except Exception:
+                pass
