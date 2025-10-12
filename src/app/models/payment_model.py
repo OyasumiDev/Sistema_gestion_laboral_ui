@@ -1418,3 +1418,13 @@ class PaymentModel:
             # Silencioso para no ensuciar logs si hay FKs/otros detalles
             pass
 
+    # ---------------------------------------------------------------------
+    # Alias retrocompatible
+    # ---------------------------------------------------------------------
+    def get_all(self) -> Dict[str, Any]:
+        """
+        Alias retrocompatible de get_all_pagos().
+        Permite que módulos antiguos que llamen payment_model.get_all()
+        sigan funcionando sin romper la compatibilidad.
+        """
+        return self.get_all_pagos()

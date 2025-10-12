@@ -1,17 +1,16 @@
-# app/views/containers/database_settings_area.py
 import flet as ft
 from app.core.invokers.file_save_invoker import FileSaveInvoker
 from app.core.interfaces.database_mysql import DatabaseMysql
 from app.views.containers.messages import mostrar_mensaje
+from datetime import datetime
 
 
 class DatabaseSettingsArea(ft.Container):
     """
     Centro de respaldo y restauración de datos:
-      • Primero Exportar (ZIP JSONL por modelos / SQL completo).
-      • Luego Importar (ZIP JSONL con modo / SQL completo).
-    Muestra confirmaciones explicativas ANTES de abrir los diálogos del sistema
-    y, al terminar, indica la ruta exacta del archivo utilizado.
+      • Exportar (ZIP JSONL o SQL completo)
+      • Importar (ZIP JSONL o SQL completo)
+    Limpia y compatible con Flet 0.23 + MySQL 8.0.
     """
     def __init__(self, page: ft.Page):
         super().__init__(expand=True, padding=20)
@@ -138,7 +137,7 @@ class DatabaseSettingsArea(ft.Container):
             spacing=14,
         )
 
-    # ---------------------- Invokers (archivo) ----------------------
+    # ---------------------- Invokers ----------------------
     def _setup_invokers(self):
         # Export / Import de DATOS (ZIP JSONL)
         self.invoker_data = FileSaveInvoker(
@@ -164,18 +163,13 @@ class DatabaseSettingsArea(ft.Container):
             file_name="respaldo_gestion_laboral.sql",
         )
 
-    # ---------------------- Diálogo genérico (FIX UnboundLocal) ----------------------
+    # ---------------------- Confirmaciones ----------------------
     def _open_confirm(self, title: str, bullets: list[str], on_confirm):
-        """
-        Muestra un diálogo con viñetas explicando la acción. Corrige el scope de 'dlg'
-        creando primero el diálogo y luego asignando las acciones.
-        """
         content_col = ft.Column(
             controls=[ft.Text(f"• {b}", size=13) for b in bullets],
             spacing=6,
             tight=True,
         )
-
         dlg = ft.AlertDialog(
             modal=True,
             title=ft.Text(title, weight="bold"),
@@ -183,17 +177,13 @@ class DatabaseSettingsArea(ft.Container):
             actions_alignment=ft.MainAxisAlignment.END,
         )
 
-        def _cancel(_):
-            self._close_dialog(dlg)
-
-        def _ok(_):
-            on_confirm(dlg)
+        def _cancel(_): self._close_dialog(dlg)
+        def _ok(_): on_confirm(dlg)
 
         dlg.actions = [
             ft.TextButton("Cancelar", on_click=_cancel),
             ft.ElevatedButton("Entendido, continuar", on_click=_ok),
         ]
-
         self.page.dialog = dlg
         dlg.open = True
         self.page.update()
@@ -202,21 +192,19 @@ class DatabaseSettingsArea(ft.Container):
         dlg.open = False
         self.page.update()
 
-    # ---------------------- Confirmaciones (Exportar) ----------------------
+    # ---------------------- Exportar ----------------------
     def _confirm_export_zip(self, _e):
         self._open_confirm(
             "Exportar datos (ZIP JSONL)",
             bullets=[
                 "Se generará un archivo ZIP con meta.json y un .jsonl por cada tabla.",
                 "Incluye únicamente DATOS (no SPs ni vistas).",
-                "A continuación se abrirá el diálogo del sistema para ELEGIR la carpeta y el nombre de archivo donde guardar.",
             ],
             on_confirm=lambda d: self._proceed_export_zip(d),
         )
 
     def _proceed_export_zip(self, dlg):
         self._close_dialog(dlg)
-        # Abre el diálogo nativo de “Guardar como…”
         self.invoker_data.open_save()
 
     def _confirm_export_sql(self, _e):
@@ -225,7 +213,6 @@ class DatabaseSettingsArea(ft.Container):
             bullets=[
                 "Se generará un archivo .sql con estructura y datos de TODA la base.",
                 "Ideal para un respaldo completo compatible con tu versión de MySQL.",
-                "A continuación se abrirá el diálogo del sistema para ELEGIR la carpeta y el nombre de archivo donde guardar.",
             ],
             on_confirm=lambda d: self._proceed_export_sql(d),
         )
@@ -234,7 +221,7 @@ class DatabaseSettingsArea(ft.Container):
         self._close_dialog(dlg)
         self.invoker_sql.open_save()
 
-    # ---------------------- Confirmaciones (Importar) ----------------------
+    # ---------------------- Importar ----------------------
     def _confirm_import_zip(self, _e):
         modo = (self.import_mode_dd.value or "upsert").strip()
         explicacion = {
@@ -242,21 +229,17 @@ class DatabaseSettingsArea(ft.Container):
             "upsert": "UPSERT: inserta y actualiza si ya existe (mantiene datos, actualiza en colisión).",
             "insert_ignore": "INSERT IGNORE: inserta solo lo nuevo y omite duplicados.",
         }.get(modo, "UPSERT por defecto.")
-
         self._open_confirm(
             "Importar datos (ZIP JSONL)",
             bullets=[
                 f"Modo elegido: {explicacion}",
-                "Se respetará el orden de dependencias entre tablas (padres → hijos).",
-                "Se desactivarán temporalmente las validaciones de claves foráneas para acelerar el proceso.",
-                "A continuación se abrirá el diálogo del sistema para SELECCIONAR el archivo ZIP a importar.",
+                "Respetará el orden de dependencias (padres → hijos).",
             ],
             on_confirm=lambda d: self._proceed_import_zip(d),
         )
 
     def _proceed_import_zip(self, dlg):
         self._close_dialog(dlg)
-        # Abre el diálogo nativo de “Abrir archivo…”
         self.invoker_data.open_import()
 
     def _confirm_import_sql(self, _e):
@@ -264,8 +247,7 @@ class DatabaseSettingsArea(ft.Container):
             "Importar base completa (SQL)",
             bullets=[
                 "Se REEMPLAZARÁ toda la base de datos (DROP + CREATE + INSERT).",
-                "Usa este método si deseas restaurar un respaldo total.",
-                "A continuación se abrirá el diálogo del sistema para SELECCIONAR el archivo SQL a importar.",
+                "Asegúrate de tener respaldo antes de continuar.",
             ],
             on_confirm=lambda d: self._proceed_import_sql(d),
         )
@@ -275,20 +257,18 @@ class DatabaseSettingsArea(ft.Container):
         self.invoker_sql.open_import()
 
     # ---------------------- Operaciones reales ----------------------
-    # ZIP JSONL
     def _do_export_data_zip(self, save_path: str):
         try:
             ok = self.db.exportar_datos_zip(save_path)
             if ok:
                 mostrar_mensaje(
-                    self.page,
-                    "✅ Exportación completa",
-                    f"Datos exportados a ZIP JSONL.\nRuta: {save_path}",
+                    self.page, "✅ Exportación completa",
+                    f"Datos exportados correctamente.\nRuta: {save_path}",
                 )
             else:
                 mostrar_mensaje(self.page, "⚠️ Error", "No se pudo exportar los datos.")
         except Exception as ex:
-            mostrar_mensaje(self.page, "❌ Error al exportar", f"Ocurrió un error:\n{ex}")
+            mostrar_mensaje(self.page, "❌ Error al exportar", str(ex))
 
     def _do_import_data_zip(self, import_path: str):
         try:
@@ -296,44 +276,65 @@ class DatabaseSettingsArea(ft.Container):
             ok = self.db.importar_datos_zip(import_path, modo=modo)
             if ok:
                 mostrar_mensaje(
-                    self.page,
-                    "✅ Importación exitosa",
+                    self.page, "✅ Importación exitosa",
                     f"Datos importados correctamente.\nArchivo: {import_path}",
                 )
-                if self.page:
-                    self.page.pubsub.send("db:refrescar_datos", True)
+                self.db.connect()
+                pubsub = getattr(self.page, "pubsub", None)
+                if pubsub:
+                    try:
+                        if hasattr(pubsub, "publish"):
+                            pubsub.publish("db:refrescar_datos", True)
+                        elif hasattr(pubsub, "send_all"):
+                            try:
+                                pubsub.send_all("db:refrescar_datos", True)
+                            except TypeError:
+                                pubsub.send_all("db:refrescar_datos")
+                    except Exception:
+                        pass
             else:
                 mostrar_mensaje(self.page, "⚠️ Error", "No se pudo importar los datos.")
         except Exception as ex:
-            mostrar_mensaje(self.page, "❌ Error crítico", f"Ocurrió un error:\n{ex}")
+            mostrar_mensaje(self.page, "❌ Error crítico", str(ex))
 
-    # SQL completo
     def _do_export_db_sql(self, path: str):
         try:
             success = self.db.exportar_base_datos(path)
             if success:
                 mostrar_mensaje(
-                    self.page,
-                    "✅ Exportación completa",
-                    f"La base de datos fue exportada exitosamente (SQL).\nRuta: {path}",
+                    self.page, "✅ Exportación completa",
+                    f"La base fue exportada correctamente.\nRuta: {path}",
                 )
             else:
-                mostrar_mensaje(self.page, "⚠️ Error", "No se pudo exportar la base de datos.")
+                mostrar_mensaje(self.page, "⚠️ Error", "No se pudo exportar la base.")
         except Exception as e:
-            mostrar_mensaje(self.page, "❌ Error al exportar", f"Ocurrió un error:\n{e}")
+            mostrar_mensaje(self.page, "❌ Error al exportar", str(e))
 
     def _do_import_db_sql(self, path: str):
         try:
-            success = self.db.importar_base_datos(path)
+            print(f"[DB_LOG] 🚀 Restaurando base desde {path}")
+            success = self.db.importar_base_datos(path, page=self.page)
+
             if success:
+                print(f"[DB_LOG] 🔁 Reconectando a base '{self.db.database}' después de restauración...")
+                self.db.connect()
+                pubsub = getattr(self.page, "pubsub", None)
+                if pubsub:
+                    try:
+                        if hasattr(pubsub, "publish"):
+                            pubsub.publish("db:refrescar_datos", True)
+                        elif hasattr(pubsub, "send_all"):
+                            try:
+                                pubsub.send_all("db:refrescar_datos", True)
+                            except TypeError:
+                                pubsub.send_all("db:refrescar_datos")
+                    except Exception:
+                        pass
                 mostrar_mensaje(
-                    self.page,
-                    "✅ Importación exitosa",
-                    f"La base de datos fue importada correctamente (SQL).\nArchivo: {path}",
+                    self.page, "✅ Importación completa",
+                    f"La base de datos '{self.db.database}' fue reconstruida correctamente.\nArchivo: {path}",
                 )
-                if self.page:
-                    self.page.pubsub.send("db:refrescar_datos", True)
             else:
-                mostrar_mensaje(self.page, "⚠️ Error", "No se pudo importar la base de datos.")
+                mostrar_mensaje(self.page, "⚠️ Error", f"No se pudo importar la base '{self.db.database}'.")
         except Exception as e:
-            mostrar_mensaje(self.page, "❌ Error crítico", f"Ocurrió un error:\n{e}")
+            mostrar_mensaje(self.page, "❌ Error", f"Ocurrió un error al restaurar:\n{e}")

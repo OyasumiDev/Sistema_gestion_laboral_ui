@@ -1,6 +1,6 @@
 # app/views/containers/prestamos_container.py
 import flet as ft
-from datetime import date
+from datetime import date, datetime
 from typing import List
 
 from app.core.app_state import AppState
@@ -15,13 +15,17 @@ from app.helpers.prestamos_helper.pagos_prestamos_row_helper import PagosPrestam
 from app.helpers.prestamos_helper.prestamos_validation_helper import PrestamosValidationHelper
 from app.helpers.prestamos_helper.prestamos_scroll_helper import PrestamosScrollHelper
 
-# BotonFactory (uniformidad con Empleados)
+# BotonFactory
 from app.helpers.boton_factory import (
     crear_boton_importar,
     crear_boton_exportar,
 )
 
-# Modal de pagos de préstamos (solo pagos reales)
+# Invokers de archivo
+from app.core.invokers.file_open_invoker import FileOpenInvoker
+from app.core.invokers.file_save_invoker import FileSaveInvoker
+
+# Modal de pagos
 from app.views.containers.modal_pagos_prestamos import ModalPrestamos
 
 
@@ -41,17 +45,33 @@ class PrestamosContainer(ft.Container):
         self.pago_helper = PagosPrestamosRowHelper()
 
         # Estado UI
-        self.datos_tabla: dict[str, List[ft.Control]] = {}   # filas temporales (ej. "prestamos_global")
+        self.datos_tabla: dict[str, List[ft.Control]] = {}
         self._pending_scroll_key: str | None = None
 
         # === NUEVO: filtros y orden ===
-        self.filters = {"id_empleado": "", "id_prestamo": ""}  # prefijos; priorizan sin excluir
-        self.sort_key = "numero"   # numero | nombre | fecha | saldo | monto
+        self.filters = {"id_empleado": "", "id_prestamo": ""}
+        self.sort_key = "numero"
         self.sort_asc = True
         self._tf_empleado: ft.TextField | None = None
         self._tf_prestamo: ft.TextField | None = None
         self._dd_sort: ft.Dropdown | None = None
         self._btn_dir: ft.IconButton | None = None
+
+        # === NUEVO: Invokers ===
+        self.importador = FileOpenInvoker(
+            page=self.page,
+            on_select=self._procesar_importacion,
+            allowed_extensions=["xlsx"]
+        )
+
+        fecha_actual = datetime.today().strftime("%Y-%m-%d")
+        self.exportador = FileSaveInvoker(
+            page=self.page,
+            on_save=self._procesar_exportacion,
+            save_dialog_title="Exportar préstamos",
+            file_name=f"Prestamos_Exportados_{fecha_actual}.xlsx",
+            allowed_extensions=["xlsx"]
+        )
 
         # Layout raíz
         self.layout = ft.Column(expand=True)
@@ -512,11 +532,91 @@ class PrestamosContainer(ft.Container):
             on_confirm=on_confirm,
         ).mostrar()
 
-    def _importar(self, _):
-        ModalAlert.mostrar_info("Importar", "Importación no implementada.")
+    def _importar(self, _=None):
+        """Abre el diálogo de importación usando el invoker."""
+        try:
+            self.importador.open()
+        except Exception as ex:
+            ModalAlert.mostrar_info("Error", f"No se pudo iniciar la importación:\n{ex}")
 
-    def _exportar(self, _):
-        ModalAlert.mostrar_info("Exportación", "Exportación no implementada.")
+    def _exportar(self, _=None):
+        """Abre el diálogo de exportación usando el invoker."""
+        try:
+            self.exportador.open_save()
+        except Exception as ex:
+            ModalAlert.mostrar_info("Error", f"No se pudo iniciar la exportación:\n{ex}")
+
+    def _procesar_importacion(self, ruta_archivo: str):
+        """Importa préstamos desde un archivo Excel generado por el sistema."""
+        import pandas as pd
+        try:
+            df = pd.read_excel(ruta_archivo)
+            df.columns = [c.strip().lower() for c in df.columns]
+
+            columnas_requeridas = ["numero_nomina", "monto_prestamo", "fecha_solicitud"]
+            faltantes = [c for c in columnas_requeridas if c not in df.columns]
+            if faltantes:
+                ModalAlert.mostrar_info("Error", f"Faltan las columnas: {', '.join(faltantes)}")
+                return
+
+            exitos = 0
+            for _, row in df.iterrows():
+                numero = int(row["numero_nomina"])
+                monto = float(row["monto_prestamo"])
+                fecha_txt = str(row["fecha_solicitud"])[:10]
+                fecha_sql = self.validador.convertir_fecha_mysql(fecha_txt)
+
+                datos = {
+                    "numero_nomina": numero,
+                    "monto": monto,
+                    "fecha_solicitud": fecha_sql,
+                    "grupo_empleado": "GLOBAL"
+                }
+                res = self._insertar_prestamo(datos)
+                if res.get("status") == "success":
+                    exitos += 1
+
+            ModalAlert.mostrar_info("Importación completada", f"✅ Se importaron {exitos} préstamos correctamente.")
+            self._actualizar_vista()
+
+        except Exception as ex:
+            ModalAlert.mostrar_info("Error", f"No se pudo importar el archivo:\n{ex}")
+
+
+    def _procesar_exportacion(self, ruta_guardado: str):
+        """Exporta todos los préstamos a Excel, compatible con la importación."""
+        import pandas as pd
+        try:
+            resultado = self.loan_model.get_all()
+            if not resultado or resultado.get("status") != "success":
+                ModalAlert.mostrar_info("Aviso", "No hay préstamos para exportar.")
+                return
+
+            data = resultado.get("data", [])
+            if not data:
+                ModalAlert.mostrar_info("Aviso", "No se encontraron registros.")
+                return
+
+            columnas_exportar = [
+                (self.E.PRESTAMO_NUMERO_NOMINA.value, "numero_nomina"),
+                (self.E.PRESTAMO_MONTO.value, "monto_prestamo"),
+                (self.E.PRESTAMO_SALDO.value, "saldo_prestamo"),
+                (self.E.PRESTAMO_ESTADO.value, "estado"),
+                (self.E.PRESTAMO_FECHA_SOLICITUD.value, "fecha_solicitud"),
+            ]
+
+            cuerpo = []
+            for reg in data:
+                fila = [reg.get(clave, "") for clave, _ in columnas_exportar]
+                cuerpo.append(fila)
+
+            df = pd.DataFrame(cuerpo, columns=[nombre for _, nombre in columnas_exportar])
+            df.to_excel(ruta_guardado, index=False, engine="openpyxl")
+
+            ModalAlert.mostrar_info("Éxito", f"📁 Préstamos exportados correctamente a:\n{ruta_guardado}")
+        except Exception as ex:
+            ModalAlert.mostrar_info("Error", f"No se pudo exportar:\n{ex}")
+
 
     def _eliminar_prestamo(self, id_prestamo: int):
         res = self.loan_model.delete_by_id_prestamo(id_prestamo)

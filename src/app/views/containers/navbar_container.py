@@ -55,7 +55,7 @@ class NavBarContainer(ft.Container):
             on_exit=lambda e: self.page.window.close(),
             bg=colors["BTN_BG"],
             # NECESITA TRABAJARSE EN ESA SOLUCION
-            mostrar_settings=False,                   # ✅ visible
+            mostrar_settings=True,                   # ✅ visible
             mostrar_theme=True
         )
 

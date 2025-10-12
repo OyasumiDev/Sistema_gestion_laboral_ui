@@ -229,59 +229,110 @@ class DatabaseMysql:
 
     def importar_base_datos(self, ruta_sql: str, page: ft.Page = None) -> bool:
         """
-        Intenta usar mysql.exe; si no está, hace import con el conector (multi statements).
+        Restaura completamente la base de datos desde un archivo .sql.
+        Compatible con Flet 0.23 y MySQL 8.0.
+        Incluye reconexión automática y notificación PubSub segura.
         """
         try:
             ruta = Path(ruta_sql)
             if not ruta.exists():
-                raise FileNotFoundError("Archivo SQL no encontrado")
+                raise FileNotFoundError(f"Archivo SQL no encontrado: {ruta_sql}")
+
+            print(f"[DB_LOG] 🚀 Iniciando importación completa desde: {ruta_sql}")
+            print(f"[DB_LOG] 📂 Base destino: {self.database}")
 
             mysql_bin = self._find_mysql_tool("mysql")
-            if mysql_bin:
-                # recrea la BD y usa el cliente
-                tmp = mysql.connect(host=self.host, port=self.port, user=self.user, password=self.password)
-                tmp.autocommit = True
-                cur = tmp.cursor()
-                cur.execute(f"DROP DATABASE IF EXISTS `{self.database}`")
-                cur.execute(f"CREATE DATABASE `{self.database}` DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci")
-                cur.close()
-                tmp.close()
+            if not mysql_bin:
+                print("[DB_LOG] ⚠️ No se encontró cliente MySQL CLI, usando fallback con conector.")
+                return self._import_sql_via_connector(ruta_sql, page)
 
-                comando = [
-                    mysql_bin,
-                    f"-h{self.host}",
-                    f"-P{self.port}",
-                    f"-u{self.user}",
-                    f"-p{self.password}",
-                    self.database,
-                ]
-                with open(ruta, "r", encoding="utf-8") as f:
-                    resultado = subprocess.run(
-                        comando, stdin=f,
-                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
-                    )
-                if resultado.returncode != 0:
-                    print("❌ Error durante la importación (mysql CLI):")
-                    print(resultado.stderr)
-                    if page:
-                        mostrar_mensaje(page, "Error de Importación", "Problema al importar con el cliente mysql.")
+            # 1️⃣ Cerrar conexión activa antes del DROP
+            try:
+                if hasattr(self, "connection") and self.connection.is_connected():
+                    self.connection.close()
+                    print("[DB_LOG] 🔒 Conexión anterior cerrada correctamente.")
+            except Exception:
+                pass
+
+            # 2️⃣ Conexión temporal sin base seleccionada
+            tmp = mysql.connect(
+                host=self.host,
+                port=self.port,
+                user=self.user,
+                password=self.password
+            )
+            tmp.autocommit = True
+            cur = tmp.cursor()
+
+            # 3️⃣ Eliminar y recrear la base
+            print(f"[DB_LOG] 🔄 Eliminando base de datos '{self.database}' si existe...")
+            cur.execute(f"DROP DATABASE IF EXISTS `{self.database}`")
+            print(f"[DB_LOG] 🧱 Creando base de datos '{self.database}'...")
+            cur.execute(
+                f"CREATE DATABASE IF NOT EXISTS `{self.database}` "
+                "DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
+            )
+            cur.close()
+            tmp.close()
+            print(f"[DB_LOG] ✅ Base '{self.database}' recreada correctamente.")
+
+            # 4️⃣ Ejecutar importación con cliente MySQL
+            comando = [
+                mysql_bin,
+                f"-h{self.host}",
+                f"-P{self.port}",
+                f"-u{self.user}",
+                f"-p{self.password}",
+                self.database,
+            ]
+
+            print(f"[DB_LOG] ▶️ Ejecutando importación con cliente MySQL CLI...")
+            with open(ruta, "r", encoding="utf-8") as f:
+                resultado = subprocess.run(
+                    comando,
+                    stdin=f,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True
+                )
+
+            if resultado.returncode != 0:
+                print("[DB_LOG] ❌ Error durante la importación CLI:")
+                print(resultado.stderr)
+                print("[DB_LOG] 🔁 Intentando fallback con conector MySQL interno...")
+                ok = self._import_sql_via_connector(ruta_sql, page)
+                if not ok:
                     return False
 
-                print("✅ Base de datos importada correctamente (mysql CLI).")
-                if page:
-                    mostrar_mensaje(page, "Importación Exitosa", f"Archivo: {ruta_sql}")
-                return True
+            print(f"[DB_LOG] ✅ Base '{self.database}' importada correctamente (via CLI).")
 
-            # ---- Fallback con conector ----
-            ok = self._import_sql_via_connector(ruta_sql, page)
-            return ok
+            # 5️⃣ Reconectar instancia principal
+            print(f"[DB_LOG] 🔁 Reconectando a '{self.database}'...")
+            self.connect()
+
+            # 6️⃣ Notificación PubSub segura (compatible Flet 0.23)
+            if page:
+                pubsub = getattr(page, "pubsub", None)
+                if pubsub:
+                    try:
+                        if hasattr(pubsub, "publish"):
+                            pubsub.publish("db:refrescar_datos", True)
+                        elif hasattr(pubsub, "send_all"):
+                            try:
+                                pubsub.send_all("db:refrescar_datos", True)
+                            except TypeError:
+                                pubsub.send_all("db:refrescar_datos")
+                    except Exception:
+                        pass
+
+            print(f"[DB_LOG] 🎯 Importación finalizada sin errores.\n")
+            return True
 
         except Exception:
-            print("❌ Error al importar la base de datos:")
+            print("[DB_LOG] ❌ Error crítico en importar_base_datos():")
             print(traceback.format_exc())
-            if page:
-                mostrar_mensaje(page, "Error de Importación", "Revisa la consola para más detalles.")
             return False
+
 
     # -------- Utilidades de serialización SQL y fallbacks --------
     def _sql_literal(self, v):
@@ -369,41 +420,168 @@ class DatabaseMysql:
 
     def _import_sql_via_connector(self, ruta_sql: str, page: ft.Page | None = None) -> bool:
         """
-        Importa un .sql con el conector ejecutando múltiples sentencias.
-        Nota: dumps con DELIMITER/procedures complejos pueden no ser compatibles.
+        Fallback interno: importa un archivo .sql usando mysql.connector,
+        sin necesidad del cliente MySQL CLI.
+        Compatible con MySQL 8.0 y Flet 0.23.
         """
         try:
-            cn = mysql.connect(host=self.host, port=self.port, user=self.user, password=self.password)
-            cn.autocommit = False
+            print(f"[DB_LOG] 🔁 Ejecutando importación fallback con conector MySQL...")
+            cn = mysql.connect(
+                host=self.host,
+                port=self.port,
+                user=self.user,
+                password=self.password
+            )
+            cn.autocommit = True
             cur = cn.cursor()
-            try:
-                cur.execute(f"DROP DATABASE IF EXISTS `{self.database}`")
-                cur.execute(f"CREATE DATABASE `{self.database}` DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci")
-            except Exception:
-                pass
-            cn.commit()
 
-            sql = Path(ruta_sql).read_text(encoding="utf-8")
-            for _res in cur.execute(sql, multi=True):
+            # 1️⃣ Recrear la base desde cero
+            cur.execute(f"DROP DATABASE IF EXISTS `{self.database}`")
+            cur.execute(
+                f"CREATE DATABASE `{self.database}` "
+                "DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
+            )
+            cur.execute(f"USE `{self.database}`")
+
+            # 2️⃣ Leer y ejecutar el SQL línea a línea
+            sql = Path(ruta_sql).read_text(encoding="utf-8", errors="ignore")
+            for _ in cur.execute(sql, multi=True):
                 pass
-            cn.commit()
+
             cur.close()
             cn.close()
 
-            print("✅ Base de datos importada correctamente (fallback con conector).")
+            # 3️⃣ Reconectar instancia principal
+            self.connect()
+            print(f"[DB_LOG] ✅ Base '{self.database}' importada correctamente (fallback conector).")
+
+            # 4️⃣ Notificación PubSub segura
             if page:
-                mostrar_mensaje(page, "Importación Exitosa", f"Archivo: {ruta_sql}")
+                pubsub = getattr(page, "pubsub", None)
+                if pubsub:
+                    try:
+                        if hasattr(pubsub, "publish"):
+                            pubsub.publish("db:refrescar_datos", True)
+                        elif hasattr(pubsub, "send_all"):
+                            try:
+                                pubsub.send_all("db:refrescar_datos", True)
+                            except TypeError:
+                                pubsub.send_all("db:refrescar_datos")
+                    except Exception:
+                        pass
+
+            print(f"[DB_LOG] 🎯 Importación fallback finalizada sin errores.\n")
             return True
 
         except Exception:
-            print("❌ Error en fallback de importación SQL:")
+            print("[DB_LOG] ❌ Error en fallback de importación SQL:")
             print(traceback.format_exc())
-            if page:
-                mostrar_mensaje(page, "Error de Importación", "Revisa la consola para más detalles.")
             return False
+
 
     # ====================== EXPORT / IMPORT de DATOS (ZIP JSONL) ======================
     # -------- Serialización --------
+
+    def importar_datos_zip(self, ruta_zip: str, modo: str = "truncate", batch_size: int = 1000) -> bool:
+        """
+        Importa masivamente datos desde un ZIP con logs detallados.
+        """
+        self._ensure_connection()
+        cn = self.connection
+        cn.start_transaction()
+        try:
+            cur = cn.cursor()
+
+            print(f"[DB_LOG] 🚀 Iniciando importación de datos ZIP → {ruta_zip}")
+            print(f"[DB_LOG] 📂 Base destino: {self.database}")
+            print(f"[DB_LOG] ⚙️ Modo de importación: {modo}")
+
+            with zipfile.ZipFile(ruta_zip, mode="r") as zf:
+                # Tablas en ZIP
+                if "meta.json" in zf.namelist():
+                    meta = json.loads(zf.read("meta.json").decode("utf-8"))
+                    tables_in_zip = meta.get("tables") or [
+                        n[:-6] for n in zf.namelist() if n.endswith(".jsonl")
+                    ]
+                    print(f"[DB_LOG] 📜 meta.json detectado → {len(tables_in_zip)} tablas")
+                else:
+                    tables_in_zip = [n[:-6] for n in zf.namelist() if n.endswith(".jsonl")]
+                    print(f"[DB_LOG] ⚠️ No se encontró meta.json, detectadas {len(tables_in_zip)} tablas JSONL")
+
+                all_tables = self._fetch_tables(cur)
+                edges = self._fetch_fks(cur)
+                ordered = self._topo_sort_tables(all_tables, edges)
+                target = [t for t in ordered if t in tables_in_zip]
+
+                print(f"[DB_LOG] 🔗 Dependencias FK procesadas: {len(edges)} relaciones detectadas")
+                print(f"[DB_LOG] 🧩 Orden final de importación: {target}")
+
+                cur.execute("SET FOREIGN_KEY_CHECKS = 0")
+
+                total_inserts = 0
+                for t in target:
+                    name = f"{t}.jsonl"
+                    if name not in zf.namelist():
+                        print(f"[DB_LOG] ⚠️ Tabla '{t}' no encontrada en ZIP, omitida.")
+                        continue
+                    lines = zf.read(name).decode("utf-8").splitlines()
+                    print(f"[DB_LOG] 📦 Procesando tabla '{t}' con {len(lines)} registros...")
+
+                    cols = self._fetch_table_columns(cur, t)
+                    if modo == "truncate":
+                        cur.execute(f"TRUNCATE TABLE `{t}`")
+                        cn.commit()
+                        print(f"[DB_LOG] 🚮 Tabla '{t}' truncada.")
+
+                    if not lines:
+                        continue
+
+                    placeholders = ",".join(["%s"] * len(cols))
+                    cols_sql = ",".join([f"`{c}`" for c in cols])
+
+                    if modo == "upsert":
+                        updates = ",".join([f"`{c}`=VALUES(`{c}`)" for c in cols])
+                        sql = f"INSERT INTO `{t}` ({cols_sql}) VALUES ({placeholders}) ON DUPLICATE KEY UPDATE {updates}"
+                    elif modo == "insert_ignore":
+                        sql = f"INSERT IGNORE INTO `{t}` ({cols_sql}) VALUES ({placeholders})"
+                    else:
+                        sql = f"INSERT INTO `{t}` ({cols_sql}) VALUES ({placeholders})"
+
+                    batch = []
+                    for line in lines:
+                        obj = json.loads(line)
+                        vals = [self._json_to_db(obj.get(c)) for c in cols]
+                        batch.append(vals)
+                        if len(batch) >= batch_size:
+                            cur.executemany(sql, batch)
+                            total_inserts += len(batch)
+                            batch.clear()
+                    if batch:
+                        cur.executemany(sql, batch)
+                        total_inserts += len(batch)
+
+                    print(f"[DB_LOG] ✅ Tabla '{t}' importada ({total_inserts} filas acumuladas).")
+
+                cur.execute("SET FOREIGN_KEY_CHECKS = 1")
+            cn.commit()
+
+            print(f"[DB_LOG] 🎯 Importación ZIP completada correctamente en base '{self.database}'.")
+            print(f"[DB_LOG] 🧾 Total de registros importados: {total_inserts}")
+            print(f"[DB_LOG] ✅ Proceso finalizado sin errores.\n")
+            return True
+
+        except Exception:
+            cn.rollback()
+            print(f"[DB_LOG] ❌ Error durante importación ZIP en base '{self.database}':")
+            print(traceback.format_exc())
+            return False
+        finally:
+            try:
+                cur.close()
+            except Exception:
+                pass
+
+
     def _py_to_json(self, v):
         # Normaliza valores Python a tipos JSON-serializables
         if v is None:

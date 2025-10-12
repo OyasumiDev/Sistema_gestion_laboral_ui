@@ -43,10 +43,8 @@ except Exception:
 
 # Botones header (fábrica)
 from app.helpers.boton_factory import (
-    crear_boton_importar,
-    crear_boton_exportar,
     crear_boton_agregar,
-    crear_boton_agregar_fechas_pagadas,   # <-- nuevo
+    crear_boton_agregar_fechas_pagadas,   # <-- mantenemos estos
 )
 
 
@@ -80,7 +78,6 @@ class PagosContainer(ft.Container):
             detalles_prestamo_model=self.detalles_prestamo_model,
         )
         self.table_builder = PaymentTableBuilder()
-        # Refrescos separados para evitar colisiones entre tablas
         self.row_refresh_pend = PaymentRowRefresh()
         self.row_refresh_conf = PaymentRowRefresh()
         self.scroll = PagosScrollHelper()
@@ -89,7 +86,6 @@ class PagosContainer(ft.Container):
         if not PagosPendientesEditables or not PagosPagadosExpansibles:
             raise RuntimeError("Faltan módulos requeridos: PagosPendientesEditables o PagosPagadosExpansibles.")
 
-        # Helper: inyección segura (filtra kwargs no soportados por la firma)
         def _safe_new(_cls, **kwargs):
             try:
                 sig = inspect.signature(_cls)
@@ -98,7 +94,6 @@ class PagosContainer(ft.Container):
             except Exception:
                 return _cls(**kwargs)
 
-        # Pendientes -> incluye callback fino cuando se CONFIRMA un pago
         self.pendientes_ui = _safe_new(
             PagosPendientesEditables,
             repo=self.repo,
@@ -113,12 +108,10 @@ class PagosContainer(ft.Container):
             table_builder=self.table_builder,
             row_refresh=self.row_refresh_pend,
             on_data_changed=self._on_data_changed,
-            # estos dos nombres son tolerantes: el módulo puede implementar uno o ignorarlos
             on_pago_confirmado=self._on_pago_confirmado_desde_pendientes,
             on_pago_eliminado=lambda *_: self._on_data_changed(),
         )
 
-        # Confirmados (expansibles)
         self.confirmados_ui = _safe_new(
             PagosPagadosExpansibles,
             repo=self.repo,
@@ -131,12 +124,11 @@ class PagosContainer(ft.Container):
             math=self.math,
             table_builder=self.table_builder,
             row_refresh=self.row_refresh_conf,
-            on_data_changed=self._on_data_changed,  # si su módulo emite cambios globales
+            on_data_changed=self._on_data_changed,
         )
 
         # --------- Estado de filtros ----------
         self.filters_pend = {"id_empleado": "", "id_pago": ""}
-        # IMPORTANTE: confirmados usan id_pago_conf como clave principal
         self.filters_conf = {"id_empleado": "", "id_pago_conf": ""}
 
         # --------- Selectores / modales ----------
@@ -145,8 +137,58 @@ class PagosContainer(ft.Container):
             ModalFechaGrupoPagado(on_date_confirmed=self._crear_grupo_pagado) if ModalFechaGrupoPagado else None
         )
 
-        # --------- Header ----------
-        self._build_header()
+        # --------- Header limpio ----------
+        self.input_id = ft.TextField(
+            label="ID Empleado",
+            width=180,
+            height=36,
+            dense=True,
+            content_padding=ft.padding.only(left=10, right=10),
+            border_color=ft.colors.OUTLINE,
+            on_change=self._on_id_empleado_change,
+        )
+        self.input_id_pago_pend = ft.TextField(
+            label="ID Pago (pend.)",
+            width=180,
+            height=36,
+            dense=True,
+            content_padding=ft.padding.only(left=10, right=10),
+            border_color=ft.colors.OUTLINE,
+            on_change=lambda e: self._on_filter_change(scope="pend", key="id_pago", value=e.control.value),
+        )
+        self.input_id_pago_conf = ft.TextField(
+            label="ID Pago (conf.)",
+            width=180,
+            height=36,
+            dense=True,
+            content_padding=ft.padding.only(left=10, right=10),
+            border_color=ft.colors.OUTLINE,
+            on_change=lambda e: self._on_filter_change(scope="conf", key="id_pago_conf", value=e.control.value),
+        )
+
+        header_bar = ft.Row(
+            controls=[
+                crear_boton_agregar(lambda e=None: self._abrir_modal_rango()),
+                crear_boton_agregar_fechas_pagadas(lambda e=None: self._abrir_modal_grupo_pagado()),
+                ft.Container(width=20),
+                ft.Text("Filtros (prioritarios):", size=12, italic=True),
+                self.input_id,
+                self.input_id_pago_pend,
+                self.input_id_pago_conf,
+            ],
+            spacing=10,
+            alignment=ft.MainAxisAlignment.START,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+        )
+
+        self.header = ft.Column(
+            spacing=8,
+            controls=[
+                ft.Text("ÁREA DE PAGOS", style=ft.TextThemeStyle.TITLE_MEDIUM),
+                header_bar,
+            ],
+        )
+
 
         # --------- Secciones ----------
         self.resumen_pagos = ft.Text(value="", weight=ft.FontWeight.BOLD, size=13)
@@ -180,6 +222,7 @@ class PagosContainer(ft.Container):
 
         # Primera carga
         self._recargar_todo(preserve_expansion=False)
+
 
     # ---------------- util: obtener control raíz del módulo ----------------
     @staticmethod
@@ -613,3 +656,4 @@ class PagosContainer(ft.Container):
                 self.page.update()
         except Exception as ex:
             ModalAlert.mostrar_info("Actualización", f"No se pudo reflejar el pago confirmado en la vista: {ex}")
+
