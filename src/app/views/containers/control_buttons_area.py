@@ -1,5 +1,4 @@
 # app/views/containers/control_buttons_area.py
-
 import flet as ft
 
 class ControlButtonsArea(ft.Column):
@@ -30,75 +29,66 @@ class ControlButtonsArea(ft.Column):
         self._build()
 
     def _build(self):
-        # Decidir qué imagen mostrar para expandir/contraer
-        expand_icon = "assets/buttons/layout_close-button.png" if self.expanded else "assets/buttons/layout_open-button.png"
-        
+        # Expandir / contraer
+        expand_icon = (
+            "assets/buttons/layout_close-button.png"
+            if self.expanded else
+            "assets/buttons/layout_open-button.png"
+        )
         btn_expand = ft.GestureDetector(
             on_tap=self.on_toggle_nav,
             content=ft.Container(
                 bgcolor=self.bg,
                 padding=6,
                 border_radius=6,
-                content=ft.Image(
-                    src=expand_icon,
-                    width=24,
-                    height=24
-                )
-            )
+                content=ft.Image(src=expand_icon, width=24, height=24),
+            ),
         )
 
-        # Botón cambiar tema
-        theme_icon = "assets/buttons/light-color-button.png" if self.dark else "assets/buttons/dark-color-button.png"
-        
+        # Cambiar tema
+        theme_icon = (
+            "assets/buttons/light-color-button.png"
+            if self.dark else
+            "assets/buttons/dark-color-button.png"
+        )
         btn_theme = ft.GestureDetector(
             on_tap=self.on_toggle_theme,
             content=ft.Container(
                 bgcolor=self.bg,
                 padding=6,
                 border_radius=6,
-                content=ft.Image(
-                    src=theme_icon,
-                    width=24,
-                    height=24
-                )
-            )
+                content=ft.Image(src=theme_icon, width=24, height=24),
+            ),
         ) if self.mostrar_theme else None
 
-        # # Botón settings
-        # btn_settings = ft.GestureDetector(
-        #     on_tap=self.on_settings,
-        #     content=ft.Container(
-        #         bgcolor=self.bg,
-        #         padding=6,
-        #         border_radius=6,
-        #         content=ft.Image(
-        #             src="assets/buttons/settings-button.png",
-        #             width=24,
-        #             height=24
-        #         )
-        #     )
-        # ) if self.mostrar_settings else None
+        # ⚙️ Settings (debajo del botón de color)
+        btn_settings = ft.GestureDetector(
+            on_tap=self.on_settings,
+            content=ft.Container(
+                bgcolor=self.bg,
+                padding=6,
+                border_radius=6,
+                content=ft.Image(src="assets/buttons/settings-button.png", width=24, height=24),
+            ),
+        ) if self.mostrar_settings else None
 
-        # Botón salir
+        # Salir
         btn_exit = ft.GestureDetector(
             on_tap=self.on_exit,
             content=ft.Container(
                 bgcolor=self.bg,
                 padding=6,
                 border_radius=6,
-                content=ft.Image(
-                    src="assets/buttons/exit-button.png",
-                    width=24,
-                    height=24
-                )
-            )
+                content=ft.Image(src="assets/buttons/exit-button.png", width=24, height=24),
+            ),
         )
 
+        # Orden: Expandir → Tema → Settings → Salir
         controls = [btn_expand]
         if btn_theme:
             controls.append(btn_theme)
-        # if btn_settings:
-        #     controls.append(btn_settings)
+        if btn_settings:                   # ← aquí justo debajo del de color
+            controls.append(btn_settings)
         controls.append(btn_exit)
 
         self.controls = controls

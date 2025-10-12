@@ -17,7 +17,7 @@ class MenuButtonsArea(ft.Column):
             ("payment-area-button.png",         "Pagos",      "/home/pagos"),
             ("nomina-area-button.png",          "Préstamos",  "/home/prestamos"),
             # ("performance-area-button.png",     "Desempeño",  "/home/desempeno"),
-            ("reports-area-button.png",         "Reportes",   "/home/reportes"),
+            # ("reports-area-button.png",         "Reportes",   "/home/reportes"),
         ]
         if is_root:
             menu_items.append((

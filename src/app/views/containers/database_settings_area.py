@@ -1,132 +1,339 @@
 # app/views/containers/database_settings_area.py
-
 import flet as ft
-from app.core.app_state import AppState
 from app.core.invokers.file_save_invoker import FileSaveInvoker
 from app.core.interfaces.database_mysql import DatabaseMysql
 from app.views.containers.messages import mostrar_mensaje
 
+
 class DatabaseSettingsArea(ft.Container):
+    """
+    Centro de respaldo y restauración de datos:
+      • Primero Exportar (ZIP JSONL por modelos / SQL completo).
+      • Luego Importar (ZIP JSONL con modo / SQL completo).
+    Muestra confirmaciones explicativas ANTES de abrir los diálogos del sistema
+    y, al terminar, indica la ruta exacta del archivo utilizado.
+    """
     def __init__(self, page: ft.Page):
         super().__init__(expand=True, padding=20)
-        self.page = page  # Este sí es el que viene de Flet, no del AppState
+        self.page = page
         self.db = DatabaseMysql()
-        self._setup_invoker()
+
+        self._setup_invokers()
         self._build_ui()
 
+    # -------------------------- UI --------------------------
     def _build_ui(self):
-        self.content = ft.Column(
-            controls=[
-                ft.Text("Configuración de Base de Datos", size=24, weight="bold"),
-                ft.Divider(height=20),
-                ft.TextField(label="Host", hint_text="Ingresa el host del servidor"),
-                ft.TextField(label="Puerto", hint_text="Ingresa el puerto", keyboard_type=ft.KeyboardType.NUMBER),
-                ft.TextField(label="Usuario", hint_text="Ingresa el usuario"),
-                ft.TextField(label="Contraseña", hint_text="Ingresa la contraseña", password=True, can_reveal_password=True),
-                ft.TextField(label="Base de Datos", hint_text="Nombre de la base de datos"),
-                ft.Divider(height=20),
-                ft.Row(
-                    controls=[
-                        ft.ElevatedButton("Guardar cambios", icon=ft.icons.SAVE, on_click=self._on_save),
-                        ft.OutlinedButton("Probar conexión", icon=ft.icons.LINK, on_click=self._on_test_connection)
-                    ],
-                    alignment=ft.MainAxisAlignment.END
-                ),
-                ft.Divider(height=30),
-                ft.Row(
-                    controls=[
-                        self.import_db_button,
-                        self.export_db_button
-                    ],
-                    alignment=ft.MainAxisAlignment.START,
-                    spacing=20
-                )
-            ],
-            spacing=16
-        )
+        title = ft.Text("Respaldo y Restauración de Datos", size=24, weight="bold")
 
-    def _setup_invoker(self):
-        self.invoker = FileSaveInvoker(
-            page=self.page,
-            on_save=self._on_export_db,
-            on_import=self._on_import_db,
-            save_dialog_title="Guardar respaldo de base de datos",
-            import_dialog_title="Importar base de datos desde archivo",
-            allowed_extensions=["sql"],
-            import_extensions=["sql"],
-            file_name="respaldo_gestion_laboral.sql"
-        )
+        # --- Exportar ---
+        export_title = ft.Text("Exportar", size=18, weight="bold")
 
-        self.import_db_button = ft.ElevatedButton(
+        self.btn_export_zip = ft.ElevatedButton(
             content=ft.Row(
                 controls=[
-                    ft.Image(src="assets/buttons/import_database-button.png", width=24, height=24),
-                    ft.Text("Importar Base de Datos")
+                    ft.Image(src="assets/buttons/save-database-button.png", width=22, height=22),
+                    ft.Text("Exportar datos (ZIP JSONL)"),
                 ],
                 spacing=10,
-                alignment=ft.MainAxisAlignment.CENTER
+                alignment=ft.MainAxisAlignment.CENTER,
             ),
-            on_click=self._mostrar_confirmacion_importar
+            on_click=self._confirm_export_zip,
         )
 
-        self.export_db_button = self.invoker.get_save_button(
-            text="Exportar Base de Datos",
-            icon_path="assets/buttons/save-database-button.png"
+        self.btn_export_sql = ft.OutlinedButton(
+            content=ft.Row(
+                controls=[
+                    ft.Image(src="assets/buttons/save-database-button.png", width=20, height=20),
+                    ft.Text("Exportar base completa (SQL)"),
+                ],
+                spacing=10,
+                alignment=ft.MainAxisAlignment.CENTER,
+            ),
+            on_click=self._confirm_export_sql,
         )
 
-    def _mostrar_confirmacion_importar(self, e):
-        print("🧪 _mostrar_confirmacion_importar fue llamado.")
-
-        self.confirm_dialog = ft.AlertDialog(
-            modal=True,
-            title=ft.Text("⚠️ Confirmación requerida"),
-            content=ft.Text("Esta acción reemplazará toda la base de datos actual.\n¿Deseas continuar?"),
-            actions=[
-                ft.TextButton("Cancelar", on_click=self._cancelar_importacion),
-                ft.TextButton("Sí, continuar", on_click=self._confirmar_importacion),
+        export_block = ft.Column(
+            controls=[
+                export_title,
+                ft.Text(
+                    "Genera respaldos que puedes guardar en un archivo. "
+                    "Usa el ZIP JSONL para datos por modelos y el SQL para un respaldo completo.",
+                    size=12,
+                    color=ft.colors.GREY_700,
+                ),
+                ft.Row(
+                    [self.btn_export_zip, self.btn_export_sql],
+                    spacing=12,
+                    alignment=ft.MainAxisAlignment.START,
+                ),
             ],
-            actions_alignment=ft.MainAxisAlignment.END
+            spacing=10,
         )
 
-        self.page.dialog = self.confirm_dialog
-        self.confirm_dialog.open = True
+        # --- Importar ---
+        import_title = ft.Text("Importar", size=18, weight="bold")
+
+        self.import_mode_dd = ft.Dropdown(
+            label="Modo de importación (ZIP JSONL)",
+            options=[
+                ft.dropdown.Option("truncate", "Reemplazar todo (TRUNCATE + INSERT)"),
+                ft.dropdown.Option("upsert", "Actualizar si existe (UPSERT)"),
+                ft.dropdown.Option("insert_ignore", "Insertar ignorando duplicados"),
+            ],
+            value="upsert",
+            width=360,
+        )
+
+        self.btn_import_zip = ft.ElevatedButton(
+            content=ft.Row(
+                controls=[
+                    ft.Image(src="assets/buttons/import_database-button.png", width=22, height=22),
+                    ft.Text("Importar datos (ZIP JSONL)"),
+                ],
+                spacing=10,
+                alignment=ft.MainAxisAlignment.CENTER,
+            ),
+            on_click=self._confirm_import_zip,
+        )
+
+        self.btn_import_sql = ft.OutlinedButton(
+            content=ft.Row(
+                controls=[
+                    ft.Image(src="assets/buttons/import_database-button.png", width=20, height=20),
+                    ft.Text("Importar base completa (SQL)"),
+                ],
+                spacing=10,
+                alignment=ft.MainAxisAlignment.CENTER,
+            ),
+            on_click=self._confirm_import_sql,
+        )
+
+        import_block = ft.Column(
+            controls=[
+                import_title,
+                ft.Text(
+                    "Restaura desde un respaldo. ZIP JSONL respeta dependencias entre tablas y te permite elegir el modo. "
+                    "SQL reemplaza toda la base (estructura + datos).",
+                    size=12,
+                    color=ft.colors.GREY_700,
+                ),
+                self.import_mode_dd,
+                ft.Row(
+                    [self.btn_import_zip, self.btn_import_sql],
+                    spacing=12,
+                    alignment=ft.MainAxisAlignment.START,
+                ),
+            ],
+            spacing=10,
+        )
+
+        self.content = ft.Column(
+            controls=[
+                title,
+                ft.Divider(height=16),
+                export_block,
+                ft.Divider(height=24),
+                import_block,
+            ],
+            spacing=14,
+        )
+
+    # ---------------------- Invokers (archivo) ----------------------
+    def _setup_invokers(self):
+        # Export / Import de DATOS (ZIP JSONL)
+        self.invoker_data = FileSaveInvoker(
+            page=self.page,
+            on_save=self._do_export_data_zip,
+            on_import=self._do_import_data_zip,
+            save_dialog_title="Guardar datos (ZIP JSONL)",
+            import_dialog_title="Selecciona ZIP de datos",
+            allowed_extensions=["zip"],
+            import_extensions=["zip"],
+            file_name="gl_datos_backup.zip",
+        )
+
+        # Export / Import de SQL completo
+        self.invoker_sql = FileSaveInvoker(
+            page=self.page,
+            on_save=self._do_export_db_sql,
+            on_import=self._do_import_db_sql,
+            save_dialog_title="Guardar base completa (SQL)",
+            import_dialog_title="Selecciona archivo SQL",
+            allowed_extensions=["sql"],
+            import_extensions=["sql"],
+            file_name="respaldo_gestion_laboral.sql",
+        )
+
+    # ---------------------- Diálogo genérico (FIX UnboundLocal) ----------------------
+    def _open_confirm(self, title: str, bullets: list[str], on_confirm):
+        """
+        Muestra un diálogo con viñetas explicando la acción. Corrige el scope de 'dlg'
+        creando primero el diálogo y luego asignando las acciones.
+        """
+        content_col = ft.Column(
+            controls=[ft.Text(f"• {b}", size=13) for b in bullets],
+            spacing=6,
+            tight=True,
+        )
+
+        dlg = ft.AlertDialog(
+            modal=True,
+            title=ft.Text(title, weight="bold"),
+            content=content_col,
+            actions_alignment=ft.MainAxisAlignment.END,
+        )
+
+        def _cancel(_):
+            self._close_dialog(dlg)
+
+        def _ok(_):
+            on_confirm(dlg)
+
+        dlg.actions = [
+            ft.TextButton("Cancelar", on_click=_cancel),
+            ft.ElevatedButton("Entendido, continuar", on_click=_ok),
+        ]
+
+        self.page.dialog = dlg
+        dlg.open = True
         self.page.update()
-        
-    def _confirmar_importacion(self, e):
-        print("🧪 Usuario confirmó importar.")
-        self.confirm_dialog.open = False
-        self.page.update()
-        self.invoker.open_import()
 
-    def _cancelar_importacion(self, e):
-        print("🧪 Usuario canceló importación.")
-        self.confirm_dialog.open = False
+    def _close_dialog(self, dlg: ft.AlertDialog):
+        dlg.open = False
         self.page.update()
 
+    # ---------------------- Confirmaciones (Exportar) ----------------------
+    def _confirm_export_zip(self, _e):
+        self._open_confirm(
+            "Exportar datos (ZIP JSONL)",
+            bullets=[
+                "Se generará un archivo ZIP con meta.json y un .jsonl por cada tabla.",
+                "Incluye únicamente DATOS (no SPs ni vistas).",
+                "A continuación se abrirá el diálogo del sistema para ELEGIR la carpeta y el nombre de archivo donde guardar.",
+            ],
+            on_confirm=lambda d: self._proceed_export_zip(d),
+        )
 
+    def _proceed_export_zip(self, dlg):
+        self._close_dialog(dlg)
+        # Abre el diálogo nativo de “Guardar como…”
+        self.invoker_data.open_save()
 
-    def _on_import_db(self, path: str):
+    def _confirm_export_sql(self, _e):
+        self._open_confirm(
+            "Exportar base completa (SQL)",
+            bullets=[
+                "Se generará un archivo .sql con estructura y datos de TODA la base.",
+                "Ideal para un respaldo completo compatible con tu versión de MySQL.",
+                "A continuación se abrirá el diálogo del sistema para ELEGIR la carpeta y el nombre de archivo donde guardar.",
+            ],
+            on_confirm=lambda d: self._proceed_export_sql(d),
+        )
+
+    def _proceed_export_sql(self, dlg):
+        self._close_dialog(dlg)
+        self.invoker_sql.open_save()
+
+    # ---------------------- Confirmaciones (Importar) ----------------------
+    def _confirm_import_zip(self, _e):
+        modo = (self.import_mode_dd.value or "upsert").strip()
+        explicacion = {
+            "truncate": "TRUNCATE + INSERT: borra el contenido de cada tabla y vuelve a insertar todo.",
+            "upsert": "UPSERT: inserta y actualiza si ya existe (mantiene datos, actualiza en colisión).",
+            "insert_ignore": "INSERT IGNORE: inserta solo lo nuevo y omite duplicados.",
+        }.get(modo, "UPSERT por defecto.")
+
+        self._open_confirm(
+            "Importar datos (ZIP JSONL)",
+            bullets=[
+                f"Modo elegido: {explicacion}",
+                "Se respetará el orden de dependencias entre tablas (padres → hijos).",
+                "Se desactivarán temporalmente las validaciones de claves foráneas para acelerar el proceso.",
+                "A continuación se abrirá el diálogo del sistema para SELECCIONAR el archivo ZIP a importar.",
+            ],
+            on_confirm=lambda d: self._proceed_import_zip(d),
+        )
+
+    def _proceed_import_zip(self, dlg):
+        self._close_dialog(dlg)
+        # Abre el diálogo nativo de “Abrir archivo…”
+        self.invoker_data.open_import()
+
+    def _confirm_import_sql(self, _e):
+        self._open_confirm(
+            "Importar base completa (SQL)",
+            bullets=[
+                "Se REEMPLAZARÁ toda la base de datos (DROP + CREATE + INSERT).",
+                "Usa este método si deseas restaurar un respaldo total.",
+                "A continuación se abrirá el diálogo del sistema para SELECCIONAR el archivo SQL a importar.",
+            ],
+            on_confirm=lambda d: self._proceed_import_sql(d),
+        )
+
+    def _proceed_import_sql(self, dlg):
+        self._close_dialog(dlg)
+        self.invoker_sql.open_import()
+
+    # ---------------------- Operaciones reales ----------------------
+    # ZIP JSONL
+    def _do_export_data_zip(self, save_path: str):
         try:
-            success = self.db.importar_base_datos(path)
-            if success:
-                mostrar_mensaje(self.page, "✅ Importación exitosa", "La base de datos fue importada correctamente.")
+            ok = self.db.exportar_datos_zip(save_path)
+            if ok:
+                mostrar_mensaje(
+                    self.page,
+                    "✅ Exportación completa",
+                    f"Datos exportados a ZIP JSONL.\nRuta: {save_path}",
+                )
             else:
-                mostrar_mensaje(self.page, "⚠️ Error", "No se pudo importar la base de datos.")
-        except Exception as e:
-            mostrar_mensaje(self.page, "❌ Error crítico", f"Ocurrió un error:\n{e}")
+                mostrar_mensaje(self.page, "⚠️ Error", "No se pudo exportar los datos.")
+        except Exception as ex:
+            mostrar_mensaje(self.page, "❌ Error al exportar", f"Ocurrió un error:\n{ex}")
 
-    def _on_export_db(self, path: str):
+    def _do_import_data_zip(self, import_path: str):
+        try:
+            modo = (self.import_mode_dd.value or "upsert").strip()
+            ok = self.db.importar_datos_zip(import_path, modo=modo)
+            if ok:
+                mostrar_mensaje(
+                    self.page,
+                    "✅ Importación exitosa",
+                    f"Datos importados correctamente.\nArchivo: {import_path}",
+                )
+                if self.page:
+                    self.page.pubsub.send("db:refrescar_datos", True)
+            else:
+                mostrar_mensaje(self.page, "⚠️ Error", "No se pudo importar los datos.")
+        except Exception as ex:
+            mostrar_mensaje(self.page, "❌ Error crítico", f"Ocurrió un error:\n{ex}")
+
+    # SQL completo
+    def _do_export_db_sql(self, path: str):
         try:
             success = self.db.exportar_base_datos(path)
             if success:
-                mostrar_mensaje(self.page, "✅ Exportación completa", "La base de datos fue exportada exitosamente.")
+                mostrar_mensaje(
+                    self.page,
+                    "✅ Exportación completa",
+                    f"La base de datos fue exportada exitosamente (SQL).\nRuta: {path}",
+                )
             else:
                 mostrar_mensaje(self.page, "⚠️ Error", "No se pudo exportar la base de datos.")
         except Exception as e:
             mostrar_mensaje(self.page, "❌ Error al exportar", f"Ocurrió un error:\n{e}")
 
-    def _on_save(self, e):
-        print("🧪 Guardar cambios en configuración de base de datos")
-
-    def _on_test_connection(self, e):
-        print("🧪 Probar conexión a la base de datos")
+    def _do_import_db_sql(self, path: str):
+        try:
+            success = self.db.importar_base_datos(path)
+            if success:
+                mostrar_mensaje(
+                    self.page,
+                    "✅ Importación exitosa",
+                    f"La base de datos fue importada correctamente (SQL).\nArchivo: {path}",
+                )
+                if self.page:
+                    self.page.pubsub.send("db:refrescar_datos", True)
+            else:
+                mostrar_mensaje(self.page, "⚠️ Error", "No se pudo importar la base de datos.")
+        except Exception as e:
+            mostrar_mensaje(self.page, "❌ Error crítico", f"Ocurrió un error:\n{e}")

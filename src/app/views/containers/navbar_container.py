@@ -50,13 +50,15 @@ class NavBarContainer(ft.Container):
             expanded=expanded,
             dark=self.theme_ctrl.tema_oscuro,
             on_toggle_nav=self._on_toggle_nav,
-            on_toggle_theme=(self._on_toggle_theme if not self.modo_settings else None),
-            on_settings=(lambda e: None) if self.modo_settings else self._on_settings,
+            on_toggle_theme=self._on_toggle_theme,
+            on_settings=self._on_settings,          # ✅ callback real
             on_exit=lambda e: self.page.window.close(),
             bg=colors["BTN_BG"],
-            mostrar_settings=not self.modo_settings,
-            mostrar_theme=not self.modo_settings
+            # NECESITA TRABAJARSE EN ESA SOLUCION
+            mostrar_settings=False,                   # ✅ visible
+            mostrar_theme=True
         )
+
 
         self.content = ft.Column(
             controls=[
@@ -127,6 +129,7 @@ class NavBarContainer(ft.Container):
     def _on_settings(self, e):
         self.page.go("/settings")
         self.page.update()
+
 
     def _on_return(self, e):
         self.page.go("/home")
