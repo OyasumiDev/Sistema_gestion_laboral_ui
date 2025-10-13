@@ -849,6 +849,7 @@ class DatabaseMysql:
         - Desactiva FOREIGN_KEY_CHECKS temporalmente.
         - Devuelve True si se completa sin errores.
         """
+        import traceback
         try:
             self._ensure_connection()
             cn = self.connection
@@ -886,16 +887,91 @@ class DatabaseMysql:
             cn.commit()
 
             print(f"[DB_LOG] ✅ Limpieza completa finalizada correctamente en '{self.database}'.\n")
-            mostrar_mensaje(f"✅ Todas las tablas de '{self.database}' fueron limpiadas correctamente.")
+
+            # ✅ Mostrar mensaje si hay acceso a la interfaz
+            try:
+                from app.views.containers.messages import mostrar_mensaje
+                if hasattr(self, "page") and self.page:
+                    mostrar_mensaje(
+                        self.page,
+                        "✅ Limpieza completada",
+                        f"Todas las tablas de '{self.database}' fueron limpiadas correctamente."
+                    )
+                else:
+                    print(f"[DB_LOG] ✅ Todas las tablas de '{self.database}' fueron limpiadas correctamente (sin UI).")
+            except Exception:
+                print(f"[DB_LOG] ✅ Limpieza completada (sin mostrar mensaje en UI).")
+
             return True
 
         except Exception:
             print(f"[DB_LOG] ❌ Error crítico al limpiar tablas en '{self.database}':")
             print(traceback.format_exc())
-            mostrar_mensaje("❌ Error al limpiar todas las tablas. Revisa la consola para más detalles.")
+
+            try:
+                from app.views.containers.messages import mostrar_mensaje
+                if hasattr(self, "page") and self.page:
+                    mostrar_mensaje(
+                        self.page,
+                        "❌ Error al limpiar",
+                        f"Ocurrió un error al limpiar todas las tablas de '{self.database}'. Revisa la consola."
+                    )
+            except Exception:
+                pass
+
             return False
+
         finally:
             try:
                 cur.close()
             except Exception:
                 pass
+
+
+    # ---------------------- Helpers para limpieza de tablas ----------------------
+    def _fetch_fks(self, cursor):
+        """
+        Devuelve un diccionario con las relaciones de claves foráneas:
+        { tabla_hija: [tabla_padre, ...], ... }
+        """
+        cursor.execute("""
+            SELECT
+                TABLE_NAME AS child_table,
+                REFERENCED_TABLE_NAME AS parent_table
+            FROM information_schema.KEY_COLUMN_USAGE
+            WHERE
+                TABLE_SCHEMA = DATABASE()
+                AND REFERENCED_TABLE_NAME IS NOT NULL
+        """)
+        deps = {}
+        for child, parent in cursor.fetchall():
+            deps.setdefault(child, []).append(parent)
+        return deps
+
+
+    def _topo_sort_tables(self, tables: list[str], edges: dict[str, list[str]]):
+        """
+        Ordena las tablas topológicamente (padres antes que hijos).
+        Usa DFS para evitar dependencias cíclicas.
+        """
+        visited = set()
+        temp = set()
+        result = []
+
+        def visit(node):
+            if node in visited:
+                return
+            if node in temp:
+                print(f"[DB_LOG] ⚠️ Dependencia cíclica detectada en {node}. Se omitirá parcialmente.")
+                return
+            temp.add(node)
+            for parent in edges.get(node, []):
+                if parent in tables:
+                    visit(parent)
+            temp.remove(node)
+            visited.add(node)
+            result.append(node)
+
+        for t in tables:
+            visit(t)
+        return result
