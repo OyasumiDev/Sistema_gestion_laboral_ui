@@ -10,13 +10,13 @@ class DatabaseSettingsArea(ft.Container):
     Centro de respaldo y restauración de datos:
       • Exportar (ZIP JSONL o SQL completo)
       • Importar (ZIP JSONL o SQL completo)
-    Limpia y compatible con Flet 0.23 + MySQL 8.0.
+      • Limpiar todas las tablas (con opción de respaldo previo)
     """
+
     def __init__(self, page: ft.Page):
         super().__init__(expand=True, padding=20)
         self.page = page
         self.db = DatabaseMysql()
-
         self._setup_invokers()
         self._build_ui()
 
@@ -26,7 +26,6 @@ class DatabaseSettingsArea(ft.Container):
 
         # --- Exportar ---
         export_title = ft.Text("Exportar", size=18, weight="bold")
-
         self.btn_export_zip = ft.ElevatedButton(
             content=ft.Row(
                 controls=[
@@ -71,7 +70,6 @@ class DatabaseSettingsArea(ft.Container):
 
         # --- Importar ---
         import_title = ft.Text("Importar", size=18, weight="bold")
-
         self.import_mode_dd = ft.Dropdown(
             label="Modo de importación (ZIP JSONL)",
             options=[
@@ -126,6 +124,36 @@ class DatabaseSettingsArea(ft.Container):
             spacing=10,
         )
 
+        # --- Limpiar datos ---
+        cleanup_title = ft.Text("Mantenimiento", size=18, weight="bold")
+        self.btn_clear_data = ft.OutlinedButton(
+            content=ft.Row(
+                controls=[
+                    ft.Image(src="assets/buttons/trash-bin.png", width=22, height=22),
+                    ft.Text("Borrar todos los datos del programa"),
+                ],
+                spacing=10,
+                alignment=ft.MainAxisAlignment.CENTER,
+            ),
+            style=ft.ButtonStyle(color=ft.colors.RED_400),
+            on_click=self.borrar_datos_programa,
+        )
+
+        cleanup_block = ft.Column(
+            controls=[
+                cleanup_title,
+                ft.Text(
+                    "Permite limpiar completamente las tablas del sistema. "
+                    "Se recomienda guardar un respaldo antes de hacerlo.",
+                    size=12,
+                    color=ft.colors.GREY_700,
+                ),
+                self.btn_clear_data,
+            ],
+            spacing=10,
+        )
+
+        # --- Contenedor principal ---
         self.content = ft.Column(
             controls=[
                 title,
@@ -133,13 +161,14 @@ class DatabaseSettingsArea(ft.Container):
                 export_block,
                 ft.Divider(height=24),
                 import_block,
+                ft.Divider(height=24),
+                cleanup_block,
             ],
             spacing=14,
         )
 
     # ---------------------- Invokers ----------------------
     def _setup_invokers(self):
-        # Export / Import de DATOS (ZIP JSONL)
         self.invoker_data = FileSaveInvoker(
             page=self.page,
             on_save=self._do_export_data_zip,
@@ -151,7 +180,6 @@ class DatabaseSettingsArea(ft.Container):
             file_name="gl_datos_backup.zip",
         )
 
-        # Export / Import de SQL completo
         self.invoker_sql = FileSaveInvoker(
             page=self.page,
             on_save=self._do_export_db_sql,
@@ -261,10 +289,7 @@ class DatabaseSettingsArea(ft.Container):
         try:
             ok = self.db.exportar_datos_zip(save_path)
             if ok:
-                mostrar_mensaje(
-                    self.page, "✅ Exportación completa",
-                    f"Datos exportados correctamente.\nRuta: {save_path}",
-                )
+                mostrar_mensaje(self.page, "✅ Exportación completa", f"Datos exportados correctamente.\nRuta: {save_path}")
             else:
                 mostrar_mensaje(self.page, "⚠️ Error", "No se pudo exportar los datos.")
         except Exception as ex:
@@ -275,10 +300,7 @@ class DatabaseSettingsArea(ft.Container):
             modo = (self.import_mode_dd.value or "upsert").strip()
             ok = self.db.importar_datos_zip(import_path, modo=modo)
             if ok:
-                mostrar_mensaje(
-                    self.page, "✅ Importación exitosa",
-                    f"Datos importados correctamente.\nArchivo: {import_path}",
-                )
+                mostrar_mensaje(self.page, "✅ Importación exitosa", f"Datos importados correctamente.\nArchivo: {import_path}")
                 self.db.connect()
                 pubsub = getattr(self.page, "pubsub", None)
                 if pubsub:
@@ -286,10 +308,7 @@ class DatabaseSettingsArea(ft.Container):
                         if hasattr(pubsub, "publish"):
                             pubsub.publish("db:refrescar_datos", True)
                         elif hasattr(pubsub, "send_all"):
-                            try:
-                                pubsub.send_all("db:refrescar_datos", True)
-                            except TypeError:
-                                pubsub.send_all("db:refrescar_datos")
+                            pubsub.send_all("db:refrescar_datos", True)
                     except Exception:
                         pass
             else:
@@ -301,10 +320,7 @@ class DatabaseSettingsArea(ft.Container):
         try:
             success = self.db.exportar_base_datos(path)
             if success:
-                mostrar_mensaje(
-                    self.page, "✅ Exportación completa",
-                    f"La base fue exportada correctamente.\nRuta: {path}",
-                )
+                mostrar_mensaje(self.page, "✅ Exportación completa", f"La base fue exportada correctamente.\nRuta: {path}")
             else:
                 mostrar_mensaje(self.page, "⚠️ Error", "No se pudo exportar la base.")
         except Exception as e:
@@ -314,27 +330,95 @@ class DatabaseSettingsArea(ft.Container):
         try:
             print(f"[DB_LOG] 🚀 Restaurando base desde {path}")
             success = self.db.importar_base_datos(path, page=self.page)
-
             if success:
-                print(f"[DB_LOG] 🔁 Reconectando a base '{self.db.database}' después de restauración...")
                 self.db.connect()
+                mostrar_mensaje(self.page, "✅ Importación completa",
+                                f"La base de datos '{self.db.database}' fue reconstruida correctamente.\nArchivo: {path}")
+            else:
+                mostrar_mensaje(self.page, "⚠️ Error", f"No se pudo importar la base '{self.db.database}'.")
+        except Exception as e:
+            mostrar_mensaje(self.page, "❌ Error", f"Ocurrió un error al restaurar:\n{e}")
+
+    # ---------------------- Borrar datos del programa ----------------------
+    def borrar_datos_programa(self, _e=None):
+        dlg = ft.AlertDialog(
+            modal=True,
+            title=ft.Text("🧹 Limpiar todos los datos del programa", weight="bold"),
+            content=ft.Column(
+                controls=[
+                    ft.Text("Esta acción eliminará TODO el contenido de las tablas del sistema.",
+                            size=13, color=ft.colors.RED_400),
+                    ft.Text("⚠️ Es recomendable hacer un respaldo antes de continuar.",
+                            size=12, italic=True, color=ft.colors.GREY_700),
+                    ft.Text("Puedes guardar tus datos actuales (ZIP JSONL) antes de limpiar o "
+                            "borrar directamente. Esta acción no puede deshacerse.",
+                            size=12, color=ft.colors.GREY_700),
+                ],
+                spacing=8, tight=True),
+            actions_alignment=ft.MainAxisAlignment.END,
+        )
+
+        def _cancel(_):
+            dlg.open = False
+            self.page.update()
+
+        def _borrar_sin_guardar(_):
+            dlg.open = False
+            self.page.update()
+            self._proceed_clear_tables()
+
+        def _guardar_y_borrar(_):
+            dlg.open = False
+            self.page.update()
+            fecha = datetime.today().strftime("%Y%m%d_%H%M%S")
+            nombre = f"respaldo_pre_borrado_{fecha}.zip"
+            self.invoker_data = FileSaveInvoker(
+                page=self.page,
+                on_save=lambda path: self._export_y_luego_limpiar(path),
+                save_dialog_title="Guardar respaldo antes de limpiar",
+                allowed_extensions=["zip"],
+                file_name=nombre,
+            )
+            self.invoker_data.open_save()
+
+        dlg.actions = [
+            ft.TextButton("Cancelar", on_click=_cancel),
+            ft.TextButton("Borrar sin guardar", on_click=_borrar_sin_guardar,
+                          style=ft.ButtonStyle(color=ft.colors.RED_400)),
+            ft.ElevatedButton("Guardar y limpiar", on_click=_guardar_y_borrar),
+        ]
+        self.page.dialog = dlg
+        dlg.open = True
+        self.page.update()
+
+    # ---------------------- Operaciones internas ----------------------
+    def _export_y_luego_limpiar(self, path: str):
+        try:
+            ok = self.db.exportar_datos_zip(path)
+            if ok:
+                mostrar_mensaje(self.page, "✅ Respaldo guardado", f"Archivo guardado en:\n{path}")
+                self._proceed_clear_tables()
+            else:
+                mostrar_mensaje(self.page, "⚠️ Error", "No se pudo crear el respaldo antes de limpiar.")
+        except Exception as ex:
+            mostrar_mensaje(self.page, "❌ Error", str(ex))
+
+    def _proceed_clear_tables(self):
+        try:
+            ok = self.db.clear_tables()
+            if ok:
+                mostrar_mensaje(self.page, "✅ Limpieza completada",
+                                f"Todas las tablas de '{self.db.database}' fueron limpiadas correctamente.")
                 pubsub = getattr(self.page, "pubsub", None)
                 if pubsub:
                     try:
                         if hasattr(pubsub, "publish"):
                             pubsub.publish("db:refrescar_datos", True)
                         elif hasattr(pubsub, "send_all"):
-                            try:
-                                pubsub.send_all("db:refrescar_datos", True)
-                            except TypeError:
-                                pubsub.send_all("db:refrescar_datos")
+                            pubsub.send_all("db:refrescar_datos", True)
                     except Exception:
                         pass
-                mostrar_mensaje(
-                    self.page, "✅ Importación completa",
-                    f"La base de datos '{self.db.database}' fue reconstruida correctamente.\nArchivo: {path}",
-                )
             else:
-                mostrar_mensaje(self.page, "⚠️ Error", f"No se pudo importar la base '{self.db.database}'.")
-        except Exception as e:
-            mostrar_mensaje(self.page, "❌ Error", f"Ocurrió un error al restaurar:\n{e}")
+                mostrar_mensaje(self.page, "⚠️ Error", "No se pudo limpiar las tablas.")
+        except Exception as ex:
+            mostrar_mensaje(self.page, "❌ Error crítico", str(ex))

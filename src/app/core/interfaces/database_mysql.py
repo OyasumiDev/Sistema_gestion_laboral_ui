@@ -840,3 +840,62 @@ class DatabaseMysql:
                 cur.close()
             except Exception:
                 pass
+
+    # ---------------------- Limpieza total de tablas ----------------------
+    def clear_tables(self) -> bool:
+        """
+        Borra TODO el contenido de TODAS las tablas de la base de datos actual.
+        - Respeta el orden de dependencias FK (trunca hijos antes que padres).
+        - Desactiva FOREIGN_KEY_CHECKS temporalmente.
+        - Devuelve True si se completa sin errores.
+        """
+        try:
+            self._ensure_connection()
+            cn = self.connection
+            cur = cn.cursor()
+
+            print(f"[DB_LOG] ⚠️ Iniciando limpieza completa de todas las tablas en '{self.database}'...")
+            cur.execute("SET FOREIGN_KEY_CHECKS = 0")
+
+            # Obtener todas las tablas base
+            cur.execute("""
+                SELECT TABLE_NAME 
+                FROM information_schema.tables 
+                WHERE table_schema = DATABASE() AND table_type='BASE TABLE'
+                ORDER BY TABLE_NAME
+            """)
+            tables = [r[0] for r in cur.fetchall()]
+            if not tables:
+                print("[DB_LOG] ℹ️ No se encontraron tablas en la base de datos.")
+                return True
+
+            # Obtener dependencias (padre -> hijo)
+            edges = self._fetch_fks(cur)
+            # Invertimos dependencias para truncar primero las tablas hijas
+            order = self._topo_sort_tables(tables, edges)
+            order.reverse()  # truncar hijos → padres
+
+            for tbl in order:
+                try:
+                    cur.execute(f"TRUNCATE TABLE `{tbl}`")
+                    print(f"[DB_LOG] 🧹 Tabla '{tbl}' limpiada correctamente.")
+                except Exception as e:
+                    print(f"[DB_LOG] ⚠️ No se pudo limpiar tabla '{tbl}': {e}")
+
+            cur.execute("SET FOREIGN_KEY_CHECKS = 1")
+            cn.commit()
+
+            print(f"[DB_LOG] ✅ Limpieza completa finalizada correctamente en '{self.database}'.\n")
+            mostrar_mensaje(f"✅ Todas las tablas de '{self.database}' fueron limpiadas correctamente.")
+            return True
+
+        except Exception:
+            print(f"[DB_LOG] ❌ Error crítico al limpiar tablas en '{self.database}':")
+            print(traceback.format_exc())
+            mostrar_mensaje("❌ Error al limpiar todas las tablas. Revisa la consola para más detalles.")
+            return False
+        finally:
+            try:
+                cur.close()
+            except Exception:
+                pass
