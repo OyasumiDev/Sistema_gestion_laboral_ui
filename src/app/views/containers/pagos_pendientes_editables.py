@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Callable, Dict, List, Optional
 import flet as ft
+from decimal import Decimal
 
 from app.core.app_state import AppState
 from app.views.containers.modal_alert import ModalAlert
@@ -12,7 +13,7 @@ from app.helpers.pagos.payment_table_builder import PaymentTableBuilder
 from app.helpers.pagos.row_refresh import PaymentRowRefresh
 from app.helpers.pagos.pagos_repo import PagosRepo
 from app.helpers.pagos.payment_view_math import PaymentViewMath
-from decimal import Decimal 
+
 # Modelos
 from app.models.payment_model import PaymentModel
 from app.models.loan_model import LoanModel
@@ -20,6 +21,12 @@ from app.models.descuento_detalles_model import DescuentoDetallesModel
 
 
 class PagosPendientesEditables(ft.UserControl):
+    """
+    Reglas clave:
+      - saldo: neto a pagar (monto_base - descuentos - préstamos) ANTES de dividir en depósito/efectivo.
+      - pago_efectivo: parte en cash = max(total_vista - pago_deposito, 0).
+      - Se persisten por separado: pago_deposito, pago_efectivo y saldo.
+    """
     COL_KEYS = [
         "id_pago", "id_empleado", "nombre", "fecha_pago", "horas", "sueldo_hora",
         "monto_base", "descuentos", "prestamos", "saldo", "deposito",
@@ -105,7 +112,7 @@ class PagosPendientesEditables(ft.UserControl):
                     tiene_prestamo = bool(self.loan_model.get_prestamo_activo_por_empleado(num_nomina))
 
                     raw_dep = self._deposito_buffer.get(id_pago, p.get("pago_deposito", 0))
-                    deposito_ui = self._sanitize_float(raw_dep)  # <-- usa sanitizador robusto
+                    deposito_ui = self._sanitize_float(raw_dep)
 
                     calc = self.math.recalc_from_pago_row(p, deposito_ui)
 
@@ -145,6 +152,7 @@ class PagosPendientesEditables(ft.UserControl):
         def money(v: float) -> str:
             return f"${float(v):,.2f}"
 
+        # UI texts a partir de calc (sin mezclar efectivo con saldo)
         txts = {
             "id": ft.Text(str(id_pago), size=font),
             "num": ft.Text(str(num), size=font),
@@ -155,9 +163,9 @@ class PagosPendientesEditables(ft.UserControl):
             "base": ft.Text(money(monto_base), size=font),
             "desc": ft.Text(money(calc.get("descuentos_view", 0.0)), size=font),
             "prest": ft.Text(money(calc.get("prestamos_view", 0.0)), size=font),
-            "saldo": ft.Text(money(calc.get("saldo_ajuste", 0.0)), size=font),
-            "efectivo": ft.Text(money(calc.get("efectivo", 0.0)), size=font),
-            "total": ft.Text(money(calc.get("total_vista", 0.0)), size=font),
+            "saldo": ft.Text(money(calc.get("saldo_ajuste", 0.0)), size=font),  # neto a pagar
+            "efectivo": ft.Text(money(calc.get("efectivo", 0.0)), size=font),   # cash (total - depósito)
+            "total": ft.Text(money(calc.get("total_vista", 0.0)), size=font),   # total a pagar
         }
 
         tf_deposito = ft.TextField(
@@ -168,15 +176,13 @@ class PagosPendientesEditables(ft.UserControl):
             on_submit=lambda e, pid=id_pago: self._guardar_deposito_desde_ui_pend(pid),
         )
 
-        # Botón de descuentos
+        # Botones de edición
         btn_desc = ft.IconButton(
             icon=ft.icons.REMOVE_CIRCLE_OUTLINE,
             tooltip="Editar descuentos",
             icon_color=ft.colors.AMBER_700,
             on_click=lambda e, pago_row=p: self._abrir_modal_descuentos(pago_row),
         )
-
-        # Botón de préstamos — solo activo si el empleado tiene préstamo
         btn_prest = ft.IconButton(
             icon=ft.icons.ACCOUNT_BALANCE_WALLET,
             tooltip="Editar préstamos" if tiene_prestamo_activo else "Sin préstamo activo",
@@ -184,7 +190,6 @@ class PagosPendientesEditables(ft.UserControl):
             disabled=not tiene_prestamo_activo,
             on_click=(lambda e, pago_row=p: self._abrir_modal_prestamos(pago_row)) if tiene_prestamo_activo else None,
         )
-
         ediciones_cell = ft.Row([btn_desc, btn_prest], spacing=4)
 
         # Acciones
@@ -250,7 +255,6 @@ class PagosPendientesEditables(ft.UserControl):
 
         return row
 
-
     # ---------------- Depósito (UI) ----------------
     def _on_deposito_change_pend(self, id_pago: int, value: str):
         self._deposito_buffer[id_pago] = value or ""
@@ -258,7 +262,6 @@ class PagosPendientesEditables(ft.UserControl):
             self._actualizar_fila(id_pago, persist=False)
         except Exception as ex:
             print(f"⚠️ recalculo UI (pend): {ex}")
-
 
     def _actualizar_fila(self, id_pago_nomina: int, *, persist: bool):
         try:
@@ -289,14 +292,22 @@ class PagosPendientesEditables(ft.UserControl):
             # Recalcular vista con datos actuales
             calc = self.math.recalc_from_pago_row(p_db, deposito_ui)
 
-            # Refrescar UI
+            # Derivar montos claros
+            total_vista = float(calc.get("total_vista", 0.0))
+            saldo_val = float(calc.get("saldo_ajuste", 0.0))   # neto a pagar
+            efectivo_val = float(calc.get("efectivo", 0.0))    # cash
+            # Clamp por seguridad si depósito > total
+            if deposito_ui > total_vista + 1e-9:
+                efectivo_val = 0.0
+
+            # Refrescar UI (NO mezclar efectivo con saldo)
             self.row_refresh.set_descuentos(row, calc["descuentos_view"])
             self.row_refresh.set_prestamos(row, calc["prestamos_view"])
-            self.row_refresh.set_saldo(row, calc["saldo_ajuste"])
-            self.row_refresh.set_efectivo(row, calc["efectivo"])
-            self.row_refresh.set_total(row, calc["total_vista"])
+            self.row_refresh.set_saldo(row, saldo_val)
+            self.row_refresh.set_efectivo(row, efectivo_val)
+            self.row_refresh.set_total(row, total_vista)
             self.row_refresh.set_deposito_border_color(
-                row, ft.colors.RED if deposito_ui > calc["total_vista"] + 1e-9 else None
+                row, ft.colors.RED if deposito_ui > total_vista + 1e-9 else None
             )
             if getattr(row, "page", None):
                 row.update()
@@ -304,8 +315,12 @@ class PagosPendientesEditables(ft.UserControl):
             if not persist:
                 return
 
-            # ⚠️ Persistencia: SOLO depósito. Deja que el backend derive efectivo y saldo
-            payload = { "pago_deposito": float(deposito_ui) }
+            # Persistencia: depósito, efectivo y saldo por separado
+            payload = {
+                "pago_deposito": float(deposito_ui),
+                "pago_efectivo": float(efectivo_val),
+                "saldo": float(saldo_val),
+            }
 
             ok = False
             try:
@@ -319,17 +334,18 @@ class PagosPendientesEditables(ft.UserControl):
                 ok = False
 
             if not ok:
-                ModalAlert.mostrar_info("Atención", "No se pudo guardar los montos en DB. Revisa PaymentModel/Repo.")
+                ModalAlert.mostrar_info(
+                    "Atención",
+                    "No se pudo guardar depósito/efectivo/saldo en DB. Revisa PaymentModel/Repo."
+                )
                 return
 
-            # Limpiar buffer y releer para reflejar SALDO real desde DB
+            # Limpiar buffer y releer para reflejar desde DB
             self._deposito_buffer.pop(id_pago_nomina, None)
-            # Recalcular/repintar con persist=False para tomar lo que guardó el backend
             self._actualizar_fila(id_pago_nomina, persist=False)
 
         except Exception as ex:
             print(f"❌ Error al actualizar fila: {ex}")
-
 
     def _guardar_deposito_desde_ui_pend(self, id_pago_nomina: int):
         if id_pago_nomina in self._saving_rows:
@@ -362,13 +378,11 @@ class PagosPendientesEditables(ft.UserControl):
                     except Exception:
                         pass
 
-
     def _refresh_table(self):
         """Refresca de forma segura: sólo si la tabla ya está montada."""
         if getattr(self.table, "page", None):
             self.table.update()
         elif getattr(self, "page", None):
-            # como fallback mínimo, actualiza la página si existe
             try:
                 self.page.update()
             except Exception:
@@ -442,8 +456,10 @@ class PagosPendientesEditables(ft.UserControl):
                     self._refresh_table()
 
                     if callable(self.on_pago_eliminado):
-                        try: self.on_pago_eliminado(id_pago_nomina)
-                        except Exception: pass
+                        try:
+                            self.on_pago_eliminado(id_pago_nomina)
+                        except Exception:
+                            pass
                     if callable(self.on_data_changed):
                         self.on_data_changed()
                 else:
@@ -457,18 +473,19 @@ class PagosPendientesEditables(ft.UserControl):
             on_confirm=eliminar,
         ).mostrar()
 
-        # ---------------- Modales ----------------
+    # ---------------- Modales ----------------
     def _abrir_modal_descuentos(self, pago_row: Dict[str, Any]):
         p = {
             "id_pago": int(pago_row.get("id_pago_nomina") or pago_row.get("id_pago")),
             "numero_nomina": int(pago_row["numero_nomina"]),
             "estado": pago_row.get("estado"),
         }
+
         def on_ok(_):
             # Relee totales de descuentos/prestamos y refresca solo la fila
             self._refrescar_descuentos_y_totales(p["id_pago"])
-        ModalDescuentos(pago_data=p, on_confirmar=on_ok).mostrar()
 
+        ModalDescuentos(pago_data=p, on_confirmar=on_ok).mostrar()
 
     def _abrir_modal_prestamos(self, pago_row: Dict[str, Any]):
         num = int(pago_row["numero_nomina"])
@@ -480,11 +497,12 @@ class PagosPendientesEditables(ft.UserControl):
             return
 
         p = {"id_pago": pago_id, "numero_nomina": num, "estado": pago_row.get("estado")}
+
         def on_ok(_):
             # Recalcula usando DB fresca; refleja cambios en la fila
             self._refrescar_descuentos_y_totales(pago_id)
-        ModalPrestamosNomina(pago_data=p, on_confirmar=on_ok).mostrar()
 
+        ModalPrestamosNomina(pago_data=p, on_confirmar=on_ok).mostrar()
 
     # ---------------- Utils ----------------
     @staticmethod
@@ -494,7 +512,6 @@ class PagosPendientesEditables(ft.UserControl):
             return 0.0
         if isinstance(v, (int, float, Decimal)):
             return float(v)
-        # Para cualquier otra cosa, conviértelo a str y limpia
         s = str(v)
         try:
             s = s.strip().replace(",", "")
@@ -506,7 +523,6 @@ class PagosPendientesEditables(ft.UserControl):
             return float(s)
         except Exception:
             return 0.0
-
 
     @staticmethod
     def _priorizar_por_filtros(items: List[Dict[str, Any]], filtros: Dict[str, str]) -> List[Dict[str, Any]]:
@@ -524,7 +540,6 @@ class PagosPendientesEditables(ft.UserControl):
         matching = [x for x in items if match(x)]
         non_matching = [x for x in items if not match(x)]
         return matching + non_matching
-
 
     def _refrescar_descuentos_y_totales(self, id_pago_nomina: int):
         try:
@@ -553,13 +568,19 @@ class PagosPendientesEditables(ft.UserControl):
             if not row:
                 return
 
+            total_vista = float(calc.get("total_vista", 0.0))
+            saldo_val = float(calc.get("saldo_ajuste", 0.0))
+            efectivo_val = float(calc.get("efectivo", 0.0))
+            if deposito_ui > total_vista + 1e-9:
+                efectivo_val = 0.0
+
             self.row_refresh.set_descuentos(row, calc["descuentos_view"])
             self.row_refresh.set_prestamos(row, calc["prestamos_view"])
-            self.row_refresh.set_saldo(row, calc["saldo_ajuste"])
-            self.row_refresh.set_efectivo(row, calc["efectivo"])
-            self.row_refresh.set_total(row, calc["total_vista"])
+            self.row_refresh.set_saldo(row, saldo_val)
+            self.row_refresh.set_efectivo(row, efectivo_val)
+            self.row_refresh.set_total(row, total_vista)
             self.row_refresh.set_deposito_border_color(
-                row, ft.colors.RED if deposito_ui > calc["total_vista"] + 1e-9 else None
+                row, ft.colors.RED if deposito_ui > total_vista + 1e-9 else None
             )
 
             if getattr(row, "page", None):

@@ -38,7 +38,7 @@ class ModalDescuentos(ft.AlertDialog):
         self.detalles_model = DescuentoDetallesModel()
         self.payment_model = PaymentModel()
 
-        # Estado de pago: si viene en payload o por modo, úsalo; si no, pregunta a DB
+        # Estado de pago
         estado_payload = str(self.pago_data.get("estado") or "").strip().lower()
         if self._modo == "confirmado" or estado_payload == "pagado":
             self.pagado = True
@@ -50,13 +50,14 @@ class ModalDescuentos(ft.AlertDialog):
         # ¿Hay confirmados? (para precargar UI)
         self.tiene_desc_confirmados = self.discount_model.tiene_descuentos_guardados(self.id_pago)
 
-        # Controles UI
+        # -------- Controles UI (defaults pedidos) --------
         self.aplicado_imss = ft.Checkbox(label="Aplicar IMSS", value=True, on_change=self._update_total)
         self.monto_imss = ft.TextField(label="Monto IMSS", value="50.0", width=200, on_change=self._update_total)
 
-        self.aplicado_transporte = ft.Checkbox(label="Aplicar Transporte", value=False, on_change=self._update_total)
+        # Transporte: seleccionado y visible por defecto con 100.0
+        self.aplicado_transporte = ft.Checkbox(label="Aplicar Transporte", value=True, on_change=self._update_total)
         self.monto_transporte = ft.TextField(
-            label="Monto Transporte", value="0.0", width=200, visible=False, on_change=self._update_total
+            label="Monto Transporte", value="100.0", width=200, visible=True, on_change=self._update_total
         )
 
         self.aplicado_extra = ft.Checkbox(label="Aplicar Descuento Extra", value=False, on_change=self._update_total)
@@ -146,7 +147,6 @@ class ModalDescuentos(ft.AlertDialog):
         except Exception:
             return False
 
-
     def _cargar_estado_inicial(self):
         """
         Si hay descuentos confirmados -> precargar la UI con esos valores.
@@ -156,8 +156,8 @@ class ModalDescuentos(ft.AlertDialog):
             dlist = self.discount_model.get_descuentos_por_pago(self.id_pago) or []
 
             # Reset UI
-            self.aplicado_imss.value = False;        self.monto_imss.value = "0.0"
-            self.aplicado_transporte.value = False;  self.monto_transporte.value = "0.0"
+            self.aplicado_imss.value = False;        self.monto_imss.value = "50.0"
+            self.aplicado_transporte.value = False;  self.monto_transporte.value = "100.0"
             self.aplicado_extra.value = False;       self.monto_extra.value = "0.0"
             self.descripcion_extra.value = ""
 
@@ -166,9 +166,7 @@ class ModalDescuentos(ft.AlertDialog):
             legacy_desc = None
 
             for d in dlist:
-                tipo = str(
-                    d.get(E_DISCOUNT.TIPO.value) or d.get("tipo") or ""
-                ).lower()
+                tipo = str(d.get(E_DISCOUNT.TIPO.value) or d.get("tipo") or "").lower()
                 try:
                     monto = float(d.get(E_DISCOUNT.MONTO_DESCUENTO.value) or d.get("monto") or 0.0)
                 except Exception:
@@ -192,7 +190,7 @@ class ModalDescuentos(ft.AlertDialog):
                 elif tipo in ("totales", "total", "total_descuentos"):
                     legacy_desc = desc or "Descuentos totales (legacy)"
 
-            # ⚠️ Si no hubo ningún match por-línea pero sí hay filas, es el caso 'totales'
+            # Si no hubo ningún match por-línea pero sí hay filas, es el caso 'totales'
             if not hubo_match_detallado and dlist:
                 self.aplicado_extra.value = True
                 self.monto_extra.value = f"{total_agg:.2f}"
@@ -201,24 +199,32 @@ class ModalDescuentos(ft.AlertDialog):
             self.monto_transporte.visible = self.aplicado_transporte.value
             return
 
-        # --- Sin confirmados: usar/crear borrador como ya tenías ---
+        # --- Sin confirmados: usar/crear borrador ---
         det = self.detalles_model.obtener_por_id_pago(self.id_pago) or {}
         if det:
             self.aplicado_imss.value = bool(det.get(self.detalles_model.COL_APLICADO_IMSS, False))
             self.monto_imss.value = self._to_str(det.get(self.detalles_model.COL_MONTO_IMSS, "50.0"))
 
             self.aplicado_transporte.value = bool(det.get(self.detalles_model.COL_APLICADO_TRANSPORTE, False))
-            self.monto_transporte.value = self._to_str(det.get(self.detalles_model.COL_MONTO_TRANSPORTE, "0.0"))
+            # Fallback a 100.0 por si el borrador no trae monto
+            self.monto_transporte.value = self._to_str(det.get(self.detalles_model.COL_MONTO_TRANSPORTE, "100.0"))
             self.monto_transporte.visible = self.aplicado_transporte.value
 
             self.aplicado_extra.value = bool(det.get(self.detalles_model.COL_APLICADO_EXTRA, False))
             self.monto_extra.value = self._to_str(det.get(self.detalles_model.COL_MONTO_EXTRA, "0.0"))
             self.descripcion_extra.value = det.get(self.detalles_model.COL_DESCRIPCION_EXTRA, "") or ""
         else:
-            self.aplicado_imss.value = True;  self.monto_imss.value = "50.0"
-            self.aplicado_transporte.value = False; self.monto_transporte.value = "0.0"; self.monto_transporte.visible = False
-            self.aplicado_extra.value = False; self.monto_extra.value = "0.0"; self.descripcion_extra.value = ""
+            # Defaults cuando no hay confirmados ni borrador:
+            self.aplicado_imss.value = True
+            self.monto_imss.value = "50.0"
 
+            self.aplicado_transporte.value = True
+            self.monto_transporte.value = "100.0"
+            self.monto_transporte.visible = True
+
+            self.aplicado_extra.value = False
+            self.monto_extra.value = "0.0"
+            self.descripcion_extra.value = ""
 
     # ---------------- Internos: UI / validación ----------------
     def _apply_readonly_if_needed(self):
