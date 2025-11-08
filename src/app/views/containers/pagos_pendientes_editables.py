@@ -68,9 +68,18 @@ class PagosPendientesEditables(ft.UserControl):
         self.filters: Dict[str, str] = {"id_empleado": "", "id_pago": ""}
         self._deposito_buffer: Dict[int, Any] = {}
         self._saving_rows: set[int] = set()
+        sort_state = AppState().get("pagos.sort.pend", {"key": "id_pago", "asc": False})  # CHANGE: estado persistente de orden
+        self.sort_key: str = str(sort_state.get("key") or "id_pago")
+        self.sort_asc: bool = bool(sort_state.get("asc", False))
 
         # Tabla base
-        self.table: ft.DataTable = self.table_builder.build_table(self.COL_KEYS, rows=[])
+        self.table: ft.DataTable = self.table_builder.build_table(
+            self.COL_KEYS,
+            rows=[],
+            on_sort=self._handle_sort_event,  # CHANGE: enganchar ordenamiento
+            sort_key=self.sort_key,
+            sort_ascending=self.sort_asc,
+        )
 
     # ---------------- Ciclo de vida ----------------
     def did_mount(self):
@@ -92,6 +101,41 @@ class PagosPendientesEditables(ft.UserControl):
     def refresh(self, **_): return self.reload()
     def load(self, **_): return self.reload()
     def render(self, **_): return self.reload()
+
+    def _handle_sort_event(self, column_key: str, ascending: bool) -> None:
+        # CHANGE: callback del encabezado para persistir y reordenar
+        self.set_sort_state(column_key, ascending)
+        self.reload()
+
+    def get_sort_state(self) -> Dict[str, Any]:
+        # CHANGE: expone estado actual (key/asc) al contenedor padre
+        return {"key": self.sort_key, "asc": self.sort_asc}
+
+    def set_sort_state(self, key: str, asc: bool) -> None:
+        # CHANGE: valida y persiste el estado de orden
+        allowed = {"id_pago", "id_empleado", "fecha_pago", "horas", "monto_base", "total"}
+        self.sort_key = key if key in allowed else "id_pago"
+        self.sort_asc = bool(asc)
+        AppState().set("pagos.sort.pend", self.get_sort_state())
+        root_state = dict(AppState().get("pagos.sort", {}))
+        root_state["pend"] = self.get_sort_state()
+        AppState().set("pagos.sort", root_state)
+
+    def _apply_header_sort_indicator(self) -> None:
+        # CHANGE: actualiza flechas en encabezados tras refresco
+        if not getattr(self.table, "columns", None):
+            return
+        for idx, col in enumerate(self.table.columns):
+            key = self.COL_KEYS[idx]
+            label_ctrl = getattr(col, "label", None)
+            text_ctrl = getattr(label_ctrl, "content", None) if isinstance(label_ctrl, ft.Container) else None
+            if not isinstance(text_ctrl, ft.Text):
+                continue
+            base_label = key.replace("_", " ").title()
+            if self.sort_key == key:
+                text_ctrl.value = self.table_builder.mark_sorted_column(base_label, self.sort_asc)
+            else:
+                text_ctrl.value = base_label
 
     # ---------------- Render/recarga ----------------
     def reload(self) -> None:

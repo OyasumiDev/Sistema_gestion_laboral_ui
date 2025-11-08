@@ -64,3 +64,15 @@ class ModalAlert:
         modal = ModalAlert(title_text=titulo, message=mensaje, only_info=True)
         modal.mostrar()
 
+    @staticmethod
+    def confirm_async(title: str, message: str, *, on_confirm=None, on_cancel=None):
+        # CHANGE: helper compacto para reutilizar confirmaciones en flujo Pagos
+        modal = ModalAlert(
+            title_text=title,
+            message=message,
+            on_confirm=on_confirm,
+            on_cancel=on_cancel,
+            only_info=False,
+        )
+        modal.mostrar()
+        return modal

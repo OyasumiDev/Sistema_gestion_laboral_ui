@@ -7,6 +7,7 @@ import pandas as pd
 from datetime import time
 from datetime import datetime, date
 from typing import List, Tuple
+from app.core.app_state import AppState  # CHANGE: publicar eventos a page.pubsub
     
 class AssistanceModel:
     def __init__(self):
@@ -14,6 +15,27 @@ class AssistanceModel:
         self.payment_model = PaymentModel()
         self._exists_table = self.check_table()
         self.verificar_o_crear_triggers()
+
+    def _publish_pagamentos_delta(self, numero_nomina: int, periodo_ini: str, periodo_fin: str) -> None:
+        # CHANGE: difunde cambios relevantes a través de page.pubsub
+        page = AppState().page
+        if not page:
+            return
+        pubsub = getattr(page, "pubsub", None)
+        if not pubsub:
+            return
+        payload = {
+            "id_empleado": int(numero_nomina),
+            "periodo_ini": periodo_ini,
+            "periodo_fin": periodo_fin,
+        }
+        try:
+            if hasattr(pubsub, "publish"):
+                pubsub.publish("asistencias:changed", payload)
+            elif hasattr(pubsub, "send_all"):
+                pubsub.send_all("asistencias:changed", payload)
+        except Exception:
+            pass
 
 
     def check_table(self) -> bool:
@@ -296,20 +318,77 @@ class AssistanceModel:
             except Exception:
                 pass
 
+    def collect_ranges_for_period(
+        self,
+        periodo_ini: str,
+        periodo_fin: str,
+        id_empleado: Optional[int] = None,
+    ) -> List[Tuple[int, str, str]]:
+        # CHANGE: agrupa asistencias en rangos compactos por empleado
+        condiciones = []
+        params: list = []
+
+        if periodo_ini and periodo_fin:
+            condiciones.append(f"{E_ASSISTANCE.FECHA.value} BETWEEN %s AND %s")
+            params.extend([periodo_ini, periodo_fin])
+        elif periodo_ini:
+            condiciones.append(f"{E_ASSISTANCE.FECHA.value} >= %s")
+            params.append(periodo_ini)
+        elif periodo_fin:
+            condiciones.append(f"{E_ASSISTANCE.FECHA.value} <= %s")
+            params.append(periodo_fin)
+
+        if id_empleado:
+            condiciones.append(f"{E_ASSISTANCE.NUMERO_NOMINA.value} = %s")
+            params.append(id_empleado)
+
+        where_clause = " AND ".join(condiciones) if condiciones else "1=1"
+        q = f"""
+            SELECT
+                {E_ASSISTANCE.NUMERO_NOMINA.value} AS numero_nomina,
+                MIN({E_ASSISTANCE.FECHA.value}) AS fecha_inicio,
+                MAX({E_ASSISTANCE.FECHA.value}) AS fecha_fin
+            FROM {E_ASSISTANCE.TABLE.value}
+            WHERE {where_clause}
+            GROUP BY {E_ASSISTANCE.NUMERO_NOMINA.value}
+        """
+        rows = self.db.get_data_list(q, tuple(params), dictionary=True) or []
+        rangos: List[Tuple[int, str, str]] = []
+        for row in rows:
+            numero = int(row.get("numero_nomina") or 0)
+            if numero <= 0:
+                continue
+            fi = row.get("fecha_inicio")
+            ff = row.get("fecha_fin")
+            fi_str = fi.strftime("%Y-%m-%d") if hasattr(fi, "strftime") else str(fi)
+            ff_str = ff.strftime("%Y-%m-%d") if hasattr(ff, "strftime") else str(ff)
+            rangos.append((numero, fi_str, ff_str))
+        return rangos
 
 
-    def add(self, numero_nomina: int, fecha: str, hora_entrada: str = None, hora_salida: str = None, descanso: int = 0, grupo_importacion: str = None):
+
+    def add(
+        self,
+        numero_nomina: int,
+        fecha: str,
+        hora_entrada: str = None,
+        hora_salida: str = None,
+        descanso: int = 0,
+        grupo_importacion: str = None,
+    ):
+        """Inserta una asistencia y sincroniza pagos relacionados."""
         try:
             def limpiar_y_parsear_hora(hora, campo):
                 if isinstance(hora, timedelta):
                     return (datetime.min + hora).time().strftime("%H:%M:%S")
                 if isinstance(hora, str) and ":" in hora:
                     return hora.strip()
-                print(f"⚠️ {campo} inválida para {numero_nomina} - {fecha}, se asigna 00:00:00")
+                print(f"[WARN] {campo} invalida para {numero_nomina} - {fecha}, se asigna 00:00:00")
                 return "00:00:00"
 
             hora_entrada = limpiar_y_parsear_hora(hora_entrada, "Hora Entrada")
             hora_salida = limpiar_y_parsear_hora(hora_salida, "Hora Salida")
+            fecha_mysql = self._convertir_fecha_a_mysql(fecha)
 
             query = """
                 INSERT INTO asistencias (
@@ -320,22 +399,24 @@ class AssistanceModel:
 
             params = (
                 numero_nomina,
-                fecha,
+                fecha_mysql,
                 hora_entrada,
                 hora_salida,
                 descanso,
-                grupo_importacion
+                grupo_importacion,
             )
 
-            print(f"📝 Parámetros INSERT: {params}")
+            print(f"[INFO] Parametros INSERT asistencia: {params}")
             self.db.run_query(query, params)
-            print("✅ Asistencia registrada correctamente.")
-            return {"status": "success"}
+            print("[INFO] Asistencia registrada correctamente.")
+
+            sync = self.payment_model.sincronizar_desde_asistencia(numero_nomina, fecha_mysql)
+            self._publish_pagamentos_delta(numero_nomina, fecha_mysql, fecha_mysql)  # CHANGE: notificar delta a Pagos
+            return {"status": "success", "sync": sync}
 
         except Exception as ex:
-            print(f"❌ Error al agregar asistencia: {ex}")
+            print(f"[ERROR] Error al agregar asistencia: {ex}")
             return {"status": "error", "message": str(ex)}
-
 
     def add_manual_assistance(
         self,
@@ -354,21 +435,23 @@ class AssistanceModel:
                 h_entrada = datetime.strptime(hora_entrada, "%H:%M:%S")
                 h_salida = datetime.strptime(hora_salida, "%H:%M:%S")
             except ValueError:
-                raise ValueError("Formato de hora inválido. Usa HH:MM:SS")
+                raise ValueError("Formato de hora invalido. Usa HH:MM:SS")
 
             if h_salida <= h_entrada:
                 raise ValueError("La hora de salida debe ser mayor que la de entrada")
 
             if descanso not in (0, 1, 2):
-                print(f"⚠️ Descanso inválido ({descanso}), se usará 0.")
+                print(f"[WARN] Descanso invalido ({descanso}), se usara 0.")
                 descanso = 0
+
+            fecha_mysql = self._convertir_fecha_a_mysql(fecha)
 
             query_check = f"""
                 SELECT COUNT(*) AS existe
                 FROM {E_ASSISTANCE.TABLE.value}
                 WHERE {E_ASSISTANCE.NUMERO_NOMINA.value} = %s AND {E_ASSISTANCE.FECHA.value} = %s
             """
-            resultado = self.db.get_data(query_check, (numero_nomina, fecha), dictionary=True)
+            resultado = self.db.get_data(query_check, (numero_nomina, fecha_mysql), dictionary=True)
             if resultado.get("existe", 0) > 0:
                 return {"status": "error", "message": "Ya existe una asistencia registrada para ese empleado en esa fecha"}
 
@@ -383,18 +466,27 @@ class AssistanceModel:
                     {E_ASSISTANCE.GRUPO_IMPORTACION.value}
                 ) VALUES (%s, %s, %s, %s, %s, %s, %s)
             """
-            self.db.run_query(query_insert, (numero_nomina, fecha, hora_entrada, hora_salida, descanso, None, grupo_importacion))
-            print("✅ Asistencia manual agregada correctamente.")
-            return {"status": "success", "message": "Asistencia agregada correctamente"}
+            self.db.run_query(
+                query_insert,
+                (numero_nomina, fecha_mysql, hora_entrada, hora_salida, descanso, None, grupo_importacion)
+            )
+            print("OK. Asistencia manual agregada correctamente.")
+
+            sync = self.payment_model.sincronizar_desde_asistencia(numero_nomina, fecha_mysql)
+            self._publish_pagamentos_delta(numero_nomina, fecha_mysql, fecha_mysql)  # CHANGE: notificar delta en inserción manual
+            return {
+                "status": "success",
+                "message": "Asistencia agregada correctamente",
+                "sync": sync,
+            }
 
         except Exception as e:
-            print(f"❌ Error en add_manual_assistance: {e}")
+            print(f"[ERROR] Error en add_manual_assistance: {e}")
             return {"status": "error", "message": str(e)}
-
 
     def update_asistencia(self, registro: dict) -> dict:
         try:
-            print(f"📤 Ejecutando UPDATE con datos: {registro}")
+            print(f"[INFO] Ejecutando UPDATE con datos: {registro}")
 
             def formatear_hora(hora_valor):
                 from datetime import time, timedelta, datetime as dt
@@ -410,9 +502,12 @@ class AssistanceModel:
                     for fmt in ("%H:%M:%S", "%H:%M"):
                         try:
                             return dt.strptime(hora_valor.strip(), fmt).strftime("%H:%M:%S")
-                        except:
+                        except Exception:
                             continue
                 return "00:00:00"
+
+            fecha_mysql = self._convertir_fecha_a_mysql(registro.get("fecha"))
+            numero_nomina = int(registro.get("numero_nomina") or 0)
 
             query = """
                 UPDATE asistencias
@@ -427,19 +522,21 @@ class AssistanceModel:
                 formatear_hora(registro.get("hora_entrada")),
                 formatear_hora(registro.get("hora_salida")),
                 self._mapear_descanso_str_a_int(registro.get("descanso", "SN")),
-                registro.get("numero_nomina"),
-                self._convertir_fecha_a_mysql(registro.get("fecha"))
+                numero_nomina,
+                fecha_mysql,
             )
 
-            print(f"📝 Parámetros finales para UPDATE: {params}")
+            print(f"[INFO] Parametros finales para UPDATE: {params}")
             self.db.run_query(query, params)
-            print("✅ Actualización realizada correctamente.")
-            return {"status": "success"}
+            print("OK. Actualizacion realizada correctamente.")
+
+            sync = self.payment_model.sincronizar_desde_asistencia(numero_nomina, fecha_mysql)
+            self._publish_pagamentos_delta(numero_nomina, fecha_mysql, fecha_mysql)  # CHANGE: informar delta tras actualización
+            return {"status": "success", "sync": sync}
 
         except Exception as e:
-            print(f"❌ Error al actualizar asistencia: {e}")
+            print(f"[ERROR] Error al actualizar asistencia: {e}")
             return {"status": "error", "message": str(e)}
-
 
     def get_all(self) -> dict:
         try:
@@ -520,6 +617,7 @@ class AssistanceModel:
                 WHERE numero_nomina = %s AND fecha = %s
             """
             self.db.run_query(query, (numero_nomina, fecha_sql))
+            self._publish_pagamentos_delta(numero_nomina, fecha_sql, fecha_sql)  # CHANGE: propagar eliminación a Pagos
             return {"status": "success"}
         except Exception as e:
             return {"status": "error", "message": str(e)}
@@ -1112,3 +1210,5 @@ class AssistanceModel:
         except Exception as ex:
             print(f"❌ Error al obtener fechas con estado: {ex}")
             return {}
+
+

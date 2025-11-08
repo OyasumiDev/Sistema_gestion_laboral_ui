@@ -16,15 +16,15 @@ class PaymentTableBuilder:
         "id_empleado": 70,
         "nombre": 150,
         "fecha_pago": 95,
-        "horas": 65,
+        "horas": 70,  # CHANGE: ancho consistente para indicador de orden
         "sueldo_hora": 90,
-        "monto_base": 100,
+        "monto_base": 110,  # CHANGE: evita recortes con flechas ▲▼
         "descuentos": 95,
         "prestamos": 95,
         "saldo": 85,
         "deposito": 95,
         "efectivo": 95,
-        "total": 95,
+        "total": 110,  # CHANGE: total amplio para indicadores
         "ediciones": 85,
         "acciones": 100,
         "estado": 80,
@@ -81,7 +81,10 @@ class PaymentTableBuilder:
         sort_col_index = columns.index(sort_key) if (sort_key in columns) else None
 
         def _make_header(key: str, idx: int) -> ft.DataColumn:
-            label_text = (column_labels or {}).get(key, key.replace("_", " ").title())
+            base_label = (column_labels or {}).get(key, key.replace("_", " ").title())
+            label_text = (
+                self.mark_sorted_column(base_label, sort_ascending) if sort_key == key else base_label
+            )  # CHANGE: indicador visual de orden
             tooltip = (tooltip_labels or {}).get(key)
 
             # El label va envuelto para poder asignar un ancho fijo
@@ -118,6 +121,11 @@ class PaymentTableBuilder:
             sort_ascending=sort_ascending if sort_col_index is not None else True,
         )
         return table
+
+    def mark_sorted_column(self, label_text: str, ascending: bool) -> str:
+        # CHANGE: añade flecha asc/desc a la etiqueta de columna ordenada
+        arrow = "▲" if ascending else "▼"
+        return f"{label_text} {arrow}"
 
     # ----------------------------------------------------
     # Fila/Barra de filtros (opcional)

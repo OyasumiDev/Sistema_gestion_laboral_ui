@@ -45,12 +45,14 @@ class PaymentModel:
         self.loan_model = None
         self.loan_payment_model = None
         self.detalles_desc_model = None
+        self._assistance_model = None  # CHANGE: referencia perezosa a AssistanceModel para recalculos
 
         # 1) Crear/verificar 'pagos' primero (FKs dependerán de esto)
         self._exists_table = self.check_table()
 
         # 2) Asegurar tabla de grupos manuales (vacíos) por FECHA
         self._ensure_grupos_table()
+        self._ensure_auditoria_table()
 
         # 3) Ahora sí: modelos que pueden referenciar 'pagos'
         self.employee_model = EmployesModel()
@@ -388,6 +390,344 @@ class PaymentModel:
 
         except Exception as ex:
             return {"status": "error", "message": f"Error al prellenar borrador: {ex}"}
+
+    def _get_assistance_model(self):
+        # CHANGE: acceso perezoso para evitar import circular con AssistanceModel
+        if self._assistance_model is None:
+            from app.models.assistance_model import AssistanceModel  # evita import al inicio
+            self._assistance_model = AssistanceModel()
+        return self._assistance_model
+
+    @staticmethod
+    def _normalize_date(value: Any) -> str:
+        # CHANGE: normaliza fechas a YYYY-MM-DD para reutilizar en resync/restauración
+        if isinstance(value, datetime):
+            return value.strftime("%Y-%m-%d")
+        if isinstance(value, date):
+            return value.strftime("%Y-%m-%d")
+        if not value:
+            return ""
+        text = str(value).strip()
+        for fmt in ("%Y-%m-%d", "%d/%m/%Y"):
+            try:
+                return datetime.strptime(text, fmt).strftime("%Y-%m-%d")
+            except Exception:
+                continue
+        return text
+
+    @staticmethod
+    def _build_scope(periodo_ini: str, periodo_fin: str, numero_nomina: Optional[int]) -> Dict[str, Any]:
+        # CHANGE: helper para homogeneizar estructura de resumen en APIs nuevas
+        return {
+            "scope": {
+                "periodo_ini": periodo_ini,
+                "periodo_fin": periodo_fin,
+                "id_empleado": numero_nomina,
+            }
+        }
+
+    @staticmethod
+    def _is_auto_pago(row: Dict[str, Any]) -> bool:
+        # CHANGE: identifica pagos generados desde asistencias (ambas fechas presentes)
+        return bool(row.get("fecha_inicio") and row.get("fecha_fin"))
+
+    def _fetch_range_rows(self, numero_nomina: int, periodo_ini: str, periodo_fin: str) -> List[Dict[str, Any]]:
+        # CHANGE: obtiene pagos relacionados al rango solicitado para distinguir auto/manual
+        q = f"""
+            SELECT
+                {self.E.ID_PAGO_NOMINA.value}   AS id_pago,
+                {self.E.FECHA_PAGO.value}       AS fecha_pago,
+                {self.E.FECHA_INICIO.value}     AS fecha_inicio,
+                {self.E.FECHA_FIN.value}        AS fecha_fin,
+                {self.E.GRUPO_PAGO.value}       AS grupo_pago,
+                {self.E.ESTADO.value}           AS estado,
+                {self.E.TOTAL_HORAS_TRABAJADAS.value} AS horas,
+                {self.E.MONTO_BASE.value}       AS monto_base,
+                {self.E.MONTO_TOTAL.value}      AS monto_total,
+                {self.D.MONTO_DESCUENTO.value}  AS descuentos,
+                {self.P.PRESTAMO_MONTO.value}   AS prestamos,
+                {self.E.PAGO_DEPOSITO.value}    AS deposito,
+                {self.E.PAGO_EFECTIVO.value}    AS efectivo
+            FROM {self.E.TABLE.value}
+            WHERE {self.E.NUMERO_NOMINA.value}=%s
+              AND {self.E.FECHA_PAGO.value} BETWEEN %s AND %s
+            ORDER BY {self.E.FECHA_PAGO.value} ASC, {self.E.ID_PAGO_NOMINA.value} ASC
+        """
+        return self.db.get_data_list(q, (numero_nomina, periodo_ini, periodo_fin), dictionary=True) or []
+
+    def describe_range(self, numero_nomina: int, periodo_ini: str, periodo_fin: str) -> Dict[str, Any]:
+        # CHANGE: expone resumen ligero para UI con pagos auto y manuales en el rango
+        periodo_ini = self._normalize_date(periodo_ini)
+        periodo_fin = self._normalize_date(periodo_fin)
+        rows = self._fetch_range_rows(numero_nomina, periodo_ini, periodo_fin)
+        data = {
+            "id_empleado": numero_nomina,
+            "periodo": [periodo_ini, periodo_fin],
+            "auto": [],
+            "manual": [],
+        }
+        for row in rows:
+            target = data["auto"] if self._is_auto_pago(row) else data["manual"]
+            target.append({
+                "id_pago": int(row.get("id_pago", 0) or 0),
+                "estado": str(row.get("estado") or "").lower(),
+                "fecha_pago": str(row.get("fecha_pago") or ""),
+            })
+        return data
+
+    def _rebuild_payment_from_range(
+        self,
+        numero_nomina: int,
+        periodo_ini: str,
+        periodo_fin: str,
+        *,
+        overwrite: bool,
+        action: str,
+    ) -> Dict[str, Any]:
+        # CHANGE: orquesta refresco/restauración por rango y devuelve métricas individuales
+        detalle = {
+            "id_empleado": numero_nomina,
+            "rango": [periodo_ini, periodo_fin],
+            "accion": "skip",
+            "motivo": "",
+        }
+        resultado = {
+            "creados": 0,
+            "actualizados": 0,
+            "omitidos_pagados": [],
+            "conflictivos": [],
+            "requires_overwrite": False,
+            "detalle": detalle,
+        }
+
+        try:
+            sueldo = self._sueldo_hora(numero_nomina)
+            horas_rs = self.get_total_horas_trabajadas(periodo_ini, periodo_fin, numero_nomina)
+            horas_rows = horas_rs.get("data") or []
+            horas = float(horas_rows[0].get("total_horas_trabajadas", 0.0)) if horas_rows else 0.0
+
+            if horas <= 0 or sueldo <= 0:
+                detalle["accion"] = "skip"
+                detalle["motivo"] = "sin_horas_o_sueldo"
+                return resultado
+
+            rows = self._fetch_range_rows(numero_nomina, periodo_ini, periodo_fin)
+            auto_rows = [r for r in rows if self._is_auto_pago(r)]
+            manual_rows = [r for r in rows if not self._is_auto_pago(r)]
+
+            if manual_rows:
+                if not overwrite:
+                    detalle["accion"] = "conflict"
+                    detalle["motivo"] = "pagos_manual_en_rango"
+                    detalle["requires_overwrite"] = True
+                    resultado["conflictivos"].append({
+                        "id_empleado": numero_nomina,
+                        "pagos": [int(r.get("id_pago") or 0) for r in manual_rows],
+                        "motivo": "manual_en_rango",
+                    })
+                    resultado["requires_overwrite"] = True
+                    return resultado
+                for manual in manual_rows:
+                    self.eliminar_pago(int(manual.get("id_pago") or 0), force=True)
+
+            monto_base = round(sueldo * horas, 2)
+
+            if not auto_rows:
+                gen = self.generar_pago_por_empleado(numero_nomina, periodo_ini, periodo_fin)
+                if gen.get("status") == "success":
+                    detalle["accion"] = "create"
+                    detalle["motivo"] = "creado_desde_asistencias"
+                    resultado["creados"] = 1
+                else:
+                    detalle["accion"] = "error"
+                    detalle["motivo"] = gen.get("message", "error_generar")
+                return resultado
+
+            auto = auto_rows[-1]
+            id_pago = int(auto.get("id_pago") or 0)
+            estado = str(auto.get("estado") or "").lower()
+            horas_actuales = float(auto.get("horas") or 0.0)
+
+            if abs(horas - horas_actuales) < 0.01 and action == "refresh":
+                detalle["accion"] = "skip"
+                detalle["motivo"] = "sin_cambios"
+                return resultado
+
+            if estado == "pendiente":
+                descuentos = float(auto.get("descuentos") or 0.0)
+                prestamos = float(auto.get("prestamos") or 0.0)
+                total = round(max(0.0, monto_base - descuentos - prestamos), 2)
+                payload = {
+                    self.E.FECHA_INICIO.value: periodo_ini,
+                    self.E.FECHA_FIN.value: periodo_fin,
+                    self.E.GRUPO_PAGO.value: auto.get("grupo_pago") or self._build_grupo_token(periodo_ini, periodo_fin),
+                    self.E.TOTAL_HORAS_TRABAJADAS.value: round(horas, 2),
+                    self.E.MONTO_BASE.value: monto_base,
+                    self.E.MONTO_TOTAL.value: total,
+                }
+                ok = self.update_pago(id_pago, payload)
+                if ok:
+                    detalle["accion"] = "update"
+                    detalle["motivo"] = "pendiente_actualizado"
+                    resultado["actualizados"] = 1
+                else:
+                    detalle["accion"] = "error"
+                    detalle["motivo"] = "fallo_update_pendiente"
+                return resultado
+
+            if estado == "pagado":
+                if not overwrite and action == "restore":
+                    detalle["accion"] = "conflict"
+                    detalle["motivo"] = "pagado_existente"
+                    resultado["omitidos_pagados"].append(id_pago)
+                    return resultado
+
+                payload = {self.E.TOTAL_HORAS_TRABAJADAS.value: round(horas, 2)}
+                ok = self.update_pago(id_pago, payload)
+                if not ok:
+                    detalle["accion"] = "error"
+                    detalle["motivo"] = "fallo_update_pagado"
+                    return resultado
+
+                self._registrar_auditoria_pago(
+                    id_pago=id_pago,
+                    numero_nomina=numero_nomina,
+                    fecha_referencia=periodo_fin,
+                    campo=self.E.TOTAL_HORAS_TRABAJADAS.value,
+                    valor_anterior=horas_actuales,
+                    valor_nuevo=horas,
+                    motivo=f"sync_{action}",
+                )
+                detalle["accion"] = "update"
+                detalle["motivo"] = "pagado_horas_ajustadas"
+                resultado["actualizados"] = 1
+                return resultado
+
+            detalle["accion"] = "skip"
+            detalle["motivo"] = f"estado_{estado}"
+            return resultado
+        except Exception as ex:
+            detalle["accion"] = "error"
+            detalle["motivo"] = str(ex)
+            return resultado
+
+    def refresh_from_assistance(
+        self,
+        periodo_ini: str,
+        periodo_fin: str,
+        id_empleado: Optional[int] = None,
+        *,
+        overwrite: bool = False,
+    ) -> Dict[str, Any]:
+        # CHANGE: recalcula pagos auto-generados usando asistencias (sin perder abonos)
+        periodo_ini = self._normalize_date(periodo_ini)
+        periodo_fin = self._normalize_date(periodo_fin)
+        resumen = {
+            **self._build_scope(periodo_ini, periodo_fin, id_empleado),
+            "creados": 0,
+            "actualizados": 0,
+            "omitidos_pagados": [],
+            "conflictivos": [],
+            "requires_overwrite": False,
+            "detallado": [],
+        }
+
+        try:
+            asistencia = self._get_assistance_model()
+            rangos = asistencia.collect_ranges_for_period(periodo_ini, periodo_fin, id_empleado)
+        except Exception as ex:
+            resumen["requires_overwrite"] = False
+            resumen["detallado"].append({
+                "accion": "error",
+                "motivo": f"collect_ranges: {ex}",
+                "rango": [periodo_ini, periodo_fin],
+                "id_empleado": id_empleado,
+            })
+            return resumen
+
+        if not rangos and id_empleado:
+            rangos = [(id_empleado, periodo_ini, periodo_fin)]
+
+        for numero_nomina, ini, fin in rangos:
+            ini_norm = self._normalize_date(ini)
+            fin_norm = self._normalize_date(fin)
+            resultado = self._rebuild_payment_from_range(
+                numero_nomina,
+                ini_norm,
+                fin_norm,
+                overwrite=overwrite,
+                action="refresh",
+            )
+            resumen["creados"] += resultado["creados"]
+            resumen["actualizados"] += resultado["actualizados"]
+            if resultado["omitidos_pagados"]:
+                resumen["omitidos_pagados"].extend(resultado["omitidos_pagados"])
+            if resultado["conflictivos"]:
+                resumen["conflictivos"].extend(resultado["conflictivos"])
+            if resultado["requires_overwrite"]:
+                resumen["requires_overwrite"] = True
+            resumen["detallado"].append(resultado["detalle"])
+
+        return resumen
+
+    def restore_green_dates(
+        self,
+        periodo_ini: str,
+        periodo_fin: str,
+        id_empleado: Optional[int] = None,
+        *,
+        overwrite: bool = False,
+    ) -> Dict[str, Any]:
+        # CHANGE: recrea pagos auto-generados faltantes (fechas verdes) tras eliminaciones
+        periodo_ini = self._normalize_date(periodo_ini)
+        periodo_fin = self._normalize_date(periodo_fin)
+        resumen = {
+            **self._build_scope(periodo_ini, periodo_fin, id_empleado),
+            "creados": 0,
+            "actualizados": 0,
+            "omitidos_pagados": [],
+            "conflictivos": [],
+            "requires_overwrite": False,
+            "detallado": [],
+        }
+
+        try:
+            asistencia = self._get_assistance_model()
+            rangos = asistencia.collect_ranges_for_period(periodo_ini, periodo_fin, id_empleado)
+        except Exception as ex:
+            resumen["detallado"].append({
+                "accion": "error",
+                "motivo": f"collect_ranges: {ex}",
+                "rango": [periodo_ini, periodo_fin],
+                "id_empleado": id_empleado,
+            })
+            return resumen
+
+        if not rangos and id_empleado:
+            rangos = [(id_empleado, periodo_ini, periodo_fin)]
+
+        for numero_nomina, ini, fin in rangos:
+            ini_norm = self._normalize_date(ini)
+            fin_norm = self._normalize_date(fin)
+            resultado = self._rebuild_payment_from_range(
+                numero_nomina,
+                ini_norm,
+                fin_norm,
+                overwrite=overwrite,
+                action="restore",
+            )
+            resumen["creados"] += resultado["creados"]
+            resumen["actualizados"] += resultado["actualizados"]
+            if resultado["omitidos_pagados"]:
+                resumen["omitidos_pagados"].extend(resultado["omitidos_pagados"])
+            if resultado["conflictivos"]:
+                resumen["conflictivos"].extend(resultado["conflictivos"])
+            if resultado["requires_overwrite"]:
+                resumen["requires_overwrite"] = True
+            resumen["detallado"].append(resultado["detalle"])
+
+        return resumen
+
 
 
     # ---------------------------------------------------------------------
@@ -1282,6 +1622,170 @@ class PaymentModel:
             return {"status": "error", "message": f"Error al actualizar pago: {ex}"}
 
 
+    def sincronizar_desde_asistencia(self, numero_nomina: int, fecha: str, *, overwrite_paid: bool = False) -> Dict[str, Any]:
+        """
+        Recalcula pagos cuyo rango incluye `fecha` tras un cambio en asistencias.
+        - Pagos 'pendiente': actualiza horas y montos base/total preservando abonos.
+        - Pagos 'pagado'  : solo actualiza horas y deja rastro en auditoría.
+        - overwrite_paid  : reserva para escenarios donde se permitan ajustes adicionales.
+        Retorna un resumen con los ajustes aplicados.
+        """
+        resumen = {
+            "status": "success",
+            "pendientes_actualizados": 0,
+            "pagados_ajustados": 0,
+            "sin_cambios": 0,
+            "errores": [],
+        }
+
+        try:
+            if not numero_nomina or not isinstance(numero_nomina, int):
+                return {"status": "noop", "message": "Número de nómina inválido."}
+            if not fecha:
+                return {"status": "noop", "message": "Fecha vacia; no se sincroniza."}
+
+            def _parse_fecha(val) -> Optional[date]:
+                if isinstance(val, datetime):
+                    return val.date()
+                if isinstance(val, date):
+                    return val
+                if not val:
+                    return None
+                s = str(val).strip()
+                for fmt in ("%Y-%m-%d", "%d/%m/%Y"):
+                    try:
+                        return datetime.strptime(s, fmt).date()
+                    except ValueError:
+                        continue
+                return None
+
+            fecha_ref = _parse_fecha(fecha)
+            if not fecha_ref:
+                return {"status": "noop", "message": f"Fecha {fecha} inválida; usa YYYY-MM-DD."}
+
+            q = f"""
+                SELECT
+                    {self.E.ID_PAGO_NOMINA.value}     AS id_pago,
+                    {self.E.FECHA_INICIO.value}       AS fecha_inicio,
+                    {self.E.FECHA_FIN.value}          AS fecha_fin,
+                    {self.E.FECHA_PAGO.value}         AS fecha_pago,
+                    {self.E.ESTADO.value}             AS estado,
+                    {self.E.TOTAL_HORAS_TRABAJADAS.value} AS horas_registradas,
+                    {self.E.MONTO_BASE.value}         AS monto_base,
+                    {self.D.MONTO_DESCUENTO.value}    AS descuentos_totales,
+                    {self.P.PRESTAMO_MONTO.value}     AS prestamos_totales,
+                    {self.E.MONTO_TOTAL.value}        AS monto_total_guardado
+                FROM {self.E.TABLE.value}
+                WHERE {self.E.NUMERO_NOMINA.value}=%s
+            """
+            pagos = self.db.get_data_list(q, (numero_nomina,), dictionary=True) or []
+            if not pagos:
+                resumen["status"] = "noop"
+                resumen["message"] = "Sin pagos relacionados al empleado."
+                return resumen
+
+            fecha_iso = fecha_ref.strftime("%Y-%m-%d")
+            sueldo_hora = self._sueldo_hora(numero_nomina)
+
+            for pago in pagos:
+                id_pago = int(pago.get("id_pago") or 0)
+                if id_pago <= 0:
+                    continue
+
+                fi = _parse_fecha(pago.get("fecha_inicio")) or _parse_fecha(pago.get("fecha_pago"))
+                ff = _parse_fecha(pago.get("fecha_fin")) or _parse_fecha(pago.get("fecha_pago"))
+                if not fi or not ff:
+                    continue
+
+                if not (fi <= fecha_ref <= ff):
+                    continue
+
+                rs_horas = self.get_total_horas_trabajadas(fi.strftime("%Y-%m-%d"), ff.strftime("%Y-%m-%d"), numero_nomina)
+                if rs_horas.get("status") != "success":
+                    resumen["errores"].append(f"Pago {id_pago}: no se pudieron obtener horas ({rs_horas.get('message')}).")
+                    continue
+
+                data_horas = rs_horas.get("data") or []
+                horas_nuevas = float(data_horas[0].get("total_horas_trabajadas", 0.0) or 0.0) if data_horas else 0.0
+                horas_actuales = float(pago.get("horas_registradas") or 0.0)
+
+                if abs(horas_nuevas - horas_actuales) < 0.01:
+                    resumen["sin_cambios"] += 1
+                    continue
+
+                estado = str(pago.get("estado") or "").lower()
+                motivo = "sync_pendiente" if estado == "pendiente" else "sync_pagado"
+                cambios = {self.E.TOTAL_HORAS_TRABAJADAS.value: round(horas_nuevas, 2)}
+
+                if estado == "pendiente":
+                    monto_base_actual = float(pago.get("monto_base") or 0.0)
+                    descuentos_actuales = float(pago.get("descuentos_totales") or 0.0)
+                    prestamos_actuales = float(pago.get("prestamos_totales") or 0.0)
+                    monto_total_actual = float(pago.get("monto_total_guardado") or 0.0)
+                    monto_base_nuevo = round(max(0.0, sueldo_hora * horas_nuevas), 2)
+                    monto_total_nuevo = round(max(0.0, monto_base_nuevo - descuentos_actuales - prestamos_actuales), 2)
+                    cambios[self.E.MONTO_BASE.value] = monto_base_nuevo
+                    cambios[self.E.MONTO_TOTAL.value] = monto_total_nuevo
+
+                    if not self.update_pago(id_pago, cambios):
+                        resumen["errores"].append(f"Pago {id_pago}: error al actualizar montos.")
+                        continue
+
+                    self._registrar_auditoria_pago(
+                        id_pago=id_pago,
+                        numero_nomina=numero_nomina,
+                        fecha_referencia=fecha_iso,
+                        campo=self.E.TOTAL_HORAS_TRABAJADAS.value,
+                        valor_anterior=horas_actuales,
+                        valor_nuevo=horas_nuevas,
+                        motivo=motivo,
+                    )
+                    if abs(monto_base_nuevo - monto_base_actual) >= 0.01:
+                        self._registrar_auditoria_pago(
+                            id_pago=id_pago,
+                            numero_nomina=numero_nomina,
+                            fecha_referencia=fecha_iso,
+                            campo=self.E.MONTO_BASE.value,
+                            valor_anterior=monto_base_actual,
+                            valor_nuevo=monto_base_nuevo,
+                            motivo=motivo,
+                        )
+                    if abs(monto_total_nuevo - monto_total_actual) >= 0.01:
+                        self._registrar_auditoria_pago(
+                            id_pago=id_pago,
+                            numero_nomina=numero_nomina,
+                            fecha_referencia=fecha_iso,
+                            campo=self.E.MONTO_TOTAL.value,
+                            valor_anterior=monto_total_actual,
+                            valor_nuevo=monto_total_nuevo,
+                            motivo=motivo,
+                        )
+                    resumen["pendientes_actualizados"] += 1
+
+                else:
+                    if not self.update_pago(id_pago, cambios):
+                        resumen["errores"].append(f"Pago {id_pago}: no se pudieron ajustar las horas.")
+                        continue
+
+                    self._registrar_auditoria_pago(
+                        id_pago=id_pago,
+                        numero_nomina=numero_nomina,
+                        fecha_referencia=fecha_iso,
+                        campo=self.E.TOTAL_HORAS_TRABAJADAS.value,
+                        valor_anterior=horas_actuales,
+                        valor_nuevo=horas_nuevas,
+                        motivo=motivo,
+                    )
+                    resumen["pagados_ajustados"] += 1
+
+            if resumen["pendientes_actualizados"] == 0 and resumen["pagados_ajustados"] == 0:
+                resumen["status"] = "noop"
+                resumen.setdefault("message", "No se encontraron pagos que involucren la fecha indicada.")
+            return resumen
+        except Exception as ex:
+            return {"status": "error", "message": f"Fallo al sincronizar pagos: {ex}"}
+
+
     @staticmethod
     def _today_str() -> str:
         return datetime.now().strftime("%Y-%m-%d")
@@ -1378,6 +1882,71 @@ class PaymentModel:
             return {"status": "error", "message": f"No fue posible eliminar el grupo: {ex}"}
 
 
+    def _ensure_auditoria_table(self):
+        """
+        Crea (si hace falta) la tabla de auditoria para rastrear ajustes derivados de asistencias.
+        No bloquea si falla: simplemente registra el problema en consola.
+        """
+        try:
+            q = f"""
+            CREATE TABLE IF NOT EXISTS pagos_auditoria (
+                id_auditoria INT AUTO_INCREMENT PRIMARY KEY,
+                id_pago INT NOT NULL,
+                numero_nomina SMALLINT UNSIGNED NOT NULL,
+                fecha_referencia DATE NOT NULL,
+                campo VARCHAR(80) NOT NULL,
+                valor_anterior VARCHAR(50) NULL,
+                valor_nuevo VARCHAR(50) NULL,
+                motivo VARCHAR(40) NOT NULL,
+                fecha_registro TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (id_pago)
+                    REFERENCES {self.E.TABLE.value}({self.E.ID_PAGO_NOMINA.value})
+                    ON DELETE CASCADE
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+            """
+            self.db.run_query(q)
+        except Exception as ex:
+            print(f"❌ No se pudo asegurar la tabla pagos_auditoria: {ex}")
+
+
+    def _registrar_auditoria_pago(
+        self,
+        *,
+        id_pago: int,
+        numero_nomina: int,
+        fecha_referencia: str,
+        campo: str,
+        valor_anterior,
+        valor_nuevo,
+        motivo: str,
+    ) -> None:
+        """
+        Inserta una fila de auditoria. Cualquier error se deja en consola para no romper el flujo principal.
+        """
+        try:
+            if not self._table_exists("pagos_auditoria"):
+                return
+            q = """
+                INSERT INTO pagos_auditoria
+                (id_pago, numero_nomina, fecha_referencia, campo, valor_anterior, valor_nuevo, motivo)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+            """
+            self.db.run_query(
+                q,
+                (
+                    id_pago,
+                    numero_nomina,
+                    fecha_referencia,
+                    campo,
+                    "" if valor_anterior is None else str(valor_anterior),
+                    "" if valor_nuevo is None else str(valor_nuevo),
+                    motivo,
+                ),
+            )
+        except Exception as ex:
+            print(f"❌ Auditoría no registrada ({campo}): {ex}")
+
+
     def _ensure_grupos_table(self):
         """
         Crea la tabla auxiliar para registrar grupos 'pagado' VACÍOS por FECHA.
@@ -1428,3 +1997,7 @@ class PaymentModel:
         sigan funcionando sin romper la compatibilidad.
         """
         return self.get_all_pagos()
+
+
+
+

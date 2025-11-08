@@ -7,6 +7,7 @@ import inspect
 
 
 from app.models.payment_model import PaymentModel
+from app.core.app_state import AppState  # CHANGE: publicar eventos a page.pubsub
 
 
 class PagosRepo:
@@ -56,6 +57,24 @@ class PagosRepo:
             except Exception:
                 # nunca romper por un listener
                 pass
+        self._publish_pubsub(kind, payload)  # CHANGE: propagar evento a pubsub global
+
+    def _publish_pubsub(self, kind: str, payload: Dict[str, Any]) -> None:
+        # CHANGE: emite un aviso ligero en page.pubsub para contenedores desacoplados
+        page = AppState().page
+        if not page:
+            return
+        pubsub = getattr(page, "pubsub", None)
+        if not pubsub:
+            return
+        message = {"kind": kind, **payload}
+        try:
+            if hasattr(pubsub, "publish"):
+                pubsub.publish("pagos:changed", message)
+            elif hasattr(pubsub, "send_all"):
+                pubsub.send_all("pagos:changed", message)
+        except Exception:
+            pass
 
     # -------------------- Utils --------------------
     @staticmethod
@@ -276,6 +295,48 @@ class PagosRepo:
             )
 
         return rows
+
+    def refresh_from_assistance(
+        self,
+        periodo_ini: str,
+        periodo_fin: str,
+        id_empleado: Optional[int] = None,
+        *,
+        overwrite: bool = False,
+    ) -> Dict[str, Any]:
+        # CHANGE: delega al PaymentModel y emite eventos de actualización
+        resumen = self._try(
+            self.payment_model.refresh_from_assistance,
+            periodo_ini,
+            periodo_fin,
+            id_empleado=id_empleado,
+            overwrite=overwrite,
+        )
+        if isinstance(resumen, dict):
+            if resumen.get("creados", 0) or resumen.get("actualizados", 0) or resumen.get("requires_overwrite"):
+                self._after_change("refresh_from_assistance", resumen=resumen)
+        return resumen if isinstance(resumen, dict) else {}
+
+    def restore_green_dates(
+        self,
+        periodo_ini: str,
+        periodo_fin: str,
+        id_empleado: Optional[int] = None,
+        *,
+        overwrite: bool = False,
+    ) -> Dict[str, Any]:
+        # CHANGE: reconstruye pagos auto-generados faltantes tras eliminaciones
+        resumen = self._try(
+            self.payment_model.restore_green_dates,
+            periodo_ini,
+            periodo_fin,
+            id_empleado=id_empleado,
+            overwrite=overwrite,
+        )
+        if isinstance(resumen, dict):
+            if resumen.get("creados", 0) or resumen.get("actualizados", 0) or resumen.get("requires_overwrite"):
+                self._after_change("restore_green_dates", resumen=resumen)
+        return resumen if isinstance(resumen, dict) else {}
 
     def obtener_pago(self, id_pago: int) -> Optional[Dict[str, Any]]:
         # si el esquema cambió desde la última vez, refresca caches

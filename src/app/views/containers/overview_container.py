@@ -22,7 +22,7 @@ class OverviewContainer(ft.Container):
                 ),
                 ft.Divider(thickness=2, height=30),
                 ft.Image(
-                    src="assets/logos/logo_empresa.jpg",
+                    src="assets/logos/logo_nuevo_empresa.jpg",
                     width=1800,
                     height=700,
                     fit=ft.ImageFit.CONTAIN

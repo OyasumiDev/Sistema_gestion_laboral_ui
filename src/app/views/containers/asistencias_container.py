@@ -174,6 +174,26 @@ class AsistenciasContainer(ft.Container):
         if self.page:
             self.page.update()
 
+    def _emit_pagamentos_delta(self, payload: dict, message: str | None = None) -> None:
+        # CHANGE: expone un disparador UI + pubsub tras operaciones que afectan Pagos
+        if not payload:
+            return
+        texto = message or f"Pagos: cambios detectados para ID {payload.get('id_empleado')}"
+        try:
+            self.window_snackbar.show_success(texto)
+        except Exception:
+            pass
+        pubsub = getattr(self.page, "pubsub", None) if self.page else None
+        if not pubsub:
+            return
+        try:
+            if hasattr(pubsub, "publish"):
+                pubsub.publish("asistencias:changed", payload)
+            elif hasattr(pubsub, "send_all"):
+                pubsub.send_all("asistencias:changed", payload)
+        except Exception:
+            pass
+
 
     # --------------------- Interacción de ordenamiento (GLOBAL: filtros) ---------------------
     def _aplicar_sort_id(self, e=None):
@@ -789,6 +809,46 @@ class AsistenciasContainer(ft.Container):
                         return
 
 
+    def _formatear_resumen_sync(self, sync_info) -> str:
+        """
+        Devuelve una cadena para anexar al mensaje de éxito después de sincronizar pagos.
+        También muestra avisos o errores mediante la snackbar cuando aplica.
+        """
+        if not isinstance(sync_info, dict):
+            return ""
+
+        status = sync_info.get("status")
+        if status == "success":
+            partes: list[str] = []
+            pendientes = sync_info.get("pendientes_actualizados")
+            pagados = sync_info.get("pagados_ajustados")
+            sin_cambios = sync_info.get("sin_cambios")
+
+            if pendientes:
+                partes.append(f"pendientes actualizados: {pendientes}")
+            if pagados:
+                partes.append(f"pagados ajustados: {pagados}")
+            if not partes and sin_cambios:
+                partes.append("pagos sin cambios")
+
+            errores = sync_info.get("errores") or []
+            if errores:
+                self.window_snackbar.show_error(f"Pagos: {errores[0]}")
+                partes.append("ver avisos de pagos")
+
+            return f" ({', '.join(partes)})" if partes else ""
+
+        if status == "noop":
+            return " (sin pagos asociados al cambio)"
+
+        if status == "error":
+            mensaje = sync_info.get("message", "No se pudieron sincronizar los pagos.")
+            self.window_snackbar.show_error(f"Pagos: {mensaje}")
+            return " (pagos no sincronizados)"
+
+        return ""
+
+
     def _agregar_fila_en_grupo(self, grupo_importacion):
         # Descanso por defecto = "MD"
         self.editando[("nuevo", grupo_importacion)] = {
@@ -877,10 +937,19 @@ class AsistenciasContainer(ft.Container):
                 grupo_importacion=grupo,
             )
             if not resultado_db or resultado_db.get("status") != "success":
-                self.window_snackbar.show_error("❌ Error al guardar en la base de datos.")
+                self.window_snackbar.show_error("Error al guardar en la base de datos.")
                 return
 
-            self.window_snackbar.show_success("✅ Asistencia guardada correctamente.")
+            extra_sync = self._formatear_resumen_sync((resultado_db or {}).get("sync"))
+            mensaje_ok = resultado_db.get("message") or "Asistencia guardada correctamente."
+            self.window_snackbar.show_success(f"OK. {mensaje_ok}{extra_sync}")
+            self._emit_pagamentos_delta(  # CHANGE: avisar a Pagos tras alta
+                {
+                    "id_empleado": numero,
+                    "periodo_ini": fecha_iso,
+                    "periodo_fin": fecha_iso,
+                }
+            )
             self.editando.pop(("nuevo", grupo), None)
             self._actualizar_tabla()
             if self.page:
@@ -979,11 +1048,19 @@ class AsistenciasContainer(ft.Container):
             registro_actualizado["estado"] = "INCOMPLETO"
 
         resultado_db = self.asistencia_model.update_asistencia(registro_actualizado)
-        if resultado_db["status"] == "success":
-            self.window_snackbar.show_success("✅ Asistencia actualizada correctamente.")
+        if resultado_db.get("status") == "success":
+            extra_msg = self._formatear_resumen_sync(resultado_db.get("sync"))
+            self.window_snackbar.show_success(f"OK. Asistencia actualizada correctamente{extra_msg}")
+            self._emit_pagamentos_delta(  # CHANGE: informar delta tras edición
+                {
+                    "id_empleado": numero_nomina,
+                    "periodo_ini": registro_actualizado["fecha"],
+                    "periodo_fin": registro_actualizado["fecha"],
+                }
+            )
         else:
             self.window_snackbar.show_error(
-                f"❌ {resultado_db.get('message', 'Error al actualizar la asistencia.')}"
+                f"Error: {resultado_db.get('message', 'Error al actualizar la asistencia.')}"
             )
 
         self.editando.clear()
@@ -1011,15 +1088,29 @@ class AsistenciasContainer(ft.Container):
         try:
             registros = self.datos_por_grupo.get(grupo, [])
             fechas_afectadas = set()
+            avisos: list[dict] = []  # CHANGE: acumular payloads hacia Pagos
             for reg in registros:
                 fechas_afectadas.add(str(reg["fecha"]))
                 self.asistencia_model.delete_by_numero_nomina_and_fecha(
                     reg["numero_nomina"], reg["fecha"]
                 )
+                try:
+                    fecha_iso = datetime.strptime(str(reg["fecha"]), "%d/%m/%Y").strftime("%Y-%m-%d")
+                except Exception:
+                    fecha_iso = str(reg["fecha"])
+                avisos.append(
+                    {
+                        "id_empleado": int(reg["numero_nomina"]),
+                        "periodo_ini": fecha_iso,
+                        "periodo_fin": fecha_iso,
+                    }
+                )
             self.window_snackbar.show_success(f"✅ Grupo '{grupo}' eliminado.")
             # Notificar calendario por cada fecha ahora libre
             for f in fechas_afectadas:
                 self._notificar_fecha_libre_si_corresponde(f)
+            for payload in avisos:
+                self._emit_pagamentos_delta(payload)  # CHANGE: informar borrados del grupo
         except Exception as e:
             self.window_snackbar.show_error(f"❌ Error eliminando grupo: {str(e)}")
         self._actualizar_tabla()
@@ -1042,6 +1133,17 @@ class AsistenciasContainer(ft.Container):
             if resultado["status"] == "success":
                 self.window_snackbar.show_success("✅ Asistencia eliminada correctamente.")
                 self._notificar_fecha_libre_si_corresponde(str(fecha))
+                try:
+                    fecha_iso = datetime.strptime(str(fecha), "%d/%m/%Y").strftime("%Y-%m-%d")
+                except Exception:
+                    fecha_iso = str(fecha)
+                self._emit_pagamentos_delta(  # CHANGE: propagar eliminación individual
+                    {
+                        "id_empleado": numero,
+                        "periodo_ini": fecha_iso,
+                        "periodo_fin": fecha_iso,
+                    }
+                )
             else:
                 self.window_snackbar.show_error(f"❌ {resultado['message']}")
         except Exception as e:
@@ -1262,8 +1364,21 @@ class AsistenciasContainer(ft.Container):
 
         # 🔁 Primero: filas existentes (vista / edición)
         for reg in registros_ordenados:
-            if not reg.get("descanso") or reg.get("descanso") in (0, "0", "SN", "", None):
-                reg["descanso"] = "MD"
+            descanso_valor = reg.get("descanso")
+            descanso_str = str(descanso_valor).strip().upper() if descanso_valor is not None else ""
+
+            if descanso_str in ("", "NONE", "NULL"):
+                descanso_normalizado = "MD"
+            elif descanso_str in ("0", "SN"):
+                descanso_normalizado = "SN"
+            elif descanso_str == "1":
+                descanso_normalizado = "MD"
+            elif descanso_str == "2":
+                descanso_normalizado = "CMP"
+            else:
+                descanso_normalizado = descanso_str or "MD"
+
+            reg["descanso"] = descanso_normalizado
 
             hora_entrada = self.calculo_helper.sanitizar_hora(reg.get("hora_entrada"))
             hora_salida = self.calculo_helper.sanitizar_hora(reg.get("hora_salida"))
@@ -1369,3 +1484,5 @@ class AsistenciasContainer(ft.Container):
                     st["v"] = float(10**9)
             except Exception:
                 pass
+
+
