@@ -39,6 +39,7 @@ class LoanPaymentModel:
             )
             if result.get("c", 0) > 0:
                 print(f"✔️ La tabla {self.E.TABLE_PAGOS_PRESTAMOS.value} ya existe.")
+                self._migrate_schema()
                 return True
 
             # Verifica dependencias
@@ -84,6 +85,54 @@ class LoanPaymentModel:
         except Exception as ex:
             print(f"❌ Error al verificar/crear la tabla: {ex}")
             return False
+
+    def _migrate_schema(self) -> None:
+        """
+        Actualiza llaves foráneas antiguas (pagos.id_pago) para apuntar a pagos.id_pago_nomina.
+        """
+        try:
+            fk_rows = self._get_fk_info()
+            has_new_fk = any(
+                r.get("REFERENCED_COLUMN_NAME") == self.E.ID_PAGO_NOMINA.value for r in fk_rows
+            )
+            needs_drop = [r for r in fk_rows if r.get("REFERENCED_COLUMN_NAME") == "id_pago"]
+
+            for row in needs_drop:
+                constraint = row.get("CONSTRAINT_NAME")
+                if not constraint:
+                    continue
+                try:
+                    self.db.run_query(f"ALTER TABLE {self.table} DROP FOREIGN KEY {constraint}")
+                    print(f"⚠️ FK '{constraint}' en {self.table} eliminada (referenciaba pagos.id_pago).")
+                except Exception as ex:
+                    print(f"⚠️ No se pudo eliminar FK {constraint}: {ex}")
+
+            if needs_drop or not has_new_fk:
+                fk_name = "fk_pagos_prestamo_pago_nomina"
+                existing_names = {row.get("CONSTRAINT_NAME") for row in fk_rows}
+                if fk_name in existing_names:
+                    self.db.run_query(f"ALTER TABLE {self.table} DROP FOREIGN KEY {fk_name}")
+                sql = f"""
+                    ALTER TABLE {self.table}
+                    ADD CONSTRAINT {fk_name}
+                        FOREIGN KEY ({self.E.ID_PAGO_NOMINA.value})
+                        REFERENCES pagos({self.E.ID_PAGO_NOMINA.value})
+                        ON DELETE CASCADE
+                """
+                self.db.run_query(sql)
+                print("✅ FK de pagos_prestamo -> pagos actualizada.")
+        except Exception as ex:
+            print(f"⚠️ No se pudo migrar {self.table}: {ex}")
+
+    def _get_fk_info(self):
+        q = """
+            SELECT CONSTRAINT_NAME, REFERENCED_COLUMN_NAME
+            FROM information_schema.KEY_COLUMN_USAGE
+            WHERE TABLE_SCHEMA = %s
+              AND TABLE_NAME = %s
+              AND REFERENCED_TABLE_NAME = 'pagos'
+        """
+        return self.db.get_data_list(q, (self.db.database, self.table), dictionary=True) or []
 
     # ------------------------------------------------------------
     # Utilidades de cálculo

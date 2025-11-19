@@ -131,6 +131,7 @@ class PaymentModel:
                 print(f"✅ Tabla {self.E.TABLE.value} creada correctamente.")
             else:
                 print(f"✔️ La tabla {self.E.TABLE.value} ya existe. Verificación completa.")
+                self._ensure_schema_migrations()
             return True
 
         except Exception as ex:
@@ -1977,6 +1978,118 @@ class PaymentModel:
         except Exception:
             return False
 
+    def _ensure_schema_migrations(self) -> None:
+        """
+        Migra esquemas heredados de la tabla `pagos` (por ejemplo id_pago -> id_pago_nomina).
+        """
+        try:
+            cols = self._get_columns_meta(self.E.TABLE.value)
+            cols = self._maybe_rename_legacy_pk(cols)
+            self._ensure_additional_columns(cols)
+        except Exception as ex:
+            print(f"⚠️ No se pudo actualizar el esquema de '{self.E.TABLE.value}': {ex}")
+
+    def _get_columns_meta(self, table_name: str) -> Dict[str, Dict[str, Any]]:
+        q = """
+            SELECT column_name, data_type, column_type, is_nullable, column_default, extra
+            FROM information_schema.columns
+            WHERE table_schema = %s AND table_name = %s
+        """
+        rows = self.db.get_data_list(q, (self.db.database, table_name), dictionary=True) or []
+        normalized: Dict[str, Dict[str, Any]] = {}
+        for row in rows:
+            name = row.get("COLUMN_NAME") or row.get("column_name")
+            if not name:
+                continue
+            norm = {str(k).lower(): v for k, v in row.items()}
+            normalized[str(name).lower()] = norm
+        return normalized
+
+    def _maybe_rename_legacy_pk(self, columns: Dict[str, Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+        """
+        Renombra id_pago -> id_pago_nomina si aún se detecta el esquema anterior.
+        """
+        pk = self.E.ID_PAGO_NOMINA.value.lower()
+        if pk in columns:
+            return columns
+        legacy = "id_pago"
+        if legacy not in columns:
+            return columns
+
+        dropped = self._drop_foreign_keys_referencing(self.E.TABLE.value, legacy)
+        alter = f"""
+            ALTER TABLE {self.E.TABLE.value}
+            CHANGE COLUMN {legacy} {pk} INT NOT NULL AUTO_INCREMENT
+        """
+        self.db.run_query(alter)
+        print("✅ Columna 'id_pago' renombrada a 'id_pago_nomina'.")
+        columns = self._get_columns_meta(self.E.TABLE.value)
+        if dropped:
+            print("ℹ️ Se eliminaron temporalmente llaves foráneas antiguas. "
+                  "Los modelos dependientes las recrearán automáticamente.")
+        return columns
+
+    def _drop_foreign_keys_referencing(self, referenced_table: str, referenced_column: str) -> List[Tuple[str, str]]:
+        q = """
+            SELECT TABLE_NAME, CONSTRAINT_NAME
+            FROM information_schema.KEY_COLUMN_USAGE
+            WHERE REFERENCED_TABLE_SCHEMA = %s
+              AND REFERENCED_TABLE_NAME = %s
+              AND REFERENCED_COLUMN_NAME = %s
+        """
+        rows = self.db.get_data_list(
+            q, (self.db.database, referenced_table, referenced_column), dictionary=True
+        ) or []
+        dropped = []
+        for row in rows:
+            table = row.get("TABLE_NAME")
+            constraint = row.get("CONSTRAINT_NAME")
+            if not table or not constraint:
+                continue
+            try:
+                self.db.run_query(f"ALTER TABLE {table} DROP FOREIGN KEY {constraint}")
+                dropped.append((table, constraint))
+                print(f"⚠️ FK '{constraint}' eliminada en '{table}' (referencia a {referenced_table}.{referenced_column}).")
+            except Exception as ex:
+                print(f"⚠️ No se pudo eliminar FK {constraint} en {table}: {ex}")
+        return dropped
+
+    def _ensure_additional_columns(self, columns: Dict[str, Dict[str, Any]]) -> None:
+        """
+        Asegura las columnas agregadas recientemente para agrupar pagos por corridas.
+        """
+        add_specs = [
+            (self.E.GRUPO_PAGO.value, "VARCHAR(100) DEFAULT NULL", self.E.NUMERO_NOMINA.value),
+            (self.E.FECHA_INICIO.value, "DATE DEFAULT NULL", self.E.GRUPO_PAGO.value),
+            (self.E.FECHA_FIN.value, "DATE DEFAULT NULL", self.E.FECHA_INICIO.value),
+            (self.E.ESTADO_GRUPO.value, "ENUM('abierto','cerrado') NOT NULL DEFAULT 'abierto'", self.E.FECHA_FIN.value),
+        ]
+        for name, definition, after in add_specs:
+            key = name.lower()
+            if key in columns:
+                continue
+            sql = f"ALTER TABLE {self.E.TABLE.value} ADD COLUMN {name} {definition}"
+            if after:
+                sql += f" AFTER {after}"
+            self.db.run_query(sql)
+            columns[key] = {"column_name": name}
+            print(f"✅ Columna '{name}' añadida en {self.E.TABLE.value}.")
+
+        horas_col = self.E.TOTAL_HORAS_TRABAJADAS.value.lower()
+        meta = columns.get(horas_col)
+        if meta:
+            col_type = str(meta.get("column_type") or meta.get("COLUMN_TYPE") or "").lower()
+            if col_type != "decimal(6,2)":
+                try:
+                    sql = f"""
+                        ALTER TABLE {self.E.TABLE.value}
+                        MODIFY COLUMN {horas_col} DECIMAL(6,2) NOT NULL DEFAULT 0
+                    """
+                    self.db.run_query(sql)
+                    print(f"✅ Columna '{horas_col}' ajustada a DECIMAL(6,2).")
+                except Exception as ex:
+                    print(f"⚠️ No se pudo ajustar tipo de '{horas_col}': {ex}")
+
     def _safe_delete_by_pago(self, table: str, id_col: str, id_pago: int) -> None:
         """Borra filas en `table` por `id_col=id_pago` SOLO si la tabla existe."""
         if not self._table_exists(table):
@@ -1997,7 +2110,3 @@ class PaymentModel:
         sigan funcionando sin romper la compatibilidad.
         """
         return self.get_all_pagos()
-
-
-
-

@@ -39,6 +39,7 @@ class DiscountModel:
             """
             r_tbl = self.db.get_data(q_tbl, (self.db.database, self.E.TABLE.value), dictionary=True)
             if (r_tbl or {}).get("c", 0) > 0:
+                self._migrate_schema()
                 return True
             self._create_table()
             return True
@@ -65,6 +66,85 @@ class DiscountModel:
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
         """
         self.db.run_query(query)
+
+    def _migrate_schema(self) -> None:
+        """
+        Migra columnas/llaves antiguas (id_pago -> id_pago_nomina).
+        """
+        try:
+            columns = self._get_columns_meta()
+            target = self.E.ID_PAGO.value.lower()
+            if target not in columns and "id_pago" in columns:
+                self._rename_legacy_column()
+                columns = self._get_columns_meta()
+            self._ensure_fk_to_pagos()
+        except Exception as ex:
+            print(f"⚠️ No se pudo actualizar la tabla {self.E.TABLE.value}: {ex}")
+
+    def _get_columns_meta(self) -> Dict[str, Dict[str, Any]]:
+        q = """
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_schema = %s AND table_name = %s
+        """
+        rows = self.db.get_data_list(q, (self.db.database, self.E.TABLE.value), dictionary=True) or []
+        cols: Dict[str, Dict[str, Any]] = {}
+        for row in rows:
+            name = row.get("COLUMN_NAME") or row.get("column_name")
+            if not name:
+                continue
+            cols[str(name).lower()] = row
+        return cols
+
+    def _rename_legacy_column(self) -> None:
+        self._drop_fk_to_pagos()
+        sql = f"""
+            ALTER TABLE {self.E.TABLE.value}
+            CHANGE COLUMN id_pago {self.E.ID_PAGO.value} INT DEFAULT NULL
+        """
+        self.db.run_query(sql)
+        print("✅ Columna 'id_pago' renombrada a 'id_pago_nomina' en descuentos.")
+
+    def _drop_fk_to_pagos(self) -> None:
+        q = """
+            SELECT CONSTRAINT_NAME
+            FROM information_schema.KEY_COLUMN_USAGE
+            WHERE TABLE_SCHEMA = %s
+              AND TABLE_NAME = %s
+              AND REFERENCED_TABLE_NAME = 'pagos'
+        """
+        rows = self.db.get_data_list(q, (self.db.database, self.E.TABLE.value), dictionary=True) or []
+        for row in rows:
+            constraint = row.get("CONSTRAINT_NAME")
+            if not constraint:
+                continue
+            try:
+                self.db.run_query(f"ALTER TABLE {self.E.TABLE.value} DROP FOREIGN KEY {constraint}")
+                print(f"⚠️ FK '{constraint}' eliminada en {self.E.TABLE.value}.")
+            except Exception as ex:
+                print(f"⚠️ No se pudo eliminar FK {constraint}: {ex}")
+
+    def _ensure_fk_to_pagos(self) -> None:
+        q = """
+            SELECT CONSTRAINT_NAME, REFERENCED_COLUMN_NAME
+            FROM information_schema.KEY_COLUMN_USAGE
+            WHERE TABLE_SCHEMA = %s
+              AND TABLE_NAME = %s
+              AND REFERENCED_TABLE_NAME = 'pagos'
+        """
+        rows = self.db.get_data_list(q, (self.db.database, self.E.TABLE.value), dictionary=True) or []
+        for row in rows:
+            if row.get("REFERENCED_COLUMN_NAME") == self.E.ID_PAGO.value:
+                return  # FK ya actualizada
+        sql = f"""
+            ALTER TABLE {self.E.TABLE.value}
+            ADD CONSTRAINT fk_descuentos_pago_nomina
+                FOREIGN KEY ({self.E.ID_PAGO.value})
+                REFERENCES pagos({self.E.ID_PAGO.value})
+                ON DELETE SET NULL
+        """
+        self.db.run_query(sql)
+        print("✅ FK de descuentos -> pagos actualizada.")
 
     # ---------------------------------------------------------------------
     # Inserción / upserts

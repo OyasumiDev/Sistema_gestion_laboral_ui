@@ -72,6 +72,7 @@ class AssistanceModel:
             else:
                 # Validar columnas necesarias y su tipo correcto
                 columnas_requeridas = {
+                    E_ASSISTANCE.DESCANSO.value: "TINYINT DEFAULT 0",
                     E_ASSISTANCE.GRUPO_IMPORTACION.value: "VARCHAR(150) DEFAULT NULL",
                     E_ASSISTANCE.TIEMPO_TRABAJO.value: "DECIMAL(5,2) DEFAULT 0.00",
                     E_ASSISTANCE.TIEMPO_TRABAJO_CON_DESCANSO.value: "DECIMAL(5,2) DEFAULT 0.00",
@@ -1210,5 +1211,4 @@ class AssistanceModel:
         except Exception as ex:
             print(f"❌ Error al obtener fechas con estado: {ex}")
             return {}
-
 
