@@ -73,7 +73,7 @@ class DatabaseMysql:
 
     def disconnect(self) -> None:
         if hasattr(self, "connection") and self.connection:
-            self.connection.close()
+            self.connection.close() 
             print("ℹ️ Conexión cerrada a la base de datos")
 
     def _cursor(self, dictionary: bool = False):

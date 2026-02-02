@@ -1,382 +1,498 @@
+from __future__ import annotations
+
 from datetime import datetime, date, time, timedelta
-import flet as ft 
-from typing import Dict
+from typing import Dict, Tuple, List, Optional, Any
+import re
+import flet as ft
+
 
 class CalculoHorasHelper:
+    """
+    Helper núcleo para:
+    - Cálculo de horas trabajadas (neto y con descanso)
+    - Validación segura (mientras se escribe)
+    - Normalización de descanso (SN/MD/CMP) + soporte int 0/1/2
+    - Validación de duplicados por (numero_nomina, fecha) dentro del grupo
+    - Helpers visuales para TextField (errores sin romper el borde OUTLINE)
+
+    Reglas acordadas en el chat:
+    - Descanso default: MD
+    - Si horas incompletas: NO marcar error duro (estado = 'incompleto')
+    - Si salida <= entrada: estado = 'negativo'
+    - Permitir recalcular descanso sin entrar a edición (depende solo de entrada/salida/descanso)
+    """
+
+    # -------------------------
+    # Normalizaciones base
+    # -------------------------
+    @staticmethod
+    def normalizar_descanso(v: Any) -> str:
+        """
+        Normaliza cualquier valor de descanso a: 'SN', 'MD', 'CMP'
+        Acepta:
+        - None, "", "NULL" -> MD
+        - int/str "0" -> SN ; "1" -> MD ; "2" -> CMP
+        - "SN/MD/CMP" (case-insensitive)
+        """
+        if v is None:
+            return "MD"
+        s = str(v).strip().upper()
+        if s in ("", "NONE", "NULL"):
+            return "MD"
+        if s in ("0", "SN", "SIN"):
+            return "SN"
+        if s in ("1", "MD", "MEDIO"):
+            return "MD"
+        if s in ("2", "CMP", "COMIDA", "COMPLETO"):
+            return "CMP"
+        return "MD" if s not in ("SN", "MD", "CMP") else s
 
     @staticmethod
-    def recalcular_con_estado(entrada_str: str, salida_str: str, descanso: str) -> dict:
-        print(f"🔧 recalcular_con_estado - Entrada: {entrada_str}, Salida: {salida_str}, Descanso: {descanso}")
-        errores = []
+    def obtener_minutos_descanso(tipo: Any) -> int:
+        """
+        Regla del proyecto:
+        - SN = 0
+        - MD = 30 (default)
+        - CMP = 60
+        """
+        t = CalculoHorasHelper.normalizar_descanso(tipo)
+        return {"SN": 0, "MD": 30, "CMP": 60}[t]
 
-        # Proteger cálculo si entrada/salida no están completas aún
+    # -------------------------
+    # Parseo robusto de hora
+    # -------------------------
+    @staticmethod
+    def _is_hora_completa(v: str) -> bool:
+        """
+        True si es HH:MM o HH:MM:SS completo. (No acepta parciales tipo "6:" o "6:2")
+        """
+        if not v:
+            return False
+        s = str(v).strip()
+        m = re.fullmatch(r"(\d{1,2}):(\d{2})(?::(\d{2}))?$", s)
+        if not m:
+            return False
+        try:
+            h = int(m.group(1))
+            mi = int(m.group(2))
+            se = int(m.group(3)) if m.group(3) else 0
+            return 0 <= h <= 23 and 0 <= mi <= 59 and 0 <= se <= 59
+        except Exception:
+            return False
+
+    @staticmethod
+    def entrada_completa(entrada: str, salida: str) -> bool:
+        """
+        Evita calcular mientras el usuario escribe horas parciales.
+        """
+        return CalculoHorasHelper._is_hora_completa(entrada) and CalculoHorasHelper._is_hora_completa(salida)
+
+    @staticmethod
+    def parse_time(value: Any) -> Optional[time]:
+        """
+        Convierte a time.
+        - Acepta time/datetime/str
+        - Rechaza timedelta
+        - str: HH:MM o HH:MM:SS (completo)
+        """
+        if value is None:
+            return None
+
+        if isinstance(value, time):
+            return value
+
+        if isinstance(value, timedelta):
+            # No es hora; es duración.
+            return None
+
+        if isinstance(value, datetime):
+            return value.time()
+
+        s = value if isinstance(value, str) else str(value)
+        s = s.strip()
+        if not s:
+            return None
+
+        # Normaliza "H:MM" -> "HH:MM"
+        # (pero SOLO si ya es completo, no parcial)
+        if not CalculoHorasHelper._is_hora_completa(s):
+            return None
+
+        for fmt in ("%H:%M:%S", "%H:%M"):
+            try:
+                return datetime.strptime(s, fmt).time()
+            except ValueError:
+                continue
+        return None
+
+    @staticmethod
+    def sanitizar_hora(valor: Any) -> str:
+        """
+        Devuelve string HH:MM (sin segundos en UI) si puede.
+        Acepta time/datetime/timedelta/str.
+        """
+        if valor is None:
+            return ""
+
+        if isinstance(valor, time):
+            return valor.strftime("%H:%M")
+
+        if isinstance(valor, datetime):
+            return valor.time().strftime("%H:%M")
+
+        if isinstance(valor, timedelta):
+            total_seconds = int(valor.total_seconds())
+            h = total_seconds // 3600
+            m = (total_seconds % 3600) // 60
+            return f"{h:02}:{m:02}"
+
+        s = valor if isinstance(valor, str) else str(valor)
+        s = s.strip()
+        if not s:
+            return ""
+
+        # Limpieza básica: "6:2" NO lo forzamos a completo, lo dejamos igual para que la validación lo trate como incompleto.
+        # Solo normalizamos cuando ya es "completo" (H:MM / HH:MM / HH:MM:SS)
+        m = re.fullmatch(r"(\d{1,2}):(\d{2})(?::(\d{2}))?$", s)
+        if not m:
+            return s  # el RowHelper puede seguir editando; aquí no rompemos input
+
+        hh = int(m.group(1))
+        mm = int(m.group(2))
+        # si trae segundos, los ignoramos para UI de campos hora
+        if 0 <= hh <= 23 and 0 <= mm <= 59:
+            return f"{hh:02}:{mm:02}"
+        return s
+
+    # -------------------------
+    # Cálculo principal
+    # -------------------------
+    @staticmethod
+    def recalcular_con_estado(entrada_str: str, salida_str: str, descanso: Any) -> dict:
+        """
+        Retorna:
+        - tiempo_trabajo (neto, con descanso)
+        - tiempo_trabajo_con_descanso (bruto, sin descanso)
+        - estado: ok | incompleto | invalido | negativo
+        - mensaje + errores
+        """
+        errores: List[str] = []
+
+        # Normalizar descanso (MD default)
+        descanso_norm = CalculoHorasHelper.normalizar_descanso(descanso)
+        minutos_descanso = CalculoHorasHelper.obtener_minutos_descanso(descanso_norm)
+
+        entrada_str = (entrada_str or "").strip()
+        salida_str = (salida_str or "").strip()
+
+        # Mientras se escribe (no bloqueo duro)
         if not CalculoHorasHelper.entrada_completa(entrada_str, salida_str):
-            errores.append("⚠️ Horas incompletas o parcialmente escritas")
             return {
                 "tiempo_trabajo": "00:00:00",
                 "tiempo_trabajo_con_descanso": "00:00:00",
                 "estado": "incompleto",
                 "mensaje": "⚠️ Horas incompletas o parcialmente escritas",
-                "errores": errores
+                "errores": ["Horas incompletas"],
+                "descanso": descanso_norm,
+                "minutos_descanso": minutos_descanso,
             }
 
         entrada = CalculoHorasHelper.parse_time(entrada_str)
         salida = CalculoHorasHelper.parse_time(salida_str)
-        minutos_descanso = CalculoHorasHelper.obtener_minutos_descanso(descanso)
 
         if not entrada or not salida:
-            errores.append("⚠️ Horas inválidas o vacías")
             return {
                 "tiempo_trabajo": "00:00:00",
                 "tiempo_trabajo_con_descanso": "00:00:00",
                 "estado": "invalido",
                 "mensaje": "⚠️ Horas inválidas o vacías",
-                "errores": errores
+                "errores": ["Horas inválidas"],
+                "descanso": descanso_norm,
+                "minutos_descanso": minutos_descanso,
             }
 
         dt_entrada = datetime.combine(date.min, entrada)
         dt_salida = datetime.combine(date.min, salida)
 
         if dt_salida <= dt_entrada:
-            errores.append("⚠️ La hora de salida es menor o igual que la de entrada")
             return {
                 "tiempo_trabajo": "00:00:00",
                 "tiempo_trabajo_con_descanso": "00:00:00",
                 "estado": "negativo",
                 "mensaje": "⚠️ La hora de salida es menor o igual que la de entrada",
-                "errores": errores
+                "errores": ["Salida <= entrada"],
+                "descanso": descanso_norm,
+                "minutos_descanso": minutos_descanso,
             }
 
         duracion_total = dt_salida - dt_entrada
-        tiempo_trabajo = duracion_total
-        tiempo_con_descanso = max(duracion_total - timedelta(minutes=minutos_descanso), timedelta(0))
+        tiempo_con_descanso = duracion_total - timedelta(minutes=minutos_descanso)
+        if tiempo_con_descanso < timedelta(0):
+            tiempo_con_descanso = timedelta(0)
 
-        def formatear(tiempo: timedelta):
-            horas = int(tiempo.total_seconds()) // 3600
-            minutos = (int(tiempo.total_seconds()) % 3600) // 60
-            segundos = int(tiempo.total_seconds()) % 60
-            return f"{horas:02}:{minutos:02}:{segundos:02}"
+        def _fmt(td: timedelta) -> str:
+            total = int(td.total_seconds())
+            h = total // 3600
+            m = (total % 3600) // 60
+            s = total % 60
+            return f"{h:02}:{m:02}:{s:02}"
 
         return {
-            "tiempo_trabajo": formatear(tiempo_trabajo),
-            "tiempo_trabajo_con_descanso": formatear(tiempo_con_descanso),
+            "tiempo_trabajo": _fmt(tiempo_con_descanso),
+            "tiempo_trabajo_con_descanso": _fmt(duracion_total),
             "estado": "ok",
             "mensaje": "✅ Horas calculadas correctamente",
-            "errores": []
+            "errores": errores,
+            "descanso": descanso_norm,
+            "minutos_descanso": minutos_descanso,
         }
 
-
+    # -------------------------
+    # Fechas (para duplicados)
+    # -------------------------
     @staticmethod
-    def obtener_minutos_descanso(tipo: str) -> int:
-        print(f"🔧 obtener_minutos_descanso - Tipo: {tipo}")
-        return {"MD": 30, "CMP": 60, "SN": 0}.get(tipo.strip().upper(), 0)
+    def convertir_fecha_a_iso(fecha_str: Any) -> str:
+        """
+        Convierte DD/MM/YYYY o YYYY-MM-DD a ISO YYYY-MM-DD.
+        Retorna "" si no es válido.
+        """
+        s = ("" if fecha_str is None else str(fecha_str)).strip()
+        if not s:
+            return ""
 
-    @staticmethod
-    def parse_time(value) -> time | None:
-        if not value:
-            return None
-
-        # Si ya es objeto time, regresarlo
-        if isinstance(value, time):
-            return value
-
-        # Si es timedelta, no se puede convertir
-        if isinstance(value, timedelta):
-            print(f"❗ parse_time: recibido timedelta, inválido → {value}")
-            return None
-
-        # Si es datetime completo, tomar solo la hora
-        if isinstance(value, datetime):
-            return value.time()
-
-        # Si no es string, convertirlo
-        if not isinstance(value, str):
-            value = str(value)
-
-        value = value.strip()
-
-        formatos_posibles = ["%H:%M", "%H:%M:%S"]
-
-        for fmt in formatos_posibles:
+        for fmt in ("%d/%m/%Y", "%Y-%m-%d"):
             try:
-                return datetime.strptime(value, fmt).time()
-            except ValueError:
+                return datetime.strptime(s, fmt).strftime("%Y-%m-%d")
+            except Exception:
                 continue
 
-        print(f"❗ Error parseando hora '{value}': no coincide con formatos válidos")
-        return None
+        return ""
 
     @staticmethod
+    def parse_fecha_ddmmyyyy(fecha_str: str) -> datetime:
+        """
+        Necesario porque tu RowHelper lo usa.
+        Lanza excepción si no puede parsear (así lo manejas arriba).
+        """
+        return datetime.strptime(str(fecha_str).strip(), "%d/%m/%Y")
+
+    # -------------------------
+    # Duplicados en grupo
+    # -------------------------
+    @staticmethod
     def validar_duplicado_en_grupo(
-        grupo: list[dict],
+        grupo: List[dict],
         numero_nomina: str,
         fecha: str,
         registro_actual: dict = None
     ) -> dict:
         """
-        Verifica si existe un número de nómina duplicado en la misma fecha dentro del grupo.
-        Convierte todas las fechas a formato ISO antes de comparar.
+        Verifica duplicado por (numero_nomina, fecha ISO) en el mismo grupo.
         """
-        print(f"🔍 validar_duplicado_en_grupo - Número: {numero_nomina}, Fecha: {fecha}")
-
         numero_limpio = str(numero_nomina).strip()
-        fecha_iso_objetivo = CalculoHorasHelper.convertir_fecha_a_iso(fecha)
+        fecha_iso_obj = CalculoHorasHelper.convertir_fecha_a_iso(fecha)
 
-        for registro in grupo:
-            if registro_actual is not None and registro is registro_actual:
-                continue  # omitir el mismo objeto si se edita
+        if not numero_limpio.isdigit() or not fecha_iso_obj:
+            return {"duplicado": False, "mensaje": "⚠️ Datos incompletos", "estado": "incompleto"}
 
-            num_reg = str(registro.get("numero_nomina", "")).strip()
-            fecha_reg = CalculoHorasHelper.convertir_fecha_a_iso(registro.get("fecha", ""))
+        for r in (grupo or []):
+            if registro_actual is not None and r is registro_actual:
+                continue
 
-            if num_reg == numero_limpio and fecha_reg == fecha_iso_objetivo:
+            num_r = str(r.get("numero_nomina", "")).strip()
+            fecha_r = CalculoHorasHelper.convertir_fecha_a_iso(r.get("fecha", ""))
+
+            if num_r == numero_limpio and fecha_r == fecha_iso_obj:
                 return {
                     "duplicado": True,
                     "mensaje": "⚠️ Ya existe un registro con este número y fecha.",
-                    "estado": "duplicado"
+                    "estado": "duplicado",
                 }
 
-        return {
-            "duplicado": False,
-            "mensaje": "✅ Número válido para esta fecha.",
-            "estado": "ok"
-        }
-
-
+        return {"duplicado": False, "mensaje": "✅ Número válido para esta fecha.", "estado": "ok"}
 
     @staticmethod
     def validar_numero_fecha_en_grupo(
-        grupo: list[dict],
+        grupo: List[dict],
         numero_nomina: str,
         fecha: str,
         registro_actual: dict = None
-    ) -> tuple[bool, list[str]]:
+    ) -> Tuple[bool, List[str]]:
         """
-        Valida número de nómina y fecha, detectando errores de formato, entrada incompleta
-        y duplicados dentro del grupo. Siempre responde de forma segura incluso con entradas mal escritas.
+        Valida:
+        - numero_nomina: dígitos
+        - fecha: DD/MM/YYYY o YYYY-MM-DD
+        - duplicado en grupo
         """
-        errores = []
+        errores: List[str] = []
 
-        # Limpiar número
-        numero_limpio = str(numero_nomina).strip()
-        if not numero_limpio or not numero_limpio.isdigit():
+        num = str(numero_nomina).strip()
+        if not num.isdigit():
             errores.append("Número inválido")
 
-        # Validar fecha
-        fecha_limpia = str(fecha).strip()
-        fecha_iso = None
-
-        if not fecha_limpia:
+        fecha_s = str(fecha).strip()
+        fecha_iso = CalculoHorasHelper.convertir_fecha_a_iso(fecha_s)
+        if not fecha_s:
             errores.append("Fecha incompleta")
-        elif fecha_limpia.count("/") != 2 or len(fecha_limpia) < 10:
-            errores.append("Fecha incompleta")
-        else:
-            try:
-                fecha_iso = datetime.strptime(fecha_limpia, "%d/%m/%Y").strftime("%Y-%m-%d")
-            except Exception:
-                errores.append("Fecha inválida")
+        elif not fecha_iso:
+            errores.append("Fecha inválida")
 
-        # Validar duplicado
-        if not errores and fecha_iso:
-            resultado = CalculoHorasHelper.validar_duplicado_en_grupo(
-                grupo, numero_limpio, fecha_iso, registro_actual
-            )
-            if resultado["duplicado"]:
+        if not errores:
+            dup = CalculoHorasHelper.validar_duplicado_en_grupo(grupo, num, fecha_iso, registro_actual=registro_actual)
+            if dup.get("duplicado"):
                 errores.append("Duplicado")
 
         return (len(errores) == 0), errores
 
-
     @staticmethod
     def validar_fecha_y_numero(
         registro: dict,
-        registros_del_grupo: list[dict],
+        registros_del_grupo: List[dict],
         numero_field: ft.TextField,
         fecha_field: ft.TextField
     ):
-        # Obtener valores actuales de los campos
-        numero = str(numero_field.value).strip()
-        fecha_original = str(fecha_field.value).strip()
+        """
+        Valida en blur (como acordamos).
+        Marca visualmente SIN romper el borde outline.
+        """
+        numero = str(numero_field.value or "").strip()
+        fecha_original = str(fecha_field.value or "").strip()
 
-        print(f"🔍 validar_fecha_y_numero - Número: '{numero}', Fecha original: '{fecha_original}'")
-
-        # Actualizar en el registro antes de validar
+        # Persistir en registro antes de validar
         registro["numero_nomina"] = numero
         registro["fecha"] = fecha_original
 
-        # Ejecutar validación
         es_valido, errores = CalculoHorasHelper.validar_numero_fecha_en_grupo(
             registros_del_grupo, numero, fecha_original, registro_actual=registro
         )
 
-        registro["errores"] = errores if not es_valido else []
+        registro["errores"] = [] if es_valido else errores
 
-        # Detectar errores por campo
-        numero_tiene_error = any("Número" in err or "Duplicado" in err for err in errores)
-        fecha_tiene_error = any("Fecha" in err or "Duplicado" in err for err in errores)
+        numero_tiene_error = any(("Número" in e) or ("Duplicado" in e) for e in errores)
+        fecha_tiene_error = any(("Fecha" in e) or ("Duplicado" in e) for e in errores)
 
-        # Visual para número de nómina
-        numero_field.border_color = ft.colors.RED_400 if numero_tiene_error else ft.colors.TRANSPARENT
-        numero_field.bgcolor = ft.colors.RED_50 if numero_tiene_error else ft.colors.TRANSPARENT
+        # No uses TRANSPARENT como border_color cuando tienes OUTLINE:
+        # mejor None para "volver a default"
+        numero_field.border_color = ft.colors.RED_400 if numero_tiene_error else None
+        numero_field.bgcolor = ft.colors.with_opacity(0.10, ft.colors.RED) if numero_tiene_error else None
 
-        # Visual para fecha
-        fecha_field.border_color = ft.colors.RED_400 if fecha_tiene_error else ft.colors.TRANSPARENT
-        fecha_field.bgcolor = ft.colors.RED_50 if fecha_tiene_error else ft.colors.TRANSPARENT
+        fecha_field.border_color = ft.colors.RED_400 if fecha_tiene_error else None
+        fecha_field.bgcolor = ft.colors.with_opacity(0.10, ft.colors.RED) if fecha_tiene_error else None
 
-        # Forzar actualización visual robusta
         try:
             if numero_field.page:
                 numero_field.update()
             if fecha_field.page:
                 fecha_field.update()
-        except Exception as e:
-            print(f"⚠️ Error actualizando campos visuales: {e}")
+        except Exception:
+            pass
 
-    @staticmethod
-    def sanitizar_hora(valor) -> str:
-        if isinstance(valor, time):
-            return valor.strftime("%H:%M:%S")
-        elif isinstance(valor, timedelta):
-            total_seconds = int(valor.total_seconds())
-            horas = total_seconds // 3600
-            minutos = (total_seconds % 3600) // 60
-            segundos = total_seconds % 60
-            return f"{horas:02}:{minutos:02}:{segundos:02}"
-        elif isinstance(valor, datetime):
-            return valor.time().strftime("%H:%M:%S")
-        elif isinstance(valor, str):
-            partes = valor.strip().split(":")
-            if len(partes) == 2:
-                return f"{partes[0]:0>2}:{partes[1]:0>2}:00"
-            elif len(partes) == 3:
-                return f"{partes[0]:0>2}:{partes[1]:0>2}:{partes[2]:0>2}"
-            else:
-                return ""
-        else:
-            return ""
-
-
-    @staticmethod
-    def convertir_fecha_a_iso(fecha_str: str) -> str:
-        """
-        Convierte fechas en formato DD/MM/YYYY o YYYY-MM-DD a ISO (YYYY-MM-DD).
-        Devuelve "" si el formato no es válido.
-        """
-        fecha_str = str(fecha_str).strip()
-        formatos_validos = ["%d/%m/%Y", "%Y-%m-%d"]
-
-        for fmt in formatos_validos:
-            try:
-                return datetime.strptime(fecha_str, fmt).strftime("%Y-%m-%d")
-            except Exception:
-                continue
-
-        print(f"❗ Error convirtiendo fecha: {fecha_str} → formato no reconocido")
-        return ""
-
-
+    # -------------------------
+    # UI: actualización de cálculo en vivo
+    # -------------------------
     def _actualizar_tiempo_trabajo(
         self,
         entrada_field: ft.TextField,
         salida_field: ft.TextField,
-        descanso_tipo: str,
+        descanso_tipo: Any,
         tiempo_field: ft.TextField,
         registro: Dict,
         fila_controls: list = None,
         boton_guardar: ft.IconButton = None
     ) -> bool:
+        """
+        Función usada por RowHelpers:
+        - Recalcula
+        - Actualiza registro
+        - Aplica estilos (sin castigar cuando está incompleto)
+        - Controla botón guardar
+        Retorna True si está listo para guardar.
+        """
         try:
-            entrada = entrada_field.value.strip()
-            salida = salida_field.value.strip()
+            entrada_raw = (entrada_field.value or "").strip()
+            salida_raw = (salida_field.value or "").strip()
 
-            resultado = self.recalcular_con_estado(entrada, salida, descanso_tipo)
+            descanso_norm = self.normalizar_descanso(descanso_tipo)
+            resultado = self.recalcular_con_estado(entrada_raw, salida_raw, descanso_norm)
 
-            registro["hora_entrada"] = entrada
-            registro["hora_salida"] = salida
+            # Persistir
+            registro["hora_entrada"] = entrada_raw
+            registro["hora_salida"] = salida_raw
+            registro["descanso"] = descanso_norm
             registro["tiempo_trabajo"] = resultado["tiempo_trabajo"]
             registro["tiempo_trabajo_con_descanso"] = resultado["tiempo_trabajo_con_descanso"]
-            registro["errores"] = resultado["errores"]
+            registro["errores"] = resultado.get("errores", [])
+
+            # Flags útiles para tu flujo (fila nueva)
+            registro["__horas_invalidas"] = resultado["estado"] != "ok"
 
             tiempo_field.value = resultado["tiempo_trabajo_con_descanso"]
 
-            def marcar_error(field: ft.TextField, hay_error: bool):
-                field.border_color = ft.colors.RED_400 if hay_error else ft.colors.TRANSPARENT
-                field.bgcolor = ft.colors.RED_50 if hay_error else ft.colors.TRANSPARENT
-                self._actualizar_control_seguro(field)
+            def _mark(tf: ft.TextField, err: bool, tooltip: str | None = None):
+                tf.border_color = ft.colors.RED_400 if err else None
+                tf.bgcolor = ft.colors.with_opacity(0.10, ft.colors.RED) if err else None
+                tf.tooltip = tooltip if err else None
+                self._actualizar_control_seguro(tf)
 
             estado = resultado["estado"]
 
+            # Mientras escribes: no marcar error duro
             if estado == "incompleto":
-                # Si está incompleto, no aplicar estilos de error ni bloquear
-                marcar_error(entrada_field, False)
-                marcar_error(salida_field, False)
-                marcar_error(tiempo_field, False)
+                _mark(entrada_field, False)
+                _mark(salida_field, False)
+                _mark(tiempo_field, False)
 
                 if boton_guardar:
                     boton_guardar.disabled = True
-                    boton_guardar.icon_color = ft.colors.GREY
                     boton_guardar.tooltip = "Completa correctamente las horas"
                     self._actualizar_control_seguro(boton_guardar)
-
                 return False
 
-            hay_error = len(resultado["errores"]) > 0
-            marcar_error(entrada_field, not entrada or estado == "invalido")
-            marcar_error(salida_field, not salida or estado in ["invalido", "negativo"])
-            marcar_error(tiempo_field, hay_error)
+            # Errores duros
+            hay_error = estado != "ok"
+            tooltip = resultado.get("mensaje")
+
+            _mark(entrada_field, hay_error and (estado in ("invalido", "negativo")), tooltip)
+            _mark(salida_field, hay_error and (estado in ("invalido", "negativo")), tooltip)
+            _mark(tiempo_field, hay_error, tooltip)
 
             if boton_guardar:
                 boton_guardar.disabled = hay_error
-                boton_guardar.icon_color = ft.colors.GREY if hay_error else None
                 boton_guardar.tooltip = "Corregir errores para guardar" if hay_error else "Guardar"
                 self._actualizar_control_seguro(boton_guardar)
 
             return not hay_error
 
-        except Exception as e:
-            print(f"❌ Error en _actualizar_tiempo_trabajo: {e}")
+        except Exception:
+            # Fallback seguro
             for field in [entrada_field, salida_field, tiempo_field]:
-                field.border_color = ft.colors.RED_400
-                field.bgcolor = ft.colors.RED_50
-                self._actualizar_control_seguro(field)
+                try:
+                    field.border_color = ft.colors.RED_400
+                    field.bgcolor = ft.colors.with_opacity(0.10, ft.colors.RED)
+                    self._actualizar_control_seguro(field)
+                except Exception:
+                    pass
 
             if boton_guardar:
-                boton_guardar.disabled = True
-                boton_guardar.icon_color = ft.colors.GREY
-                boton_guardar.tooltip = "Error inesperado"
-                self._actualizar_control_seguro(boton_guardar)
+                try:
+                    boton_guardar.disabled = True
+                    boton_guardar.tooltip = "Error inesperado"
+                    self._actualizar_control_seguro(boton_guardar)
+                except Exception:
+                    pass
 
-            tiempo_field.value = "0.00"
-            self._actualizar_control_seguro(tiempo_field)
+            try:
+                tiempo_field.value = "00:00:00"
+                self._actualizar_control_seguro(tiempo_field)
+            except Exception:
+                pass
+
+            registro["__horas_invalidas"] = True
             return False
-
-
-
 
     def _actualizar_control_seguro(self, control: ft.Control):
         try:
-            if control.page:
+            if control and control.page:
                 control.update()
-        except Exception as e:
-            print(f"⚠️ No se pudo actualizar control: {control}, error: {e}")
-
-
-    @staticmethod
-    def entrada_completa(entrada: str, salida: str) -> bool:
-        """
-        Devuelve True si ambos campos tienen formato válido y completo.
-        Evita calcular mientras el usuario escribe horas parciales.
-        """
-        if not entrada or not salida:
-            return False
-
-        formatos = ["%H:%M", "%H:%M:%S"]
-        for fmt in formatos:
-            try:
-                datetime.strptime(entrada.strip(), fmt)
-                datetime.strptime(salida.strip(), fmt)
-                return True
-            except Exception:
-                continue
-        return False
-
+        except Exception:
+            pass
