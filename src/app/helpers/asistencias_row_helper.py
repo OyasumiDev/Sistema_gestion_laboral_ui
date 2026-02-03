@@ -442,7 +442,7 @@ class AsistenciasRowHelper:
             keyboard_type=ft.KeyboardType.DATETIME,
             hint_text="HH:MM[:SS] o decimal",
         )
-        tiempo_field.on_change = lambda e: self._on_change_tiempo_manual(grupo, registro, tiempo_field)
+        tiempo_field.on_change = lambda e: self._on_change_tiempo_manual(grupo, registro, tiempo_field, estado_text)
 
         entrada_field = ft.TextField(
             value=self.calculo_helper.sanitizar_hora(registro.get("hora_entrada", "")),
@@ -644,6 +644,13 @@ class AsistenciasRowHelper:
         registro[campo] = valor
         self._call_actualizar(grupo, campo, valor)
 
+        if registro.get("__tiempo_manual"):
+            if estado_text.value != "DUPLICADO":
+                estado_text.value = "MANUAL"
+                estado_text.color = ft.colors.AMBER
+            self._soft_update()
+            return
+
         ent_ok = self._is_hora_completa((entrada_field.value or "").strip())
         sal_ok = self._is_hora_completa((salida_field.value or "").strip())
 
@@ -673,6 +680,13 @@ class AsistenciasRowHelper:
         registro[campo] = valor
         self._call_actualizar(grupo, campo, valor)
 
+        if registro.get("__tiempo_manual"):
+            if estado_text.value != "DUPLICADO":
+                estado_text.value = "MANUAL"
+                estado_text.color = ft.colors.AMBER
+            self._soft_update(force=True)
+            return
+
         ent_ok = self._is_hora_completa((entrada_field.value or "").strip())
         sal_ok = self._is_hora_completa((salida_field.value or "").strip())
 
@@ -696,7 +710,7 @@ class AsistenciasRowHelper:
 
         self._soft_update(force=True)
 
-    def _on_change_tiempo_manual(self, grupo, registro, tiempo_field):
+    def _on_change_tiempo_manual(self, grupo, registro, tiempo_field, estado_text: ft.Text | None = None):
         valor = str(tiempo_field.value or "").strip()
         registro["tiempo_trabajo_manual"] = valor
         registro["__tiempo_manual"] = bool(valor)
@@ -706,6 +720,10 @@ class AsistenciasRowHelper:
         if not valor:
             registro["__tiempo_manual"] = False
             registro.pop("tiempo_trabajo_manual", None)
+            if estado_text is not None and estado_text.value != "DUPLICADO":
+                est = (registro.get("estado") or "PENDIENTE").strip().upper()
+                estado_text.value = est
+                estado_text.color = self._estado_color(est)
             self._soft_update()
             return
 
@@ -727,6 +745,9 @@ class AsistenciasRowHelper:
         # manual override pisa ambos (como “valor mostrado”), pero NO afecta DB si no guardas
         registro["tiempo_trabajo"] = valor
         registro["tiempo_trabajo_con_descanso"] = valor
+        if estado_text is not None and estado_text.value != "DUPLICADO":
+            estado_text.value = "MANUAL"
+            estado_text.color = ft.colors.AMBER
         self._call_recalcular(grupo=grupo, registro=registro)
         self._soft_update()
 
@@ -752,6 +773,12 @@ class AsistenciasRowHelper:
             sal_ok = self._is_hora_completa(salida_val.strip())
 
             if ent_ok and sal_ok:
+                if registro.get("__tiempo_manual"):
+                    if estado_text.value not in ("DUPLICADO",):
+                        estado_text.value = "MANUAL"
+                        estado_text.color = ft.colors.AMBER
+                    self._soft_update()
+                    return
                 res = self.calculo_helper.recalcular_con_estado(entrada_val, salida_val, opcion)
                 self._apply_recalc_result(registro, tiempo_field, estado_text, res)
                 registro["__horas_invalidas"] = (res.get("estado") != "ok")

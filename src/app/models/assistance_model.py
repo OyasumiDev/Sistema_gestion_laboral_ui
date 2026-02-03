@@ -161,6 +161,34 @@ class AssistanceModel:
         except Exception:
             return None
 
+    def _parse_tiempo_manual(self, v: Any) -> Optional[str]:
+        """
+        Acepta HH:MM[:SS] o decimal de horas y lo normaliza a HH:MM:SS.
+        """
+        if v is None:
+            return None
+        try:
+            if isinstance(v, (int, float)):
+                total_min = int(round(float(v) * 60))
+                hh = total_min // 60
+                mm = total_min % 60
+                return f"{hh:02}:{mm:02}:00"
+            s = str(v).strip()
+            if not s:
+                return None
+            if ":" in s:
+                return self._parse_hora_nullable(s)
+            try:
+                f = float(s)
+                total_min = int(round(f * 60))
+                hh = total_min // 60
+                mm = total_min % 60
+                return f"{hh:02}:{mm:02}:00"
+            except Exception:
+                return None
+        except Exception:
+            return None
+
     @staticmethod
     def _truthy(v: Any) -> bool:
         if isinstance(v, bool):
@@ -426,6 +454,7 @@ class AssistanceModel:
                 DECLARE minutos_descanso INT DEFAULT 30;
                 DECLARE minutos_trabajo INT DEFAULT 0;
                 DECLARE horas_iguales BOOL DEFAULT FALSE;
+                DECLARE manual_override BOOL DEFAULT FALSE;
 
                 IF NEW.{E_ASSISTANCE.DESCANSO.value} IS NULL THEN
                     SET NEW.{E_ASSISTANCE.DESCANSO.value} = 1;
@@ -436,7 +465,19 @@ class AssistanceModel:
                     AND
                     (NEW.{E_ASSISTANCE.HORA_SALIDA.value} <=> OLD.{E_ASSISTANCE.HORA_SALIDA.value});
 
-                IF NEW.{E_ASSISTANCE.HORA_ENTRADA.value} IS NOT NULL
+                SET manual_override =
+                    (NEW.{E_ASSISTANCE.TIEMPO_TRABAJO.value} IS NOT NULL)
+                    AND (NEW.{E_ASSISTANCE.TIEMPO_TRABAJO_CON_DESCANSO.value} IS NOT NULL)
+                    AND (
+                        NEW.{E_ASSISTANCE.TIEMPO_TRABAJO.value} <> OLD.{E_ASSISTANCE.TIEMPO_TRABAJO.value}
+                        OR NEW.{E_ASSISTANCE.TIEMPO_TRABAJO_CON_DESCANSO.value} <> OLD.{E_ASSISTANCE.TIEMPO_TRABAJO_CON_DESCANSO.value}
+                    );
+
+                IF manual_override THEN
+                    -- Respeta tiempos manuales
+                    SET NEW.{E_ASSISTANCE.TIEMPO_TRABAJO.value} = NEW.{E_ASSISTANCE.TIEMPO_TRABAJO.value};
+                    SET NEW.{E_ASSISTANCE.TIEMPO_TRABAJO_CON_DESCANSO.value} = NEW.{E_ASSISTANCE.TIEMPO_TRABAJO_CON_DESCANSO.value};
+                ELSEIF NEW.{E_ASSISTANCE.HORA_ENTRADA.value} IS NOT NULL
                 AND NEW.{E_ASSISTANCE.HORA_SALIDA.value} IS NOT NULL
                 AND NEW.{E_ASSISTANCE.HORA_ENTRADA.value} NOT IN ('00:00:00','0:00:00')
                 AND NEW.{E_ASSISTANCE.HORA_SALIDA.value}  NOT IN ('00:00:00','0:00:00')
@@ -512,7 +553,21 @@ class AssistanceModel:
             BEFORE UPDATE ON {table}
             FOR EACH ROW
             BEGIN
-                IF NEW.{E_ASSISTANCE.HORA_ENTRADA.value} IS NULL OR NEW.{E_ASSISTANCE.HORA_SALIDA.value} IS NULL
+                DECLARE manual_override BOOL DEFAULT FALSE;
+
+                SET manual_override =
+                    (NEW.{E_ASSISTANCE.TIEMPO_TRABAJO.value} IS NOT NULL)
+                    AND (NEW.{E_ASSISTANCE.TIEMPO_TRABAJO_CON_DESCANSO.value} IS NOT NULL)
+                    AND (
+                        NEW.{E_ASSISTANCE.TIEMPO_TRABAJO.value} <> OLD.{E_ASSISTANCE.TIEMPO_TRABAJO.value}
+                        OR NEW.{E_ASSISTANCE.TIEMPO_TRABAJO_CON_DESCANSO.value} <> OLD.{E_ASSISTANCE.TIEMPO_TRABAJO_CON_DESCANSO.value}
+                    );
+
+                IF manual_override THEN
+                    IF NEW.{E_ASSISTANCE.ESTADO.value} IS NULL THEN
+                        SET NEW.{E_ASSISTANCE.ESTADO.value} = 'completo';
+                    END IF;
+                ELSEIF NEW.{E_ASSISTANCE.HORA_ENTRADA.value} IS NULL OR NEW.{E_ASSISTANCE.HORA_SALIDA.value} IS NULL
                 OR NEW.{E_ASSISTANCE.HORA_ENTRADA.value} IN ('00:00:00','0:00:00')
                 OR NEW.{E_ASSISTANCE.HORA_SALIDA.value}  IN ('00:00:00','0:00:00')
                 OR TIMEDIFF(NEW.{E_ASSISTANCE.HORA_SALIDA.value}, NEW.{E_ASSISTANCE.HORA_ENTRADA.value}) <= '00:00:00' THEN
@@ -847,23 +902,30 @@ class AssistanceModel:
             descanso_int = self._mapear_descanso_a_int(descanso)
             estado_norm = (estado or "").lower().strip() or None
 
+            sets: List[str] = [
+                f"{E_ASSISTANCE.HORA_ENTRADA.value} = %s",
+                f"{E_ASSISTANCE.HORA_SALIDA.value} = %s",
+                f"{E_ASSISTANCE.DESCANSO.value} = %s",
+                f"{E_ASSISTANCE.ESTADO.value} = %s",
+            ]
+            params: List[Any] = [hora_entrada_norm, hora_salida_norm, descanso_int, estado_norm]
+
+            tiempo_manual_norm = None
+            if tiempo_trabajo is not None and str(tiempo_trabajo).strip() != "":
+                tiempo_manual_norm = self._parse_tiempo_manual(tiempo_trabajo)
+            if tiempo_manual_norm is not None:
+                # manual override: guarda neto y bruto con el mismo valor
+                sets.append(f"{E_ASSISTANCE.TIEMPO_TRABAJO.value} = %s")
+                params.append(tiempo_manual_norm)
+                sets.append(f"{E_ASSISTANCE.TIEMPO_TRABAJO_CON_DESCANSO.value} = %s")
+                params.append(tiempo_manual_norm)
+
             q = f"""
                 UPDATE {E_ASSISTANCE.TABLE.value}
-                SET
-                    {E_ASSISTANCE.HORA_ENTRADA.value} = %s,
-                    {E_ASSISTANCE.HORA_SALIDA.value} = %s,
-                    {E_ASSISTANCE.DESCANSO.value} = %s,
-                    {E_ASSISTANCE.ESTADO.value} = %s
+                SET {", ".join(sets)}
                 WHERE {E_ASSISTANCE.NUMERO_NOMINA.value} = %s AND {E_ASSISTANCE.FECHA.value} = %s
             """
-            params = (
-                hora_entrada_norm,
-                hora_salida_norm,
-                descanso_int,
-                estado_norm,
-                int(numero_nomina),
-                fecha_sql,
-            )
+            params.extend([int(numero_nomina), fecha_sql])
             self.db.run_query(q, params)
 
             sync = self.payment_model.sincronizar_desde_asistencia(int(numero_nomina), fecha_sql)

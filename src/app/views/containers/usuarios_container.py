@@ -1,363 +1,709 @@
 import flet as ft
-import pandas as pd
 from datetime import datetime
+
 from app.core.app_state import AppState
 from app.models.user_model import UserModel
-from app.core.invokers.file_save_invoker import FileSaveInvoker
-from app.core.invokers.file_open_invoker import FileOpenInvoker
-from app.views.containers.messages import mostrar_mensaje
 from app.views.containers.modal_alert import ModalAlert
 
+
 class UsuariosContainer(ft.Container):
+    """
+    FINAL estable:
+    - Anchos reales con Container(width=...) en headers y celdas
+    - Modo compacto en edición/creación: sin Creado/Modificado
+    - Root auth antes de editar usuario root (si verify_user_password existe)
+    - Contraseña en edición/creación con reveal
+    - ✅ Host de tabla: Row(scroll="auto") (estable en layout) + sin expand dentro de DataCell
+    - ✅ Hitbox de acciones grande y dentro de la celda
+    - No se queda bloqueado tras agregar/editar/cancelar/error
+    """
+
+    # 🔥 Ajusta aquí. Esto SÍ se refleja.
+    W_ID = 50
+    W_AVATAR = 50
+    W_USERNAME = 150
+    W_ROLE = 100
+    W_PASSWORD = 200
+    W_ACTIONS = 100
+
+    # (solo modo normal)
+    W_CREATED = 170
+    W_MODIFIED = 170
+
     def __init__(self):
         super().__init__()
-
         self.expand = True
         self.page = AppState().page
         self.user_model = UserModel()
 
-        user_data = self.page.client_storage.get("app.user")
+        user_data = self.page.client_storage.get("app.user") if self.page else None
         if not user_data or user_data.get("role") != "root":
-            self.content = ft.Text("❌ Acceso denegado. Solo el usuario root puede ver esta sección.", color=ft.colors.RED)
+            self.content = ft.Text(
+                "❌ Acceso denegado. Solo el usuario root puede ver esta sección.",
+                color=ft.colors.RED,
+            )
             return
 
-        self.save_invoker = FileSaveInvoker(
-            page=self.page,
-            on_save=self._exportar_usuarios,
-            save_dialog_title="Exportar usuarios",
-            file_name="usuarios_exportados.xlsx",
-            allowed_extensions=["xlsx"]
+        # Estado UI
+        self._active_mode: str | None = None  # None | "auth" | "edit" | "new"
+        self._active_user_id: int | None = None
+
+        # botones por fila (para lock)
+        self._row_action_buttons: dict[int, dict[str, ft.IconButton]] = {}
+
+        # UI superior persistente
+        self.title = ft.Text("Usuarios registrados", size=24, weight="bold")
+
+        self.btn_add = ft.ElevatedButton(
+            content=ft.Row(
+                [
+                    ft.Icon(name=ft.icons.PERSON_ADD, size=18),
+                    ft.Text("Agregar Usuario", size=12, weight="bold"),
+                ],
+                spacing=6,
+                alignment=ft.MainAxisAlignment.CENTER,
+            ),
+            on_click=self._agregar_usuario,
         )
 
-        self.file_invoker = FileOpenInvoker(
-            page=self.page,
-            on_select=self._importar_usuarios,
-            dialog_title="Importar usuarios",
-            allowed_extensions=["xlsx"]
-        )
+        # Stats persistentes
+        self.txt_total = ft.Text("-", size=16)
+        self.txt_roots = ft.Text("-", size=16)
+        self.txt_last_mod = ft.Text("-", size=14)
 
-        self.data_table = None  # se asignará dentro de _build_table()
-        self.table = self._build_table()  # Container con la tabla centrada
-        self.content = self._build_content()
-        self.controls = [self.content]
-
-
-    def _build_content(self) -> ft.Column:
-        usuarios = self.user_model.get_users()["data"]
-
-        estadisticas = ft.Row([
-            ft.Card(
-                content=ft.Container(
-                    padding=10,
-                    content=ft.Column([
-                        ft.Text("Total de usuarios", weight="bold", size=13),
-                        ft.Text(str(len(usuarios)), size=16)
-                    ])
-                )
-            ),
-            ft.Card(
-                content=ft.Container(
-                    padding=10,
-                    content=ft.Column([
-                        ft.Text("Usuarios root", weight="bold", size=13),
-                        ft.Text(str(sum(1 for u in usuarios if u["role"] == "root")), size=16)
-                    ])
-                )
-            ),
-            ft.Card(
-                content=ft.Container(
-                    padding=10,
-                    content=ft.Column([
-                        ft.Text("Última modificación", weight="bold", size=13),
-                        ft.Text(
-                            max([u.get("fecha_modificacion", "N/A") for u in usuarios]),
-                            size=14
-                        )
-                    ])
-                )
-            )
-        ], spacing=20)
-
-        return ft.Column(
-            expand=True,
-            scroll="auto",
-            controls=[
-                ft.Text("Usuarios registrados", size=24, weight="bold"),
-                ft.Row([
-                    ft.ElevatedButton(
-                        content=ft.Row([
-                            ft.Icon(name=ft.icons.PERSON_ADD, size=18),
-                            ft.Text("Agregar Usuario", size=12, weight="bold")
-                        ], spacing=5, alignment=ft.MainAxisAlignment.CENTER),
-                        on_click=self._agregar_usuario
-                    ),
-                    ft.ElevatedButton(
-                        content=ft.Row([
-                            ft.Icon(name=ft.icons.FILE_DOWNLOAD, size=18),
-                            ft.Text("Exportar", size=12, weight="bold")
-                        ], spacing=5, alignment=ft.MainAxisAlignment.CENTER),
-                        on_click=lambda _: self.save_invoker.open_save()
-                    ),
-                    ft.ElevatedButton(
-                        content=ft.Row([
-                            ft.Icon(name=ft.icons.FILE_UPLOAD, size=18),
-                            ft.Text("Importar", size=12, weight="bold")
-                        ], spacing=5, alignment=ft.MainAxisAlignment.CENTER),
-                        on_click=lambda _: self.file_invoker.open()
+        self.stats_row = ft.Row(
+            [
+                ft.Card(
+                    content=ft.Container(
+                        padding=10,
+                        content=ft.Column(
+                            [
+                                ft.Text("Total de usuarios", weight="bold", size=13),
+                                self.txt_total,
+                            ]
+                        ),
                     )
-                ], spacing=20),
+                ),
+                ft.Card(
+                    content=ft.Container(
+                        padding=10,
+                        content=ft.Column(
+                            [
+                                ft.Text("Usuarios root", weight="bold", size=13),
+                                self.txt_roots,
+                            ]
+                        ),
+                    )
+                ),
+                ft.Card(
+                    content=ft.Container(
+                        padding=10,
+                        content=ft.Column(
+                            [
+                                ft.Text("Última modificación", weight="bold", size=13),
+                                self.txt_last_mod,
+                            ]
+                        ),
+                    )
+                ),
+            ],
+            spacing=20,
+        )
+
+        # DataTable persistente
+        self.data_table = ft.DataTable(
+            columns=[],
+            rows=[],
+            column_spacing=14,
+            horizontal_margin=10,
+            data_row_min_height=54,
+        )
+
+        # ✅ Host estable + scroll horizontal REAL
+        # (Row scroll no buguea la tabla como ListView horizontal)
+        self.table_host = ft.Container(
+            expand=True,
+            padding=10,
+            alignment=ft.alignment.top_left,
+            clip_behavior=ft.ClipBehavior.HARD_EDGE,
+            content=ft.Row(
+                controls=[self.data_table],
+                scroll=ft.ScrollMode.AUTO,
+                wrap=False,
+                spacing=0,
+            ),
+        )
+
+        self.content = ft.Column(
+            expand=True,
+            scroll=ft.ScrollMode.AUTO,
+            controls=[
+                self.title,
+                ft.Row([self.btn_add], spacing=20),
                 ft.Divider(),
-                estadisticas,
+                self.stats_row,
                 ft.Divider(height=10),
-                self.table
+                self.table_host,
+            ],
+        )
+
+        # Carga inicial
+        self._refresh_all(normal_mode=True)
+
+    # -------------------------------------------------------------------------
+    # Helpers ancho real (headers + celdas)
+    # -------------------------------------------------------------------------
+    def _h(self, text: str, width: int) -> ft.Control:
+        return ft.Container(
+            width=width,
+            alignment=ft.alignment.center_left,
+            content=ft.Text(text, size=14, weight="bold"),
+        )
+
+    def _c(self, control: ft.Control, width: int) -> ft.Control:
+        return ft.Container(
+            width=width,
+            alignment=ft.alignment.center_left,
+            padding=ft.padding.symmetric(horizontal=4),
+            clip_behavior=ft.ClipBehavior.HARD_EDGE,
+            content=control,
+        )
+
+    def _apply_table_width(self, normal_mode: bool) -> None:
+        if normal_mode:
+            total = (
+                self.W_ID
+                + self.W_AVATAR
+                + self.W_USERNAME
+                + self.W_ROLE
+                + self.W_PASSWORD
+                + self.W_CREATED
+                + self.W_MODIFIED
+                + self.W_ACTIONS
+            )
+        else:
+            total = (
+                self.W_ID
+                + self.W_AVATAR
+                + self.W_USERNAME
+                + self.W_ROLE
+                + self.W_PASSWORD
+                + self.W_ACTIONS
+            )
+
+        # margen extra para spacing y márgenes internos de DataTable
+        self.data_table.width = total + 80
+
+    # -------------------------------------------------------------------------
+    # Data / Stats
+    # -------------------------------------------------------------------------
+    def _fetch_users(self) -> list[dict]:
+        resp = self.user_model.get_users()
+        if isinstance(resp, dict) and resp.get("status") == "success":
+            return resp.get("data", []) or []
+        return []
+
+    def _update_stats(self, usuarios: list[dict]) -> None:
+        total = len(usuarios)
+        roots = sum(1 for u in usuarios if u.get("role") == "root")
+
+        last_mod = "N/A"
+        if usuarios:
+            fechas = [u.get("fecha_modificacion") for u in usuarios if u.get("fecha_modificacion")]
+            if fechas:
+                last_mod = str(max(fechas))
+
+        self.txt_total.value = str(total)
+        self.txt_roots.value = str(roots)
+        self.txt_last_mod.value = str(last_mod)
+
+    # -------------------------------------------------------------------------
+    # Columns
+    # -------------------------------------------------------------------------
+    def _columns_normal(self) -> list[ft.DataColumn]:
+        return [
+            ft.DataColumn(label=self._h("ID", self.W_ID)),
+            ft.DataColumn(label=self._h("Avatar", self.W_AVATAR)),
+            ft.DataColumn(label=self._h("Nombre de Usuario", self.W_USERNAME)),
+            ft.DataColumn(label=self._h("Rol", self.W_ROLE)),
+            ft.DataColumn(label=self._h("Contraseña", self.W_PASSWORD)),
+            ft.DataColumn(label=self._h("Creado", self.W_CREATED)),
+            ft.DataColumn(label=self._h("Modificado", self.W_MODIFIED)),
+            ft.DataColumn(label=self._h("Acciones", self.W_ACTIONS)),
+        ]
+
+    def _columns_compact(self) -> list[ft.DataColumn]:
+        return [
+            ft.DataColumn(label=self._h("ID", self.W_ID)),
+            ft.DataColumn(label=self._h("Avatar", self.W_AVATAR)),
+            ft.DataColumn(label=self._h("Nombre de Usuario", self.W_USERNAME)),
+            ft.DataColumn(label=self._h("Rol", self.W_ROLE)),
+            ft.DataColumn(label=self._h("Contraseña", self.W_PASSWORD)),
+            ft.DataColumn(label=self._h("Acciones", self.W_ACTIONS)),
+        ]
+
+    # -------------------------------------------------------------------------
+    # Rows - view
+    # -------------------------------------------------------------------------
+    def _build_row_view_normal(self, u: dict) -> ft.DataRow:
+        user_id = int(u.get("id", 0) or 0)
+        username = u.get("username", "") or ""
+        role = u.get("role", "user") or "user"
+        creado = str(u.get("fecha_creacion", "-"))
+        modificado = str(u.get("fecha_modificacion", "-"))
+
+        avatar = ft.CircleAvatar(
+            content=ft.Text(username[:1].upper() if username else "?", size=14, weight="bold"),
+            bgcolor=ft.colors.BLUE_GREY,
+        )
+
+        pw_text = ft.Text("●●●●●●●●", italic=True, color=ft.colors.SECONDARY, size=14)
+
+        btn_del = ft.IconButton(
+            icon=ft.icons.DELETE_FOREVER,
+            icon_color=ft.colors.RED,
+            tooltip="Eliminar usuario",
+            on_click=lambda e, uid=user_id: self._confirmar_eliminar(uid),
+            disabled=(self._active_mode is not None),
+        )
+        btn_edit = ft.IconButton(
+            icon=ft.icons.EDIT,
+            icon_color=ft.colors.BLUE,
+            tooltip="Editar usuario",
+            on_click=lambda e, user=u: self._entrar_edicion(user),
+            disabled=(self._active_mode is not None),
+        )
+
+        self._row_action_buttons[user_id] = {"edit": btn_edit, "del": btn_del}
+
+        # ✅ Acciones con hitbox grande y SIN expand (expand rompe hit-test en DataTable)
+        half = max(44, int((self.W_ACTIONS - 8) / 2))
+
+        acciones = ft.Row(
+            spacing=0,
+            controls=[
+                ft.Container(width=half, height=44, alignment=ft.alignment.center, content=btn_del),
+                ft.Container(width=half, height=44, alignment=ft.alignment.center, content=btn_edit),
+            ],
+        )
+
+        return ft.DataRow(
+            cells=[
+                ft.DataCell(self._c(ft.Text(str(user_id)), self.W_ID)),
+                ft.DataCell(self._c(avatar, self.W_AVATAR)),
+                ft.DataCell(self._c(ft.Text(username), self.W_USERNAME)),
+                ft.DataCell(self._c(ft.Text(role), self.W_ROLE)),
+                ft.DataCell(self._c(pw_text, self.W_PASSWORD)),
+                ft.DataCell(self._c(ft.Text(creado), self.W_CREATED)),
+                ft.DataCell(self._c(ft.Text(modificado), self.W_MODIFIED)),
+                ft.DataCell(self._c(acciones, self.W_ACTIONS)),
             ]
         )
 
-    def _build_table(self) -> ft.Container:
-        usuarios_result = self.user_model.get_users()
-        usuarios = usuarios_result.get("data", [])
+    def _build_row_view_compact(self, u: dict) -> ft.DataRow:
+        user_id = int(u.get("id", 0) or 0)
+        username = u.get("username", "") or ""
+        role = u.get("role", "user") or "user"
 
-        rows = []
+        avatar = ft.CircleAvatar(
+            content=ft.Text(username[:1].upper() if username else "?", size=14, weight="bold"),
+            bgcolor=ft.colors.BLUE_GREY,
+        )
+        pw_text = ft.Text("●●●●●●●●", italic=True, color=ft.colors.SECONDARY, size=14)
 
-        def contar_roots():
-            return sum(1 for u in usuarios if u["role"] == "root")
+        return ft.DataRow(
+            cells=[
+                ft.DataCell(self._c(ft.Text(str(user_id)), self.W_ID)),
+                ft.DataCell(self._c(avatar, self.W_AVATAR)),
+                ft.DataCell(self._c(ft.Text(username), self.W_USERNAME)),
+                ft.DataCell(self._c(ft.Text(role), self.W_ROLE)),
+                ft.DataCell(self._c(pw_text, self.W_PASSWORD)),
+                ft.DataCell(self._c(ft.Text(""), self.W_ACTIONS)),
+            ]
+        )
 
-        if usuarios:
-            for u in usuarios:
-                try:
-                    user_id = u["id"]
-                    username = u["username"]
-                    role = u["role"]
-                    creado = u.get("fecha_creacion", "-")
-                    modificado = u.get("fecha_modificacion", "-")
+    # -------------------------------------------------------------------------
+    # Refresh
+    # -------------------------------------------------------------------------
+    def _refresh_all(self, *, normal_mode: bool) -> None:
+        usuarios = self._fetch_users()
+        self._update_stats(usuarios)
+        self._row_action_buttons.clear()
 
-                    avatar = ft.CircleAvatar(
-                        content=ft.Text(username[0].upper(), size=14, weight="bold"),
-                        bgcolor=ft.colors.BLUE_GREY
-                    )
-
-                    pw_text = ft.Text("●●●●●●●●", italic=True, color=ft.colors.SECONDARY, size=14)
-                    toggle_btn = ft.IconButton(
-                        icon=ft.icons.REMOVE_RED_EYE,
-                        tooltip="Ver contraseña",
-                        on_click=lambda e, uid=user_id, label=pw_text: self._toggle_password(uid, label, e.control)
-                    )
-
-                    pw_field = ft.Row([pw_text, toggle_btn], vertical_alignment=ft.CrossAxisAlignment.CENTER)
-
-                    def editar_usuario(index, uid, actual_username, actual_role, creado, modificado):
-                        username_input = ft.TextField(value=actual_username)
-                        password_input = ft.TextField(hint_text="Nueva contraseña (opcional)", password=True)
-                        role_input = ft.Dropdown(value=actual_role, options=[
-                            ft.dropdown.Option("user"), ft.dropdown.Option("root")
-                        ])
-
-                        def confirmar(_):
-                            nuevo_username = username_input.value.strip()
-                            nueva_password = password_input.value.strip()
-                            nuevo_rol = role_input.value
-
-                            if not nuevo_username:
-                                ModalAlert.mostrar_info("Validación", "El nombre de usuario no puede estar vacío.")
-                                return
-
-                            if actual_role == "root" and nuevo_rol != "root" and contar_roots() == 1:
-                                ModalAlert.mostrar_info("Restricción", "Debe existir al menos un usuario root.")
-                                return
-
-                            campos = {"username": nuevo_username, "role": nuevo_rol}
-                            if nueva_password:
-                                campos["password"] = nueva_password
-
-                            resultado = self.user_model.update(uid, campos)
-                            if resultado["status"] == "success":
-                                ModalAlert.mostrar_info("Éxito", f"Usuario {uid} actualizado.")
-                                self._recargar_tabla()
-                            else:
-                                ModalAlert.mostrar_info("Error", resultado["message"])
-
-                        def cancelar(_):
-                            self._recargar_tabla()
-
-                        fila_edicion = ft.DataRow(cells=[
-                            ft.DataCell(ft.Text(str(uid))),
-                            ft.DataCell(ft.CircleAvatar(content=ft.Text(username_input.value[:1].upper() if username_input.value else "?"))),
-                            ft.DataCell(username_input),
-                            ft.DataCell(role_input),
-                            ft.DataCell(password_input),
-                            ft.DataCell(ft.Text(creado)),
-                            ft.DataCell(ft.Text(modificado)),
-                            ft.DataCell(ft.Text("-")),
-                            ft.DataCell(ft.Row([
-                                ft.IconButton(icon=ft.icons.CHECK, icon_color=ft.colors.GREEN, on_click=confirmar),
-                                ft.IconButton(icon=ft.icons.CLOSE, icon_color=ft.colors.RED, on_click=cancelar)
-                            ]))
-                        ])
-
-                        self.data_table.rows[index] = fila_edicion
-                        self.data_table.update()
-
-                    # Captura del índice actual de la fila
-                    index_actual = len(rows)
-
-                    rows.append(
-                        ft.DataRow(cells=[
-                            ft.DataCell(ft.Text(str(user_id))),
-                            ft.DataCell(avatar),
-                            ft.DataCell(ft.Text(username)),
-                            ft.DataCell(ft.Text(role)),
-                            ft.DataCell(pw_field),
-                            ft.DataCell(ft.Text(str(creado))),
-                            ft.DataCell(ft.Text(str(modificado))),
-                            ft.DataCell(ft.IconButton(
-                                icon=ft.icons.DELETE_FOREVER,
-                                icon_color=ft.colors.RED,
-                                tooltip="Eliminar usuario",
-                                on_click=lambda e, uid=user_id: self._confirmar_eliminar(uid)
-                            )),
-                            ft.DataCell(ft.IconButton(
-                                icon=ft.icons.EDIT,
-                                tooltip="Editar usuario",
-                                icon_color=ft.colors.BLUE,
-                                on_click=lambda e, idx=index_actual, uid=user_id, uname=username, rol=role, cre=creado, mod=modificado:
-                                    editar_usuario(idx, uid, uname, rol, cre, mod)
-                            ))
-                        ])
-                    )
-                except KeyError as e:
-                    print(f"❌ Error al construir fila de usuario: clave faltante {e}")
+        if normal_mode:
+            self.data_table.columns = self._columns_normal()
+            self.data_table.rows = (
+                [self._build_row_view_normal(u) for u in usuarios]
+                if usuarios
+                else [self._empty_row_normal()]
+            )
         else:
-            rows.append(ft.DataRow(cells=[
-                ft.DataCell(ft.Text("Sin registros", size=14))
-            ] + [ft.DataCell(ft.Text("-", size=14)) for _ in range(8)]))
+            self.data_table.columns = self._columns_compact()
+            self.data_table.rows = (
+                [self._build_row_view_compact(u) for u in usuarios]
+                if usuarios
+                else [self._empty_row_compact()]
+            )
 
-        self.data_table = ft.DataTable(
-            expand=True,
-            columns=[
-                ft.DataColumn(label=ft.Text("ID", size=14, weight="bold")),
-                ft.DataColumn(label=ft.Text("Avatar")),
-                ft.DataColumn(label=ft.Text("Nombre de Usuario", size=14, weight="bold")),
-                ft.DataColumn(label=ft.Text("Rol", size=14, weight="bold")),
-                ft.DataColumn(label=ft.Text("Contraseña", size=14, weight="bold")),
-                ft.DataColumn(label=ft.Text("Creado", size=14, weight="bold")),
-                ft.DataColumn(label=ft.Text("Modificado", size=14, weight="bold")),
-                ft.DataColumn(label=ft.Text("Eliminar", size=14, weight="bold")),
-                ft.DataColumn(label=ft.Text("Editar", size=14, weight="bold")),
+        self._apply_table_width(normal_mode)
+        self._apply_mode_to_top_controls()
+        self._safe_update(self.data_table)
+        self._safe_update(self)
+
+    def _empty_row_normal(self) -> ft.DataRow:
+        return ft.DataRow(
+            cells=[
+                ft.DataCell(self._c(ft.Text("Sin registros", size=14), self.W_ID)),
+                ft.DataCell(self._c(ft.Text(""), self.W_AVATAR)),
+                ft.DataCell(self._c(ft.Text(""), self.W_USERNAME)),
+                ft.DataCell(self._c(ft.Text(""), self.W_ROLE)),
+                ft.DataCell(self._c(ft.Text(""), self.W_PASSWORD)),
+                ft.DataCell(self._c(ft.Text(""), self.W_CREATED)),
+                ft.DataCell(self._c(ft.Text(""), self.W_MODIFIED)),
+                ft.DataCell(self._c(ft.Text(""), self.W_ACTIONS)),
+            ]
+        )
+
+    def _empty_row_compact(self) -> ft.DataRow:
+        return ft.DataRow(
+            cells=[
+                ft.DataCell(self._c(ft.Text("Sin registros", size=14), self.W_ID)),
+                ft.DataCell(self._c(ft.Text(""), self.W_AVATAR)),
+                ft.DataCell(self._c(ft.Text(""), self.W_USERNAME)),
+                ft.DataCell(self._c(ft.Text(""), self.W_ROLE)),
+                ft.DataCell(self._c(ft.Text(""), self.W_PASSWORD)),
+                ft.DataCell(self._c(ft.Text(""), self.W_ACTIONS)),
+            ]
+        )
+
+    def _apply_mode_to_top_controls(self) -> None:
+        self.btn_add.disabled = (self._active_mode is not None)
+        self._safe_update(self.btn_add)
+
+    def _safe_update(self, control: ft.Control | None) -> None:
+        if not control:
+            return
+        try:
+            control.update()
+        except Exception:
+            try:
+                if self.page:
+                    self.page.update()
+            except Exception:
+                pass
+
+    def _lock_row_actions(self, locked: bool, *, except_user_id: int | None = None) -> None:
+        for uid, btns in self._row_action_buttons.items():
+            if except_user_id is not None and uid == except_user_id:
+                continue
+            btns["edit"].disabled = locked
+            btns["del"].disabled = locked
+        self._safe_update(self.data_table)
+
+    # -------------------------------------------------------------------------
+    # Root auth
+    # -------------------------------------------------------------------------
+    def _request_root_password(self, user: dict, on_success) -> None:
+        uid = int(user.get("id", 0) or 0)
+        username = user.get("username", "root") or "root"
+
+        tf_pwd = ft.TextField(
+            label="Contraseña actual",
+            password=True,
+            can_reveal_password=True,
+            autofocus=True,
+            width=320,
+        )
+
+        def close_dialog():
+            dlg.open = False
+            self._safe_update(self.page)
+
+        def cancelar(_):
+            close_dialog()
+            self._exit_active_mode_and_refresh()
+
+        def continuar(_):
+            typed = (tf_pwd.value or "").strip()
+            if not typed:
+                ModalAlert.mostrar_info("Validación", "Escribe la contraseña actual para continuar.")
+                return
+
+            if not hasattr(self.user_model, "verify_user_password"):
+                close_dialog()
+                ModalAlert.mostrar_info(
+                    "Pendiente",
+                    "Tu UserModel no tiene verify_user_password().\n"
+                    "Luego lo conectamos; por ahora no puedo validar la contraseña.",
+                )
+                self._exit_active_mode_and_refresh()
+                return
+
+            resp = self.user_model.verify_user_password(uid, typed)
+            if not isinstance(resp, dict) or resp.get("status") != "success":
+                close_dialog()
+                ModalAlert.mostrar_info("Acceso denegado", resp.get("message", "Contraseña incorrecta."))
+                self._exit_active_mode_and_refresh()
+                return
+
+            close_dialog()
+            on_success()
+
+        dlg = ft.AlertDialog(
+            modal=True,
+            title=ft.Text(f"Confirmación para editar '{username}'"),
+            content=ft.Column(
+                tight=True,
+                controls=[
+                    ft.Text("Para editar un usuario root, confirma la contraseña actual."),
+                    tf_pwd,
+                ],
+            ),
+            actions=[
+                ft.TextButton("Cancelar", on_click=cancelar),
+                ft.ElevatedButton("Continuar", on_click=continuar),
             ],
-            rows=rows
+            actions_alignment=ft.MainAxisAlignment.END,
         )
 
-        return ft.Container(
-            alignment=ft.alignment.center,
-            content=self.data_table,
-            expand=True,
-            padding=10
+        self.page.dialog = dlg
+        dlg.open = True
+        self._safe_update(self.page)
+
+    # -------------------------------------------------------------------------
+    # Edit
+    # -------------------------------------------------------------------------
+    def _entrar_edicion(self, user: dict) -> None:
+        if self._active_mode is not None:
+            return
+
+        uid = int(user.get("id", 0) or 0)
+        role = user.get("role", "user") or "user"
+
+        self._active_mode = "edit"
+        self._active_user_id = uid
+
+        self._refresh_all(normal_mode=False)
+        self._lock_row_actions(True, except_user_id=uid)
+
+        if role == "root":
+            self._active_mode = "auth"
+            self._active_user_id = uid
+
+            def proceed():
+                self._active_mode = "edit"
+                self._active_user_id = uid
+                self._enter_edit_row(user)
+
+            self._request_root_password(user, proceed)
+            return
+
+        self._enter_edit_row(user)
+
+    def _find_row_index_compact_by_user_id(self, user_id: int) -> int | None:
+        for i, r in enumerate(self.data_table.rows):
+            try:
+                c0 = r.cells[0].content
+                if isinstance(c0, ft.Container) and isinstance(c0.content, ft.Text) and str(c0.content.value) == str(user_id):
+                    return i
+            except Exception:
+                continue
+        return None
+
+    def _enter_edit_row(self, user: dict) -> None:
+        uid = int(user.get("id", 0) or 0)
+        actual_username = user.get("username", "") or ""
+        actual_role = user.get("role", "user") or "user"
+
+        username_input = ft.TextField(
+            value=actual_username,
+            dense=True,
+            content_padding=10,
+            width=self.W_USERNAME - 16,
+        )
+        role_input = ft.Dropdown(
+            value=actual_role,
+            options=[ft.dropdown.Option("user"), ft.dropdown.Option("root")],
+            dense=True,
+            width=self.W_ROLE - 16,
+        )
+        password_input = ft.TextField(
+            hint_text="Nueva contraseña (opcional)",
+            password=True,
+            can_reveal_password=True,
+            dense=True,
+            content_padding=10,
+            width=self.W_PASSWORD - 16,
         )
 
+        def contar_roots_db() -> int:
+            users = self._fetch_users()
+            return sum(1 for x in users if x.get("role") == "root")
 
-    def _toggle_password(self, user_id, label: ft.Text, button: ft.IconButton):
-        result = self.user_model.get_password(user_id)
-        if result["status"] == "success":
-            if label.value == "●●●●●●●●":
-                label.value = result["data"]
-                button.icon = ft.icons.HIDE_SOURCE
-                button.tooltip = "Ocultar contraseña"
+        def confirmar(_):
+            nuevo_username = (username_input.value or "").strip()
+            nueva_password = (password_input.value or "").strip()
+            nuevo_rol = role_input.value
+
+            if not nuevo_username:
+                ModalAlert.mostrar_info("Validación", "El nombre de usuario no puede estar vacío.")
+                return
+
+            if actual_role == "root" and nuevo_rol != "root" and contar_roots_db() == 1:
+                ModalAlert.mostrar_info("Restricción", "Debe existir al menos un usuario root.")
+                return
+
+            campos = {"username": nuevo_username, "role": nuevo_rol}
+            if nueva_password:
+                campos["password"] = nueva_password
+
+            resultado = self.user_model.update(uid, campos)
+            if isinstance(resultado, dict) and resultado.get("status") == "success":
+                ModalAlert.mostrar_info("Éxito", f"Usuario {uid} actualizado.")
+                self._exit_active_mode_and_refresh()
             else:
-                label.value = "●●●●●●●●"
-                button.icon = ft.icons.REMOVE_RED_EYE
-                button.tooltip = "Ver contraseña"
-            self.page.update()
-        else:
-            mostrar_mensaje(self.page, "Error", result["message"])
+                ModalAlert.mostrar_info("Error", resultado.get("message", "Error desconocido"))
 
+        def cancelar(_):
+            self._exit_active_mode_and_refresh()
+
+        acciones = ft.Row(
+            [
+                ft.IconButton(icon=ft.icons.CHECK, icon_color=ft.colors.GREEN, on_click=confirmar),
+                ft.IconButton(icon=ft.icons.CLOSE, icon_color=ft.colors.RED, on_click=cancelar),
+            ],
+            spacing=6,
+        )
+
+        avatar = ft.CircleAvatar(
+            content=ft.Text((actual_username[:1].upper() if actual_username else "?"), size=14, weight="bold"),
+            bgcolor=ft.colors.BLUE_GREY,
+        )
+
+        row_edit = ft.DataRow(
+            cells=[
+                ft.DataCell(self._c(ft.Text(str(uid)), self.W_ID)),
+                ft.DataCell(self._c(avatar, self.W_AVATAR)),
+                ft.DataCell(self._c(username_input, self.W_USERNAME)),
+                ft.DataCell(self._c(role_input, self.W_ROLE)),
+                ft.DataCell(self._c(password_input, self.W_PASSWORD)),
+                ft.DataCell(self._c(acciones, self.W_ACTIONS)),
+            ]
+        )
+
+        idx = self._find_row_index_compact_by_user_id(uid)
+        if idx is not None:
+            self.data_table.rows[idx] = row_edit
+            self._safe_update(self.data_table)
+
+    # -------------------------------------------------------------------------
+    # Delete
+    # -------------------------------------------------------------------------
     def _confirmar_eliminar(self, user_id: int):
+        if self._active_mode is not None:
+            ModalAlert.mostrar_info("Acción bloqueada", "Termina o cancela la edición antes de eliminar.")
+            return
+
         alerta = ModalAlert(
             title_text="Eliminar usuario",
             message=f"¿Estás seguro de que deseas eliminar el usuario con ID {user_id}?",
-            on_confirm=lambda: self._eliminar_usuario(user_id)
+            on_confirm=lambda: self._eliminar_usuario(user_id),
         )
         alerta.mostrar()
 
     def _eliminar_usuario(self, user_id: int):
-        print(f"🗑️ Usuario a eliminar: {user_id}")
         resultado = self.user_model.delete_by_id(user_id)
-        if resultado["status"] == "success":
+        if isinstance(resultado, dict) and resultado.get("status") == "success":
             ModalAlert.mostrar_info("Éxito", f"Usuario con ID {user_id} eliminado.")
         else:
-            ModalAlert.mostrar_info("Error", resultado["message"])
-        self._recargar_tabla()
+            ModalAlert.mostrar_info("Error", resultado.get("message", "No se pudo eliminar"))
+        self._exit_active_mode_and_refresh()
 
-
-    def _recargar_tabla(self):
-        nueva_tabla = self._build_table()
-        self.table.content = nueva_tabla.content  # reemplaza el contenido interno
-        self.data_table = nueva_tabla.content     # actualiza la referencia
-        self.table.update()
-
-
+    # -------------------------------------------------------------------------
+    # Add
+    # -------------------------------------------------------------------------
     def _agregar_usuario(self, e):
-        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        if self._active_mode is not None:
+            return
+
+        self._active_mode = "new"
+        self._active_user_id = None
+
+        self._refresh_all(normal_mode=False)
+        self._lock_row_actions(True)
+
         id_nuevo = self.user_model.get_last_id() + 1
-        username_field = ft.TextField(hint_text="Usuario")
-        password_field = ft.TextField(hint_text="Contraseña", password=True)
-        role_dropdown = ft.Dropdown(options=[ft.dropdown.Option("user"), ft.dropdown.Option("root")])
+
+        username_field = ft.TextField(
+            hint_text="Usuario",
+            dense=True,
+            content_padding=10,
+            width=self.W_USERNAME - 16,
+        )
+        role_dropdown = ft.Dropdown(
+            options=[ft.dropdown.Option("user"), ft.dropdown.Option("root")],
+            dense=True,
+            width=self.W_ROLE - 16,
+        )
+        password_field = ft.TextField(
+            hint_text="Contraseña",
+            password=True,
+            can_reveal_password=True,
+            dense=True,
+            content_padding=10,
+            width=self.W_PASSWORD - 16,
+        )
 
         def confirmar(_: ft.ControlEvent):
-            username = username_field.value.strip()
-            password = password_field.value.strip()
+            username = (username_field.value or "").strip()
+            password = (password_field.value or "").strip()
             role = role_dropdown.value
 
             if not username or not password or not role:
                 ModalAlert.mostrar_info("Validación", "Todos los campos son obligatorios.")
                 return
 
-            self.user_model.add(username, password, role)
-            ModalAlert.mostrar_info("Éxito", f"Usuario '{username}' agregado correctamente.")
-            self._recargar_tabla()
+            resp = self.user_model.add(username, password, role)
+            if isinstance(resp, dict) and resp.get("status") == "success":
+                ModalAlert.mostrar_info("Éxito", f"Usuario '{username}' agregado correctamente.")
+                self._exit_active_mode_and_refresh()
+            else:
+                ModalAlert.mostrar_info("Error", resp.get("message", "No se pudo agregar"))
 
         def cancelar(_):
-            self._recargar_tabla()
+            self._exit_active_mode_and_refresh()
 
-        row = ft.DataRow(cells=[
-            ft.DataCell(ft.Text(str(id_nuevo))),
-            ft.DataCell(ft.CircleAvatar(content=ft.Text("?", size=14))),
-            ft.DataCell(username_field),
-            ft.DataCell(role_dropdown),
-            ft.DataCell(password_field),
-            ft.DataCell(ft.Text(now)),
-            ft.DataCell(ft.Text(now)),
-            ft.DataCell(ft.Row([
+        acciones = ft.Row(
+            [
                 ft.IconButton(icon=ft.icons.CHECK, icon_color=ft.colors.GREEN, on_click=confirmar),
-                ft.IconButton(icon=ft.icons.CLOSE, icon_color=ft.colors.RED, on_click=cancelar)
-            ])),
-            ft.DataCell(ft.Text("Agregando..."))
-        ])
+                ft.IconButton(icon=ft.icons.CLOSE, icon_color=ft.colors.RED, on_click=cancelar),
+            ],
+            spacing=6,
+        )
 
-        self.data_table.rows.append(row)
-        self.data_table.update()
+        avatar = ft.CircleAvatar(content=ft.Text("?", size=14, weight="bold"), bgcolor=ft.colors.BLUE_GREY)
 
+        row_new = ft.DataRow(
+            cells=[
+                ft.DataCell(self._c(ft.Text(str(id_nuevo)), self.W_ID)),
+                ft.DataCell(self._c(avatar, self.W_AVATAR)),
+                ft.DataCell(self._c(username_field, self.W_USERNAME)),
+                ft.DataCell(self._c(role_dropdown, self.W_ROLE)),
+                ft.DataCell(self._c(password_field, self.W_PASSWORD)),
+                ft.DataCell(self._c(acciones, self.W_ACTIONS)),
+            ]
+        )
 
-    def _exportar_usuarios(self, path: str):
-        try:
-            result = self.user_model.get_users()
-            data = result.get("data", [])
-            df = pd.DataFrame(data, columns=["id", "username", "role", "fecha_creacion", "fecha_modificacion"])
-            df.to_excel(path, index=False)
-            ModalAlert.mostrar_info("Éxito", f"Usuarios exportados a:\n{path}")
-        except Exception as e:
-            ModalAlert.mostrar_info("Error", f"No se pudo exportar:\n{e}")
+        self.data_table.rows.append(row_new)
+        self._safe_update(self.data_table)
 
-
-    def _importar_usuarios(self, path: str):
-        try:
-            df = pd.read_excel(path)
-            for _, row in df.iterrows():
-                username = row.get("username")
-                role = row.get("role")
-                password = row.get("password", "123456")
-                if username:
-                    self.user_model.add(username, password, role)
-            ModalAlert.mostrar_info("Éxito", f"{len(df)} usuarios importados correctamente.")
-            self._recargar_tabla()
-        except Exception as e:
-            ModalAlert.mostrar_info("Error", f"No se pudo importar:\n{e}")
+    # -------------------------------------------------------------------------
+    # Exit active mode
+    # -------------------------------------------------------------------------
+    def _exit_active_mode_and_refresh(self):
+        self._active_mode = None
+        self._active_user_id = None
+        self._refresh_all(normal_mode=True)
+        self._lock_row_actions(False)
+        self._apply_mode_to_top_controls()
+        self._safe_update(self)
