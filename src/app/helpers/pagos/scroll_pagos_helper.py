@@ -9,30 +9,37 @@ class PagosScrollHelper:
     """
     Helper de layout con scroll para la vista de Pagos.
 
-    - Soporta dos modos de cuerpo:
-        1) datatable:     un ft.DataTable renderizado con overflow horizontal.
-        2) body_override: cualquier Control (expansibles, columnas compuestas, etc.).
-           En ambos casos se envuelve en un contenedor ancho para habilitar scroll horizontal.
-    - Scroll vertical SIEMPRE visible en el área de trabajo.
-    - Scroll horizontal SIEMPRE visible cuando el contenido supera el ancho del viewport.
-    - Manejo de 'on_resized' con encadenado seguro para no pisar otros listeners.
+    Objetivo: scroll lo más "smooth" posible en Flet.
+
+    Cambios clave para suavidad:
+    - Un solo scroll vertical real: ListView (mejor rendimiento que Column con scroll).
+    - Un solo scroll horizontal real: Row scroller por contenido ancho (sin duplicar scroll horizontal global).
+    - Resize con debounce: evita "tirones" por page.update() en ráfaga.
+    - Actualizaciones mínimas: se actualizan contenedores, luego 1 page.update() máximo.
+
+    Mantiene:
+    - Modo datatable o body_override.
+    - Forzado de ancho mínimo para overflow horizontal.
+    - Encadenado seguro de page.on_resized sin pisar otros handlers.
     """
 
     def __init__(self):
-        # Estado interno
         self._resize_registered: bool = False
         self._required_min_width: int = 1780
         self._get_window_width: Callable[[], int] = lambda: 1200
 
-        # Puedes tener más de un contenedor "ancho" en la misma vista
-        # (si el día de mañana envuelves más de una tabla/panel horizontal):
         self._wide_containers: List[ft.Container] = []
-
-        # Encadenamiento de on_resized (para no pisar handlers existentes)
         self._prev_on_resized: Optional[Callable] = None
 
-        # Margen adicional para forzar overflow horizontal de forma predecible
         self._extra_margin_px: int = 80
+
+        # Debounce para resize (suaviza mucho)
+        self._resize_debounce_ms: int = 120
+        self._resize_scheduled: bool = False
+
+        # refs opcionales para scroll programático
+        self._vlist: Optional[ft.ListView] = None
+        self._hrow: Optional[ft.Row] = None  # el scroller horizontal principal (si quieres animar luego)
 
     # -----------------------
     # API pública principal
@@ -49,101 +56,88 @@ class PagosScrollHelper:
         center: bool = True,
         padding: int | ft.Padding = 12,
     ) -> ft.Container:
-        """
-        Devuelve un contenedor listo para usar como self.content en tu PagosContainer.
-
-        Args:
-            page:               ft.Page actual (para leer ancho y registrar on_resized).
-            datatable:          Modo clásico: una DataTable a mostrar.
-            header:             Control para cabecera.
-            footer:             Control para pie.
-            required_min_width: Ancho mínimo "útil" de la zona de trabajo (suma aproximada columnas).
-            body_override:      Modo nuevo: control compuesto (expansibles/columnas) para ser el cuerpo.
-            center:             Centra horizontalmente el contenido (true por defecto).
-            padding:            Padding del contenedor raíz.
-
-        Returns:
-            ft.Container expandible con:
-                - Header (opcional)
-                - Body con scroll vertical (y horizontal si aplica)
-                - Footer (opcional)
-        """
         self._required_min_width = max(1200, int(required_min_width))
         self._get_window_width = lambda: int(page.window_width or page.width or 1200)
 
-        # 1) Construir el cuerpo principal (uno de los dos modos)
+        # 1) Body core (uno de dos modos)
         if body_override is not None:
-            body_core = self._wrap_horizontally(body_override)
+            body_core = self._wrap_horizontally(body_override, center=center)
         elif datatable is not None:
-            datatable.expand = False  # clave: que el overflow lo controle el wrapper
-            body_core = self._wrap_horizontally(datatable)
+            # DataTable mejor NO expand aquí, para que el wrapper controle overflow
+            datatable.expand = False
+            body_core = self._wrap_horizontally(datatable, center=center)
         else:
-            # Fallback vacío para evitar errores si se llama sin contenido
-            body_core = self._wrap_horizontally(ft.Container(ft.Text("-"), padding=10))
+            body_core = self._wrap_horizontally(ft.Container(ft.Text("-"), padding=10), center=center)
 
-        # 2) Vertical area (scroll ALWAYS). El core (horizontal) vive dentro.
-        vertical_area = ft.Column(
-            controls=[body_core],
-            scroll=ft.ScrollMode.ALWAYS,  # barra vertical
-            expand=True,
-            spacing=10,
-        )
-
-        # 3) Montaje total (header / body / footer)
-        col_controls: List[ft.Control] = []
+        # 2) Vertical scroller "smooth": ListView
+        #    - tight=True evita espacios raros
+        #    - spacing pequeño
+        v_controls: List[ft.Control] = []
         if header is not None:
-            col_controls.append(header)
-            col_controls.append(ft.Divider(height=1))
-        col_controls.append(vertical_area)
-        if footer is not None:
-            col_controls.append(ft.Divider(height=1))
-            col_controls.append(footer)
+            v_controls.append(header)
+            v_controls.append(ft.Divider(height=1))
 
-        content_column = ft.Column(
-            controls=col_controls,
+        v_controls.append(body_core)
+
+        if footer is not None:
+            v_controls.append(ft.Divider(height=1))
+            v_controls.append(footer)
+
+        self._vlist = ft.ListView(
+            controls=v_controls,
             expand=True,
             spacing=10,
+            auto_scroll=False,  # True solo si necesitas que se vaya al final (normalmente no)
+            padding=0,
         )
 
-        # 4) Centrado y scroll horizontal global (por si el contenido excede)
-        #    - El Row externo agrega scroll horizontal a TODO el layout si hiciera falta.
-        centered = ft.Row(
-            controls=[content_column] if not center else [
-                ft.Container(
-                    content=content_column,
-                    width=self._compute_forced_width(),  # asegura ancho minimo útil
-                )
-            ],
-            alignment=ft.MainAxisAlignment.CENTER if center else ft.MainAxisAlignment.START,
-            vertical_alignment=ft.CrossAxisAlignment.START,
-            scroll=ft.ScrollMode.ALWAYS,  # scroll horizontal global como red
-        )
-
-        # 5) Contenedor raíz
         root = ft.Container(
-            content=centered,
+            content=self._vlist,
             expand=True,
             padding=padding,
             alignment=ft.alignment.top_center,
         )
 
-        # 6) Registrar handler de resize una sola vez (encadenado)
         self._register_resize_handler(page)
-
         return root
 
-    def scroll_to_left(self) -> None:
-        """Punto de extensión si quisieras animar el offset horizontal en el futuro."""
-        # No implementado; se puede agregar con animate_offset y refs a Rows/Containers.
-        pass
+    # -----------------------
+    # Scroll programático opcional (si lo usas)
+    # -----------------------
+    def scroll_to_top(self, *, duration_ms: int = 220) -> None:
+        """Scroll vertical suave al inicio (si la versión de Flet lo soporta)."""
+        lv = self._vlist
+        if lv is None:
+            return
+        try:
+            # Algunas versiones soportan scroll_to con duration
+            lv.scroll_to(offset=0, duration=duration_ms)
+        except Exception:
+            try:
+                lv.scroll_to(offset=0)
+            except Exception:
+                pass
+
+    def scroll_to_left(self, *, duration_ms: int = 220) -> None:
+        """Scroll horizontal suave a la izquierda (si lo usas)."""
+        hr = self._hrow
+        if hr is None:
+            return
+        try:
+            hr.scroll_to(offset=0, duration=duration_ms)
+        except Exception:
+            try:
+                hr.scroll_to(offset=0)
+            except Exception:
+                pass
 
     # -----------------------
     # Internos
     # -----------------------
-    def _wrap_horizontally(self, control: ft.Control) -> ft.Container:
+    def _wrap_horizontally(self, control: ft.Control, *, center: bool) -> ft.Container:
         """
-        Envuélve el control en un contenedor ancho para forzar overflow horizontal,
-        luego lo coloca dentro de un Row con scroll horizontal SIEMPRE.
+        Envuelve el control en un contenedor ancho (forced width) y lo mete en un Row con scroll horizontal.
+        Importante: NO anidar otro scroll horizontal encima (eso hace "tosco").
         """
         forced_min_width = self._compute_forced_width()
 
@@ -152,47 +146,74 @@ class PagosScrollHelper:
             width=forced_min_width,
             clip_behavior=ft.ClipBehavior.HARD_EDGE,
         )
-        # Mantener referencia para actualizar en on_resized
         self._wide_containers.append(wide)
 
-        horiz_scroller = ft.Row(
+        # Row con scroll horizontal único
+        self._hrow = ft.Row(
             controls=[wide],
-            scroll=ft.ScrollMode.ALWAYS,  # barra horizontal
+            scroll=ft.ScrollMode.ALWAYS,
             expand=True,
+            alignment=ft.MainAxisAlignment.CENTER if center else ft.MainAxisAlignment.START,
+            vertical_alignment=ft.CrossAxisAlignment.START,
         )
 
-        # Contenedor que se estira a la altura disponible (aporta a scroll vertical del padre)
+        # Contenedor que ocupa el ancho disponible; el "wide" fuerza overflow
         return ft.Container(
-            content=horiz_scroller,
-            expand=True,
+            content=self._hrow,
+            expand=False,  # el ListView ya es el que expande; aquí solo damos un bloque estable
         )
 
     def _compute_forced_width(self) -> int:
         ww = self._get_window_width()
-        # margen extra para asegurar que haya overflow horizontal cuando corresponde
         return max(self._required_min_width, ww + self._extra_margin_px)
 
+    # -----------------------
+    # Resize: debounce + encadenado seguro
+    # -----------------------
     def _register_resize_handler(self, page: ft.Page) -> None:
         if self._resize_registered:
             return
         self._resize_registered = True
 
-        # Guardar handler previo (si existe) para encadenarlo
         self._prev_on_resized = getattr(page, "on_resized", None)
 
-        def _on_resized(e):
+        def _apply_resize():
             try:
                 new_width = self._compute_forced_width()
 
-                # Actualizar todos los contenedores anchos montados
-                updated = False
+                updated_any = False
                 for c in list(self._wide_containers):
                     if c is not None and getattr(c, "page", None) is not None:
-                        c.width = new_width
-                        updated = True
+                        if getattr(c, "width", None) != new_width:
+                            c.width = new_width
+                            updated_any = True
 
-                if updated and page:
+                if updated_any and page:
                     page.update()
+
+            except Exception as ex:
+                print(f"⚠️ PagosScrollHelper._apply_resize: {ex}")
+            finally:
+                self._resize_scheduled = False
+
+        def _on_resized(e):
+            # debounce: evita 20 updates seguidos al redimensionar
+            try:
+                if not self._resize_scheduled and getattr(page, "run_task", None):
+                    self._resize_scheduled = True
+
+                    async def _debounced():
+                        try:
+                            # dormir un poco (ms) sin bloquear UI
+                            await ft.sleep(self._resize_debounce_ms / 1000)
+                        except Exception:
+                            pass
+                        _apply_resize()
+
+                    page.run_task(_debounced())
+                else:
+                    # fallback sin run_task: aplica directo (igual está protegido)
+                    _apply_resize()
 
             except Exception as ex:
                 print(f"⚠️ PagosScrollHelper._on_resized: {ex}")
@@ -204,5 +225,4 @@ class PagosScrollHelper:
                 except Exception as chain_ex:
                     print(f"⚠️ PagosScrollHelper._on_resized (prev handler): {chain_ex}")
 
-        # Registrar nuestro handler
         page.on_resized = _on_resized

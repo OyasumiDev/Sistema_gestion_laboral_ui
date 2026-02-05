@@ -12,11 +12,10 @@ class DiscountModel:
     """
     Lógica de DESCUENTOS (persistidos). NO maneja 'comida'.
 
-    - IMSS: default interno = 50.0 SOLO si no hay monto válido en el borrador.
-    - Transporte: default interno = 100.0 SOLO si no hay monto válido en el borrador.
-    - Este modelo guarda descuentos ya confirmados para un pago de nómina (id_pago_nomina).
-    - El 'borrador' del modal vive en DescuentoDetallesModel; aquí hay un helper
-      para COPIAR esos valores al confirmar.
+    IMPORTANTE (cambio solicitado):
+    - Los defaults (50/100) NO deben aplicarse automáticamente al confirmar desde el modal.
+    - Los valores por default los manejará el contenedor (UI), no este modelo al confirmar.
+    - Para usos “rápidos” (agregar_descuentos_opcionales) se mantiene el comportamiento legacy con defaults.
     """
 
     DEFAULT_IMSS = 50.0
@@ -224,7 +223,12 @@ class DiscountModel:
 
             if aplicar_extra and (float(monto_extra or 0.0) > 0) and descripcion_extra:
                 self.agregar_descuento(
-                    numero_nomina, "descuento_extra", descripcion_extra.strip(), float(monto_extra), id_pago, fecha_aplicacion
+                    numero_nomina,
+                    "descuento_extra",
+                    descripcion_extra.strip(),
+                    float(monto_extra),
+                    id_pago,
+                    fecha_aplicacion,
                 )
 
             return {"status": "success"}
@@ -244,36 +248,94 @@ class DiscountModel:
         monto_extra: float,
         descripcion_extra: str,
         fecha_aplicacion: Optional[date] = None,
+        # 🔒 Nuevos flags seguros (no rompen llamadas existentes)
+        aplicar_defaults_si_monto_invalido: bool = False,
+        no_borrar_si_no_hay_aplicables: bool = True,
     ) -> Dict[str, Any]:
         """
         Guarda definitivamente los descuentos de un pago (limpia y vuelve a insertar).
-        Respetará los montos recibidos si > 0; si no, aplica defaults.
+
+        🔒 Cambio solicitado (por defecto):
+        - NO aplica defaults si el monto recibido es <= 0.
+        - Si no hay nada aplicable, NO borra descuentos existentes (evita “confirmar vacío”).
         """
         try:
+            id_pago = int(id_pago)
+            numero_nomina = int(numero_nomina)
+
+            def _f(v) -> float:
+                try:
+                    return float(v or 0.0)
+                except Exception:
+                    return 0.0
+
+            mi = _f(monto_imss)
+            mt = _f(monto_transporte)
+            me = _f(monto_extra)
+            desc = (descripcion_extra or "").strip()
+
+            # No permitir negativos
+            if mi < 0:
+                mi = 0.0
+            if mt < 0:
+                mt = 0.0
+            if me < 0:
+                me = 0.0
+
+            # Determina si hay algo realmente aplicable
+            # IMSS/Transporte: aplicable si monto>0 o si explícitamente quieres defaults
+            hay_imss = bool(aplicar_imss) and (mi > 0 or aplicar_defaults_si_monto_invalido)
+            hay_trans = bool(aplicar_transporte) and (mt > 0 or aplicar_defaults_si_monto_invalido)
+            # Extra: requiere monto>0 y descripción
+            hay_extra = bool(aplicar_extra) and (me > 0 and bool(desc))
+
+            if no_borrar_si_no_hay_aplicables and not (hay_imss or hay_trans or hay_extra):
+                return {
+                    "status": "info",
+                    "message": "No se guardó nada porque no hay descuentos aplicables (evité borrar descuentos existentes).",
+                    "aplicables": {"imss": hay_imss, "transporte": hay_trans, "extra": hay_extra},
+                }
+
+            # Limpia y vuelve a insertar (idempotente)
             self.eliminar_por_id_pago(id_pago)
 
-            if aplicar_imss:
-                monto_final = float(monto_imss or 0.0)
-                if monto_final <= 0:
-                    monto_final = self.DEFAULT_IMSS
-                self.agregar_descuento(
-                    numero_nomina, "retenciones_imss", "Cuota IMSS", monto_final, id_pago, fecha_aplicacion
-                )
+            warnings: List[str] = []
 
-            if aplicar_transporte:
-                monto_final = float(monto_transporte or 0.0)
-                if monto_final <= 0:
-                    monto_final = self.DEFAULT_TRANSPORTE
-                self.agregar_descuento(
-                    numero_nomina, "transporte", "Pasaje diario", monto_final, id_pago, fecha_aplicacion
-                )
+            # IMSS
+            if bool(aplicar_imss):
+                monto_final = mi
+                if monto_final <= 0 and aplicar_defaults_si_monto_invalido:
+                    monto_final = float(self.DEFAULT_IMSS)
+                if monto_final > 0:
+                    self.agregar_descuento(
+                        numero_nomina, "retenciones_imss", "Cuota IMSS", monto_final, id_pago, fecha_aplicacion
+                    )
+                else:
+                    warnings.append("IMSS marcado pero monto inválido/0: no se insertó (sin defaults).")
 
-            if aplicar_extra and (float(monto_extra or 0.0) > 0) and descripcion_extra:
-                self.agregar_descuento(
-                    numero_nomina, "descuento_extra", descripcion_extra.strip(), float(monto_extra), id_pago, fecha_aplicacion
-                )
+            # Transporte
+            if bool(aplicar_transporte):
+                monto_final = mt
+                if monto_final <= 0 and aplicar_defaults_si_monto_invalido:
+                    monto_final = float(self.DEFAULT_TRANSPORTE)
+                if monto_final > 0:
+                    self.agregar_descuento(
+                        numero_nomina, "transporte", "Pasaje diario", monto_final, id_pago, fecha_aplicacion
+                    )
+                else:
+                    warnings.append("Transporte marcado pero monto inválido/0: no se insertó (sin defaults).")
 
-            return {"status": "success"}
+            # Extra
+            if bool(aplicar_extra):
+                if me > 0 and desc:
+                    self.agregar_descuento(
+                        numero_nomina, "descuento_extra", desc, me, id_pago, fecha_aplicacion
+                    )
+                else:
+                    warnings.append("Extra marcado pero falta monto>0 o descripción: no se insertó.")
+
+            return {"status": "success", "warnings": warnings}
+
         except Exception as e:
             return {"status": "error", "message": str(e)}
 
@@ -291,12 +353,15 @@ class DiscountModel:
     ) -> Dict[str, Any]:
         """
         Copia los descuentos desde el borrador al registro definitivo.
-        🧠 Lógica mejorada:
-        - No sobrescribe descuentos válidos ya existentes.
-        - Solo aplica defaults si no hay datos válidos ni en DB ni en borrador.
-        - Evita perder montos personalizados tras confirmar.
+
+        Cambio solicitado:
+        - Evitar defaults automáticos en confirmación si no quieres (puedes pasar preferir_default...=False).
+        - Evitar borrar confirmados si el borrador no trae nada aplicable (protección).
         """
         try:
+            id_pago = int(id_pago)
+            numero_nomina = int(numero_nomina)
+
             # 1️⃣ Leer borrador actual (detalles temporales)
             det = detalles_model.obtener_por_id_pago(id_pago) or {}
 
@@ -308,20 +373,41 @@ class DiscountModel:
 
             apl_extra = bool(det.get(detalles_model.COL_APLICADO_EXTRA, False))
             mon_extra = float(det.get(detalles_model.COL_MONTO_EXTRA, 0) or 0)
-            desc_extra = (det.get(getattr(detalles_model, "COL_DESC_EXTRA", "descripcion_extra"), "") or "").strip()
+            desc_extra = (
+                det.get(getattr(detalles_model, "COL_DESC_EXTRA", "descripcion_extra"), "") or ""
+            ).strip()
 
-            # 2️⃣ Leer descuentos actuales en DB antes de limpiar
+            # Normaliza negativos
+            if mon_imss < 0:
+                mon_imss = 0.0
+            if mon_trans < 0:
+                mon_trans = 0.0
+            if mon_extra < 0:
+                mon_extra = 0.0
+
+            # 2️⃣ Si el borrador no trae nada aplicable, NO borrar confirmados existentes
+            hay_imss = apl_imss and (mon_imss > 0 or preferir_default_si_monto_no_valido)
+            hay_trans = apl_trans and (mon_trans > 0 or preferir_default_si_monto_no_valido)
+            hay_extra = apl_extra and (mon_extra > 0 and bool(desc_extra))
+
+            if not (hay_imss or hay_trans or hay_extra):
+                return {
+                    "status": "info",
+                    "message": "Borrador no contiene descuentos aplicables; no se sobreescribió nada.",
+                }
+
+            # 3️⃣ Leer descuentos actuales en DB antes de limpiar (por si necesitas reusar)
             descuentos_previos = self.get_descuentos_por_pago(id_pago)
-            prev_map = {d["tipo"]: float(d["monto"]) for d in descuentos_previos}
+            prev_map = {d["tipo"]: float(d["monto"]) for d in descuentos_previos if d.get("tipo")}
 
-            # 3️⃣ Limpiar solo si es necesario
+            # 4️⃣ Limpiar y reinsertar
             self.eliminar_por_id_pago(id_pago)
 
             # ---------- IMSS ----------
             if apl_imss:
                 monto_final = mon_imss
                 if monto_final <= 0:
-                    # usar monto previo o default
+                    # usar monto previo o default (controlado por flag)
                     if "retenciones_imss" in prev_map:
                         monto_final = prev_map["retenciones_imss"]
                     elif preferir_default_si_monto_no_valido:
@@ -353,7 +439,12 @@ class DiscountModel:
                 elif "descuento_extra" in prev_map and desc_extra:
                     # reusar monto previo si no hubo cambio
                     self.agregar_descuento(
-                        numero_nomina, "descuento_extra", desc_extra, prev_map["descuento_extra"], id_pago, fecha_aplicacion
+                        numero_nomina,
+                        "descuento_extra",
+                        desc_extra,
+                        prev_map["descuento_extra"],
+                        id_pago,
+                        fecha_aplicacion,
                     )
 
             return {"status": "success"}

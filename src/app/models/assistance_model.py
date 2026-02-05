@@ -18,7 +18,8 @@ AssistanceModel (refactor) — “a prueba de balas” (autosave + edición robu
 
 4) update_descanso() opcionalmente retorna la fila ya recalculada leyendo DB (para refresco inmediato de UI).
 
-Nota: Con triggers, la DB es la fuente de verdad. Lo ideal: tras cualquier update, re-leer del SELECT.
+Nota: Con triggers, la DB es la fuente de verdad. Fuente única: tiempo_trabajo (NETO).
+Lo ideal: tras cualquier update, re-leer del SELECT.
 """
 
 from __future__ import annotations
@@ -455,6 +456,8 @@ class AssistanceModel:
                 DECLARE minutos_trabajo INT DEFAULT 0;
                 DECLARE horas_iguales BOOL DEFAULT FALSE;
                 DECLARE manual_override BOOL DEFAULT FALSE;
+                DECLARE manual_from_neto BOOL DEFAULT FALSE;
+                DECLARE manual_from_bruto BOOL DEFAULT FALSE;
 
                 IF NEW.{E_ASSISTANCE.DESCANSO.value} IS NULL THEN
                     SET NEW.{E_ASSISTANCE.DESCANSO.value} = 1;
@@ -465,18 +468,28 @@ class AssistanceModel:
                     AND
                     (NEW.{E_ASSISTANCE.HORA_SALIDA.value} <=> OLD.{E_ASSISTANCE.HORA_SALIDA.value});
 
-                SET manual_override =
+                SET manual_from_neto =
                     (NEW.{E_ASSISTANCE.TIEMPO_TRABAJO.value} IS NOT NULL)
-                    AND (NEW.{E_ASSISTANCE.TIEMPO_TRABAJO_CON_DESCANSO.value} IS NOT NULL)
-                    AND (
-                        NEW.{E_ASSISTANCE.TIEMPO_TRABAJO.value} <> OLD.{E_ASSISTANCE.TIEMPO_TRABAJO.value}
-                        OR NEW.{E_ASSISTANCE.TIEMPO_TRABAJO_CON_DESCANSO.value} <> OLD.{E_ASSISTANCE.TIEMPO_TRABAJO_CON_DESCANSO.value}
-                    );
+                    AND (NEW.{E_ASSISTANCE.TIEMPO_TRABAJO.value} <> OLD.{E_ASSISTANCE.TIEMPO_TRABAJO.value});
+
+                SET manual_from_bruto =
+                    (NEW.{E_ASSISTANCE.TIEMPO_TRABAJO_CON_DESCANSO.value} IS NOT NULL)
+                    AND (NEW.{E_ASSISTANCE.TIEMPO_TRABAJO_CON_DESCANSO.value} <> OLD.{E_ASSISTANCE.TIEMPO_TRABAJO_CON_DESCANSO.value});
+
+                SET manual_override = manual_from_neto OR manual_from_bruto;
 
                 IF manual_override THEN
-                    -- Respeta tiempos manuales
-                    SET NEW.{E_ASSISTANCE.TIEMPO_TRABAJO.value} = NEW.{E_ASSISTANCE.TIEMPO_TRABAJO.value};
-                    SET NEW.{E_ASSISTANCE.TIEMPO_TRABAJO_CON_DESCANSO.value} = NEW.{E_ASSISTANCE.TIEMPO_TRABAJO_CON_DESCANSO.value};
+                    -- Fuente de verdad: tiempo_trabajo (neto). El otro se deriva SIEMPRE.
+                    IF manual_from_neto THEN
+                        SET NEW.{E_ASSISTANCE.TIEMPO_TRABAJO_CON_DESCANSO.value} =
+                            ADDTIME(NEW.{E_ASSISTANCE.TIEMPO_TRABAJO.value}, SEC_TO_TIME(minutos_descanso * 60));
+                    ELSE
+                        -- Si el usuario solo tocó bruto, derivar neto.
+                        SET minutos_trabajo = TIME_TO_SEC(NEW.{E_ASSISTANCE.TIEMPO_TRABAJO_CON_DESCANSO.value}) / 60;
+                        SET minutos_trabajo = GREATEST(0, minutos_trabajo - minutos_descanso);
+                        SET NEW.{E_ASSISTANCE.TIEMPO_TRABAJO.value} =
+                            SEC_TO_TIME(minutos_trabajo * 60);
+                    END IF;
                 ELSEIF NEW.{E_ASSISTANCE.HORA_ENTRADA.value} IS NOT NULL
                 AND NEW.{E_ASSISTANCE.HORA_SALIDA.value} IS NOT NULL
                 AND NEW.{E_ASSISTANCE.HORA_ENTRADA.value} NOT IN ('00:00:00','0:00:00')
@@ -556,12 +569,11 @@ class AssistanceModel:
                 DECLARE manual_override BOOL DEFAULT FALSE;
 
                 SET manual_override =
-                    (NEW.{E_ASSISTANCE.TIEMPO_TRABAJO.value} IS NOT NULL)
-                    AND (NEW.{E_ASSISTANCE.TIEMPO_TRABAJO_CON_DESCANSO.value} IS NOT NULL)
-                    AND (
-                        NEW.{E_ASSISTANCE.TIEMPO_TRABAJO.value} <> OLD.{E_ASSISTANCE.TIEMPO_TRABAJO.value}
-                        OR NEW.{E_ASSISTANCE.TIEMPO_TRABAJO_CON_DESCANSO.value} <> OLD.{E_ASSISTANCE.TIEMPO_TRABAJO_CON_DESCANSO.value}
-                    );
+                    ((NEW.{E_ASSISTANCE.TIEMPO_TRABAJO.value} IS NOT NULL)
+                     AND (NEW.{E_ASSISTANCE.TIEMPO_TRABAJO.value} <> OLD.{E_ASSISTANCE.TIEMPO_TRABAJO.value}))
+                    OR
+                    ((NEW.{E_ASSISTANCE.TIEMPO_TRABAJO_CON_DESCANSO.value} IS NOT NULL)
+                     AND (NEW.{E_ASSISTANCE.TIEMPO_TRABAJO_CON_DESCANSO.value} <> OLD.{E_ASSISTANCE.TIEMPO_TRABAJO_CON_DESCANSO.value}));
 
                 IF manual_override THEN
                     IF NEW.{E_ASSISTANCE.ESTADO.value} IS NULL THEN
@@ -782,6 +794,16 @@ class AssistanceModel:
             if return_row:
                 row = self.get_by_empleado_fecha(numero_nomina, fecha_mysql)
                 out["data"] = row
+                try:
+                    # pequeño log para verificar sincronía de tiempos
+                    neto = (row or {}).get(E_ASSISTANCE.TIEMPO_TRABAJO.value)
+                    bruto = (row or {}).get(E_ASSISTANCE.TIEMPO_TRABAJO_CON_DESCANSO.value)
+                    print(
+                        f"[update_descanso] ok num={numero_nomina} fecha={fecha_mysql} "
+                        f"descanso={descanso_int} neto={neto} bruto={bruto}"
+                    )
+                except Exception:
+                    pass
             return out
         except Exception as e:
             print(f"[ERROR] Error en update_descanso: {e}")

@@ -21,6 +21,7 @@ from app.models.detalles_pagos_prestamo_model import DetallesPagosPrestamoModel
 
 from app.helpers.pagos.payment_view_math import PaymentViewMath
 from app.helpers.pagos.payment_table_builder import PaymentTableBuilder
+from app.helpers.pagos.payment_row_builder import PaymentRowBuilder
 from app.helpers.pagos.row_refresh import PaymentRowRefresh
 from app.helpers.pagos.scroll_pagos_helper import PagosScrollHelper
 from app.helpers.pagos.sorting_filter_payment_helper import PaymentSortFilterHelper
@@ -620,7 +621,7 @@ class PagosPagadosExpansibles(ft.UserControl):
         txt_id = ft.Text(str(id_pago), size=font)
         txt_num = ft.Text(str(num), size=font)
         txt_nombre = ft.Text(nombre, size=font)
-        txt_horas = ft.Text(f"{horas:.2f}", size=font)
+        txt_horas = ft.Text(PaymentRowBuilder.format_horas(horas), size=font, tooltip=f"{horas:.4f}")
         txt_sueldo = ft.Text(money(sueldo_h), size=font)
         txt_base = ft.Text(money(monto_base), size=font)
 
