@@ -317,8 +317,12 @@ class PagosRepo:
                 return {"status": "error", "message": "El pago ya está pagado; no se permite editar montos."}
 
             res = self._try(self.payment_model.update_pago, id_pago, cambios)
+            if res is True:
+                self._after_change("actualizar_montos_ui", id_pago=id_pago, cambios=cambios)
+                return {"status": "success", "message": "Montos actualizados."}
             if self._is_success(res):
                 self._after_change("actualizar_montos_ui", id_pago=id_pago, cambios=cambios)
+                return res
             return res if isinstance(res, dict) else {"status": "error", "message": "Respuesta inválida"}
         except Exception as ex:
             return {"status": "error", "message": str(ex)}

@@ -19,15 +19,15 @@ class AsistenciasRowHelper:
     """
 
     _W = {
-        "numero_nomina": 100,
-        "nombre_completo": 260,
-        "fecha": 150,
-        "hora_entrada": 120,
-        "hora_salida": 120,
-        "descanso": 140,
-        "tiempo_trabajo": 160,
-        "estado": 220,
-        "acciones": 100,
+        "numero_nomina": 80,
+        "nombre_completo": 205,
+        "fecha": 100,
+        "hora_entrada": 100,
+        "hora_salida": 100,
+        "descanso": 108,
+        "tiempo_trabajo": 122,
+        "estado": 122,
+        "acciones": 86,
     }
 
     def __init__(
@@ -395,6 +395,7 @@ class AsistenciasRowHelper:
                     self._wrap_cell(
                         ft.Text(
                             registro.get("nombre_completo", ""),
+                            size=10,
                             overflow=ft.TextOverflow.ELLIPSIS,
                             max_lines=1,
                             text_align=ft.TextAlign.LEFT,
@@ -425,7 +426,7 @@ class AsistenciasRowHelper:
         estado_val = (registro.get("estado") or "").strip().upper() or "PENDIENTE"
         estado_text = ft.Text(
             estado_val,
-            size=12,
+            size=11,
             text_align=ft.TextAlign.CENTER,
             color=self._estado_color(estado_val),
             no_wrap=True,
@@ -490,6 +491,7 @@ class AsistenciasRowHelper:
                     self._wrap_cell(
                         ft.Text(
                             registro.get("nombre_completo", ""),
+                            size=10,
                             overflow=ft.TextOverflow.ELLIPSIS,
                             max_lines=1,
                             text_align=ft.TextAlign.LEFT,
@@ -524,7 +526,7 @@ class AsistenciasRowHelper:
 
         estado_text = ft.Text(
             (registro.get("estado") or "PENDIENTE").upper(),
-            size=12,
+            size=11,
             text_align=ft.TextAlign.CENTER,
             color=self._estado_color(registro.get("estado")),
             no_wrap=True,
@@ -544,6 +546,7 @@ class AsistenciasRowHelper:
         common_tf = dict(
             text_align=ft.TextAlign.CENTER,
             keyboard_type=ft.KeyboardType.DATETIME,
+            text_size=11,
         )
 
         salida_field = ft.TextField(
@@ -576,11 +579,13 @@ class AsistenciasRowHelper:
             value=str(registro.get("numero_nomina", "")),
             keyboard_type=ft.KeyboardType.NUMBER,
             text_align=ft.TextAlign.CENTER,
+            text_size=12,
         )
         fecha_field = ft.TextField(
             width=self._W["fecha"],
             value=str(registro.get("fecha", "")),
             text_align=ft.TextAlign.CENTER,
+            text_size=11,
         )
 
         def _revalidar_duplicado():
@@ -627,7 +632,7 @@ class AsistenciasRowHelper:
         return ft.DataRow(
             cells=[
                 ft.DataCell(self._wrap_cell(numero_field, self._W["numero_nomina"])),
-                ft.DataCell(self._wrap_cell(ft.Text("—"), self._W["nombre_completo"], align_center=False)),
+                ft.DataCell(self._wrap_cell(ft.Text("—", size=10), self._W["nombre_completo"], align_center=False)),
                 ft.DataCell(self._wrap_cell(fecha_field, self._W["fecha"])),
                 ft.DataCell(self._wrap_cell(entrada_field, self._W["hora_entrada"])),
                 ft.DataCell(self._wrap_cell(salida_field, self._W["hora_salida"])),
@@ -813,7 +818,7 @@ class AsistenciasRowHelper:
         for tipo in opciones:
             is_on = registro.get("descanso") == tipo
             btn = ft.Container(
-                content=ft.Text(tipo, size=12, color=ft.colors.WHITE if is_on else ft.colors.BLACK),
+                content=ft.Text(tipo, size=11, color=ft.colors.WHITE if is_on else ft.colors.BLACK),
                 bgcolor=ft.colors.BLUE if is_on else ft.colors.WHITE,
                 border=ft.border.all(1, ft.colors.GREY_400),
                 border_radius=5,

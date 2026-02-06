@@ -29,16 +29,16 @@ class BotonFactory:
         """
         content_row: list[ft.Control] = []
         if img_src:
-            content_row.append(ft.Image(src=img_src, width=20, height=20))
+            content_row.append(ft.Image(src=img_src, width=22, height=22))
         elif icon_name:
-            content_row.append(ft.Icon(name=icon_name, size=20))
+            content_row.append(ft.Icon(name=icon_name, size=22))
 
-        content_row.append(ft.Text(text, size=11, weight="bold"))
+        content_row.append(ft.Text(text, size=12, weight="bold"))
 
         return ft.GestureDetector(
             on_tap=lambda _: on_tap(),
             content=ft.Container(
-                padding=8,
+                padding=10,
                 border_radius=12,
                 bgcolor=ft.colors.SURFACE_VARIANT,
                 content=ft.Row(
@@ -97,6 +97,13 @@ class BotonFactory:
             icon_name=ft.icons.ADD,
         )
 
+    def crear_boton_agregar_asistencias(self, on_click: Callable) -> ft.GestureDetector:
+        return self._pill_button(
+            "Agregar grupo de asistencias",
+            on_click,
+            icon_name=ft.icons.ADD,
+        )
+
     def crear_boton_agregar_fechas_pagadas(self, on_click: Callable) -> ft.GestureDetector:
         """
         Nuevo botón 'pill' para abrir el modal de 'Agregar fechas pagadas'.
@@ -132,6 +139,9 @@ def crear_boton_exportar(on_click: Callable):
 
 def crear_boton_agregar(on_click: Callable):
     return _factory.crear_boton_agregar(on_click)
+
+def crear_boton_agregar_asistencias(on_click: Callable):
+    return _factory.crear_boton_agregar_asistencias(on_click)
 
 def crear_boton_agregar_fechas_pagadas(on_click: Callable):
     return _factory.crear_boton_agregar_fechas_pagadas(on_click)

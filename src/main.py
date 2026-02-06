@@ -15,6 +15,9 @@ from app.models.discount_model import DiscountModel
 from app.models.performance_model import PerformanceModel
 from app.models.weekly_report_model import WeeklyReportModel
 
+# ✅ Nuevo modelo (modal de fechas / grupos por fecha)
+from app.models.fechas_modal_model import FechasModalModel
+
 
 def _safe_create(label: str, fn):
     print(f"🔄 Creando {label}...")
@@ -35,8 +38,11 @@ def bootstrap_db():
     # 2) Pagos (depende de empleados)
     pagos = _safe_create("tabla pagos", PaymentModel)
 
+    # ✅ 2.1) Grupos por fecha para UI (depende de DB; opcionalmente se enriquece con pagos)
+    _safe_create("tabla grupos_pagos (fechas modal)", FechasModalModel)
+
     # 3) Asistencias (depende de empleados, y requiere pagos para integridad)
-    asistencia = _safe_create("tabla asistencias", AssistanceModel)
+    _safe_create("tabla asistencias", AssistanceModel)
 
     # 4) Préstamos (depende de empleados)
     _safe_create("tabla prestamos", LoanModel)
@@ -60,7 +66,6 @@ def bootstrap_db():
         pagos.crear_sp_horas_trabajadas_para_pagos()
     except Exception as ex:
         print(f"❌ Error creando SP 'horas_trabajadas_para_pagos': {ex}")
-
 
 
 def iniciar_aplicacion():

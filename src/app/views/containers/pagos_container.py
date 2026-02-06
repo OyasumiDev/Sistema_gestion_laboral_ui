@@ -1,3 +1,4 @@
+# Fix Flet 0.24: restaurar clicks en IconButton dentro de DataTable evitando scroll ALWAYS + overflow forzado
 from __future__ import annotations
 
 from datetime import datetime, date
@@ -189,22 +190,26 @@ class PagosContainer(ft.Container):
             ],
         )
 
-
         # --------- Secciones ----------
         self.resumen_pagos = ft.Text(value="", weight=ft.FontWeight.BOLD, size=13)
 
+        # ✅ FIX QUIRÚRGICO (Flet 0.24):
+        # Antes: width=5000 forzaba overflow permanente → Row(scroll=ALWAYS) arriba capturaba gesto como drag
+        # Ahora: sin width forzado; el ancho real lo gobierna el módulo (y el scaffold solo hace scroll si hay overflow real).
         section_pend = ft.Column(
             spacing=6,
             controls=[
-                ft.Text("Pendientes (edición)", weight=ft.FontWeight.BOLD, size=12),
-                self.table_builder.wrap_scroll(self._as_control(self.pendientes_ui), height=260, width=1600),
+                ft.Text("Pendientes", weight=ft.FontWeight.BOLD, size=12),
+                ft.Container(self._as_control(self.pendientes_ui), expand=False),
             ],
         )
+
         section_conf = ft.Column(
             spacing=6,
             controls=[
                 ft.Text("Confirmados por fecha", weight=ft.FontWeight.BOLD, size=12),
-                ft.Container(self._as_control(self.confirmados_ui), expand=False, width=1600),
+                # (Se mantiene como estaba para no tocar más de lo necesario.)
+                ft.Container(self._as_control(self.confirmados_ui), expand=False, width=4200),
             ],
         )
 
@@ -216,13 +221,12 @@ class PagosContainer(ft.Container):
             datatable=None,
             header=self.header,
             footer=footer,
-            required_min_width=1700,
+            required_min_width=1670,
             body_override=body,
         )
 
         # Primera carga
         self._recargar_todo(preserve_expansion=False)
-
 
     # ---------------- util: obtener control raíz del módulo ----------------
     @staticmethod
@@ -296,14 +300,12 @@ class PagosContainer(ft.Container):
             dense=True,
             content_padding=ft.padding.only(left=10, right=10),
             border_color=ft.colors.OUTLINE,
-            # 🔧 ahora escribe en id_pago_conf
             on_change=lambda e: self._on_filter_change(scope="conf", key="id_pago_conf", value=e.control.value),
         )
 
         header_bar = ft.Row(
             controls=[
-                crear_boton_importar(lambda: self._no_impl("Importar")),
-                crear_boton_exportar(lambda: self._no_impl("Exportar")),
+                # ✅ Importar/Exportar eliminados
                 crear_boton_agregar(self._abrir_modal_rango),
                 crear_boton_agregar_fechas_pagadas(self._abrir_modal_grupo_pagado),
                 ft.Container(width=20),
@@ -355,9 +357,7 @@ class PagosContainer(ft.Container):
             self.confirmados_ui,
             ["set_filters", "apply_filters", "filtrar"],
             id_empleado=self.filters_conf.get("id_empleado", ""),
-            # 🔧 clave correcta para confirmados:
             id_pago_conf=self.filters_conf.get("id_pago_conf", ""),
-            # compat: algunos módulos aceptan id_pago como alias
             id_pago=self.filters_conf.get("id_pago_conf", ""),
             preserve_expansion=True,
         )
@@ -386,10 +386,6 @@ class PagosContainer(ft.Container):
             self.page.update()
 
     def _on_data_changed(self):
-        """
-        Cambios globales (generación por rango, creación/eliminación de grupos, etc.).
-        Aquí sí recargamos ambas tablas, preservando expansiones.
-        """
         self._recargar_todo(preserve_expansion=True)
 
     def _actualizar_resumen(self):
@@ -451,40 +447,33 @@ class PagosContainer(ft.Container):
         return []
 
     def _abrir_modal_rango(self):
-        # Verificación rápida: selector cargado
         if not getattr(self, "selector_rango", None):
             ModalAlert.mostrar_info("No disponible", "No está cargado el selector de fechas.")
             return
 
         try:
-            # 1) Fechas bloqueadas (grupos ya pagados) normalizadas a date
             bloqueadas_set = set(self._parse_fechas(self._fechas_grupos_pagados()))
             self.selector_rango.set_fechas_bloqueadas(sorted(bloqueadas_set))
 
-            # 2) Rango mínimo/máximo de asistencias
             fi = self.assistance_model.get_fecha_minima_asistencia()
             ff = self.assistance_model.get_fecha_maxima_asistencia()
-            if not fi or not ff:  # <-- corregido (antes tenía "o r")
+            if not fi or not ff:
                 ModalAlert.mostrar_info("Sin asistencias", "No hay registros de asistencias disponibles.")
                 return
 
-            # 3) Estado de asistencias por fecha (completo/incompleto)
             if hasattr(self.assistance_model, "get_fechas_estado_completo_y_incompleto"):
                 fechas_estado = self.assistance_model.get_fechas_estado_completo_y_incompleto(fi, ff) or {}
             else:
                 fechas_estado = self.assistance_model.get_fechas_estado(fi, ff) or {}
             self.selector_rango.set_asistencias(fechas_estado)
 
-            # 4) Fechas disponibles para pagar (normalizadas, sin bloqueadas)
             disponibles = self.assistance_model.get_fechas_disponibles_para_pago() or []
             disponibles = set(self._parse_fechas(disponibles))
 
-            # Opcional: sumar “vacías” del rango si el backend lo expone
             if hasattr(self.assistance_model, "get_fechas_vacias"):
                 vacias = self.assistance_model.get_fechas_vacias(fi, ff) or []
                 disponibles |= set(self._parse_fechas(vacias))
 
-            # Quitar bloqueadas y ordenar
             disponibles = sorted(d for d in disponibles if d not in bloqueadas_set)
 
             if not disponibles:
@@ -492,13 +481,10 @@ class PagosContainer(ft.Container):
                 return
 
             self.selector_rango.set_fechas_disponibles(disponibles)
-
-            # 5) Abrir diálogo
             self.selector_rango.abrir_dialogo(reset_selection=True)
 
         except Exception as ex:
             ModalAlert.mostrar_info("Error", f"No se pudo abrir el calendario: {str(ex)}")
-
 
     def _get_fechas_disponibles_para_pago(self) -> List[date]:
         try:
@@ -572,26 +558,18 @@ class PagosContainer(ft.Container):
         self.modal_fecha_grupo.abrir_dialogo(reset_selection=True)
 
     def _crear_grupo_pagado(self, f: date):
-        """
-        Cierra/Confirma todos los pagos PENDIENTES con la fecha seleccionada,
-        sin crear filas vacías ni duplicar registros.
-        También garantiza un panel vacío en Confirmados si no hay filas aún.
-        """
         fecha = f.strftime("%Y-%m-%d")
 
         try:
-            # Verifica si ya está cerrado ese grupo
             grupos_existentes = []
             if hasattr(self.payment_model, "get_fechas_utilizadas"):
                 grupos_existentes = [str(g) for g in (self.payment_model.get_fechas_utilizadas() or [])]
             if fecha in grupos_existentes:
-                # Asegura panel en confirmados (aunque esté vacío), y lo abre
                 self._call(self.confirmados_ui, ["ensure_group_panel", "ensure_panel", "create_panel"], fecha, expand=True)
                 self._call(self.confirmados_ui, ["open_group", "expand_group"], fecha)
                 ModalAlert.mostrar_info("Ya cerrado", f"El grupo del {fecha} ya fue confirmado previamente.")
                 return
 
-            # Intenta confirmar pagos pendientes por esa fecha
             if hasattr(self.payment_model, "crear_grupo_pagado"):
                 res = self.payment_model.crear_grupo_pagado(fecha)
             elif hasattr(self.repo, "crear_grupo_pagado"):
@@ -607,13 +585,11 @@ class PagosContainer(ft.Container):
                 ModalAlert.mostrar_info("Error", msg)
                 return
 
-            # Asegura panel (vacío o no) y recarga vistas
             self._call(self.confirmados_ui, ["ensure_group_panel", "ensure_panel", "create_panel"], fecha, expand=True)
 
             self._invalidate_caches()
             self._recargar_todo(preserve_expansion=True)
 
-            # Abre el grupo recién creado/confirmado
             self._call(self.confirmados_ui, ["open_group", "expand_group"], fecha)
 
         except Exception as ex:
@@ -622,30 +598,38 @@ class PagosContainer(ft.Container):
     # ---------------- Eventos desde PagosPendientesEditables ----------------
     def _on_pago_confirmado_desde_pendientes(self, pago_ok: Dict[str, Any] | None = None):
         try:
-            # 0) invalidación SIEMPRE
             self._invalidate_caches()
 
-            # 1) si vino vacío o sin estado, reconsulta
             p = dict(pago_ok or {})
-            if not p or str(p.get("estado", "")).lower() != "pagado":
-                pid = int(p.get("id_pago_nomina") or p.get("id_pago") or 0)
-                if pid > 0 and hasattr(self.repo, "obtener_pago"):
-                    p = self.repo.obtener_pago(pid) or p
+            pid = int(p.get("id_pago_nomina") or p.get("id_pago") or 0)
+            if pid <= 0:
+                print("⚠️ Confirmar pago: id_pago inválido.")
+                return
+
+            # 1) Confirmar en DB (fuente de verdad)
+            try:
+                res = self.repo.confirmar_pago(pid)
+            except Exception as ex:
+                res = {"status": "error", "message": str(ex)}
+
+            if (res or {}).get("status") != "success":
+                msg = (res or {}).get("message", "No se pudo confirmar el pago en DB.")
+                print(f"⚠️ Confirmar pago: fallo en DB (id_pago={pid}) -> {msg}")
+                ModalAlert.mostrar_info("Error al confirmar", msg)
+                return
+
+            # 2) Leer el registro actualizado para UI
+            if hasattr(self.repo, "obtener_pago"):
+                p = self.repo.obtener_pago(pid) or p
 
             if p:
                 fecha = str(p.get("fecha_pago") or "")
 
-                # Asegura panel para confirmados (por si no existe aún o está vacío)
                 if fecha:
                     self._call(self.confirmados_ui, ["ensure_group_panel", "ensure_panel", "create_panel"], fecha, expand=True)
 
-                # preferido: push incremental (pago_row=...)
                 self._call(self.confirmados_ui, ["push_pago_pagado"], pago_row=p, keep_expanded=True)
-
-                # fallback: add_or_update_pagado espera 'pago', no 'pago_row'
                 self._call(self.confirmados_ui, ["add_or_update_pagado"], pago=p, keep_expanded=True)
-
-                # último recurso: recarga con expansión
                 self._call(self.confirmados_ui, ["reload"], preserve_expansion=True)
 
                 if fecha:
@@ -656,4 +640,3 @@ class PagosContainer(ft.Container):
                 self.page.update()
         except Exception as ex:
             ModalAlert.mostrar_info("Actualización", f"No se pudo reflejar el pago confirmado en la vista: {ex}")
-

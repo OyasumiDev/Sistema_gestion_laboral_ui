@@ -149,12 +149,14 @@ class EmpleadosContainer(ft.Container):
                     ft.Row(
                         spacing=10,
                         alignment=ft.MainAxisAlignment.START,
-                        controls=[self.add_button, self.import_button, self.export_button],
-                    ),
-                    ft.Row(
-                        spacing=10,
-                        alignment=ft.MainAxisAlignment.START,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                        wrap=False,
+                        scroll=ft.ScrollMode.AUTO,
                         controls=[
+                            self.add_button,
+                            self.import_button,
+                            self.export_button,
+                            ft.Container(width=12),
                             self.sort_id_input,
                             self.sort_id_clear_btn,
                             self.sort_name_input,

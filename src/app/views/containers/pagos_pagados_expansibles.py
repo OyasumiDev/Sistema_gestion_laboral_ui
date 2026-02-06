@@ -1052,6 +1052,12 @@ class PagosPagadosExpansibles(ft.UserControl):
                     r = self.payment_model.eliminar_pagos_por_fecha(fecha, force=True)
                     okflag = (r or {}).get("status") == "success"
                 if okflag:
+                    # limpiar caché y panel manual para que desaparezca en UI
+                    try:
+                        self._invalidate_caches()
+                    except Exception:
+                        pass
+                    self._manual_panels.discard(fecha)
                     # quitar panel y mapas
                     self._remove_panel(fecha)
                     if self.page:

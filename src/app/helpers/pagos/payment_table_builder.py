@@ -1,4 +1,5 @@
 # app/helpers/pagos/payment_table_builder.py
+# Flet 0.24: acciones clickeables + sin "ediciones" + spacing estable + wrap_scroll compatible
 from __future__ import annotations
 
 import flet as ft
@@ -7,39 +8,47 @@ from typing import List, Dict, Optional, Callable, Iterable, Any
 
 class PaymentTableBuilder:
     """
-    Builder centralizado de tablas de pagos (compactas).
+    Builder centralizado de DataTable para pagos (Flet 0.24).
 
-    Objetivos:
-    - Encabezados compactos con anchos fijos por columna (estabilidad visual).
-    - Soporte de ordenamiento (sorting) por columna con indicador visual (▲/▼).
-    - Opción de incluir una barra de filtros encima de la tabla.
-    - Diseñado para laptop: filas pequeñas, fuente reducida y scroll interno.
+    Objetivos (pedidos):
+    ✅ 1) Acciones (IconButtons) SIEMPRE clickeables dentro de DataTable.
+    ✅ 2) Sin columna "ediciones" (si llega, se filtra).
+    ✅ 3) Sin "mark_sorted_column" / sin iconos / sin flechas en headers para sorting.
+       - Se mantiene sorting nativo del DataTable (on_sort), pero el header NO cambia visualmente.
+    ✅ 4) wrap_scroll() compatible con tus containers (acepta width=...).
+    ✅ 5) get_table_width(): ancho recomendado para no cortar el scroll horizontal.
 
-    Importante (Flet):
-    - sort_column_index + sort_ascending funcionan mejor si controlas bien None/int.
-    - on_sort puede variar entre builds (a veces no trae e.ascending).
+    Reglas para hit-test (acciones):
+    - TODO lo visible debe vivir dentro del width real de la celda.
+    - NO usar column_spacing negativo.
+    - Wrapper fijo + clip HARD_EDGE en acciones para que no exista "visible pero no clickeable".
     """
 
+    # ---------------------------
+    # Anchos por defecto (fuente de verdad)
+    # ---------------------------
     DEFAULT_WIDTHS: Dict[str, int] = {
-        "id_pago": 60,
-        "id_empleado": 70,
-        "nombre": 150,
-        "fecha_pago": 95,
-        "horas": 70,
-        "sueldo_hora": 90,
-        "monto_base": 110,
+        "id_pago": 65,
+        "id_empleado": 85,
+        "nombre": 170,
+        "fecha_pago": 80,
+        "horas": 60,
+        "sueldo_hora": 95,
+        "monto_base": 95,
         "descuentos": 95,
         "prestamos": 95,
         "saldo": 85,
-        "deposito": 95,
-        "efectivo": 95,
-        "total": 110,
-        "ediciones": 85,
-        "acciones": 100,
-        "estado": 80,
+        "deposito": 105,
+        "efectivo": 90,
+        "total": 115,
+
+        # 4 iconos (descuentos, prestamos, confirmar, borrar)
+        # 4*28 + 3*4 = 124 -> dejamos margen minimo
+        "acciones": 200,
+
+        "estado": 70,
     }
 
-    # Columnas típicamente numéricas (alineación y render numérico)
     NUMERIC_COLS = {
         "id_pago", "id_empleado",
         "horas", "sueldo_hora",
@@ -47,25 +56,45 @@ class PaymentTableBuilder:
         "saldo", "deposito", "efectivo", "total",
     }
 
+    ACTION_COLS = {"acciones"}
+    STATE_COLS = {"estado"}
+
     def __init__(self):
-        # Configuración compacta fija
+        # Layout compacto
         self.heading_row_height = 28
         self.data_row_min_height = 26
         self.data_row_max_height = 30
         self.font_size = 11
-        self.column_spacing = 6
 
-        # Defaults visuales para headers
+        # Estable (sin hacks negativos)
+        self.column_spacing = 0
+        self._horizontal_margin = 0
+
         self._header_pad = ft.padding.symmetric(horizontal=6, vertical=4)
 
+        # ---- Ajustes finos de aire ----
+        self._gap_total_right = 16
+        self._gap_acciones_left = 0
+
+        # Ajuste Acciones <-> Estado (compacto)
+        self._gap_acciones_right = 0
+        self._gap_estado_left = 6
+        # Empuje visual de "estado" hacia la izquierda (superpone con acciones)
+        # Empuje del contenido de "estado" hacia acciones
+        self._estado_pull_left = 80
+        # Empuje del header "Estado" (alineado con el contenido)
+        self._estado_header_pull_left = 80
+
+        # Estado de sort interno por columna (para toggle asc/desc sin iconos)
+        self._sort_state: Dict[str, bool] = {}
+
     # ----------------------------------------------------
-    # Helpers internos
+    # Helpers
     # ----------------------------------------------------
     def _col_width(self, key: str, fallback: int = 90) -> int:
-        """Devuelve ancho fijo de columna; siempre un int válido."""
         try:
             w = int(self.DEFAULT_WIDTHS.get(key, fallback))
-            return max(50, w)  # nunca permitir demasiado pequeño
+            return max(50, w)
         except Exception:
             return int(fallback)
 
@@ -77,7 +106,39 @@ class PaymentTableBuilder:
             return default
 
     # ----------------------------------------------------
-    # Tabla compacta con soporte de sorting
+    # ✅ Ancho total recomendado (para containers)
+    # ----------------------------------------------------
+    def get_table_width(
+        self,
+        columns: List[str],
+        *,
+        buffer: int = 16,
+        include_horizontal_margin: bool = True,
+    ) -> int:
+        """
+        Devuelve el ancho total recomendado para envolver la tabla.
+
+        Úsalo así en tu container:
+            width = table_builder.get_table_width(COL_KEYS, buffer=16)
+            table_container.width = width
+
+        buffer:
+        - Si se CORTA al final del scroll: SUBE buffer (16 -> 32 -> 48)
+        - Si sobra demasiado: BAJA buffer (48 -> 16 -> 8)
+        """
+        cols = [c for c in (columns or []) if c != "ediciones"]
+        total = 0
+        for k in cols:
+            total += self._col_width(k, fallback=90)
+
+        if include_horizontal_margin:
+            total += int(self._horizontal_margin) * 2
+
+        total += int(buffer)
+        return max(300, int(total))
+
+    # ----------------------------------------------------
+    # build_table
     # ----------------------------------------------------
     def build_table(
         self,
@@ -90,32 +151,31 @@ class PaymentTableBuilder:
         sort_ascending: bool = True,
         column_labels: Optional[Dict[str, str]] = None,
         tooltip_labels: Optional[Dict[str, str]] = None,
-        # Anti “doble indicador”: algunas versiones pintan flecha nativa + texto con ▲/▼
-        disable_sort_indicator_in_label: bool = False,
+        # Si False, no muestra indicador (flecha) de sorting
+        show_sort_indicator: bool = False,
+        # ⚠️ Se conserva por compat, pero aquí ya no se usa para pintar flechas en header
+        disable_sort_indicator_in_label: bool = True,
     ) -> ft.DataTable:
         """
-        Construye una DataTable compacta.
+        Crea el DataTable con:
+        - columnas filtradas (sin 'ediciones')
+        - headers sin flechas / sin iconos de sorting
+        - sorting nativo opcional (on_sort) en DataColumn.on_sort
 
-        Args:
-            columns: lista de claves (ej. ["id_pago", "nombre", "saldo"])
-            rows: filas opcionales (ft.DataRow)
-            sortable_cols: columnas habilitadas para ordenar; si es None -> todas
-            on_sort: callback (col_key, ascending) al ordenar
-            sort_key: clave de la columna actualmente ordenada (para indicador visual)
-            sort_ascending: dirección actual (True=ASC, False=DESC)
-            column_labels: mapping opcional key->texto header
-            tooltip_labels: mapping opcional key->tooltip header
-            disable_sort_indicator_in_label:
-                Si True, NO agrega ▲/▼ al texto del header (dejas solo el indicador nativo de Flet).
+        NOTA:
+        - Flet maneja el indicador visual por su cuenta si sort_column_index está seteado.
+        - Nosotros NO alteramos el texto del header (sin ▲▼, sin iconos).
         """
         columns = list(columns or [])
         rows = rows or []
         column_labels = column_labels or {}
         tooltip_labels = tooltip_labels or {}
 
+        # Blindaje: fuera "ediciones"
+        columns = [c for c in columns if c != "ediciones"]
+
         sortable_set = set(sortable_cols) if sortable_cols is not None else set(columns)
 
-        # Índice de columna ordenada (Flet pinta flecha nativa si lo soporta)
         sort_col_index: Optional[int] = None
         if sort_key and sort_key in columns:
             try:
@@ -125,160 +185,193 @@ class PaymentTableBuilder:
 
         def _on_sort_event(e: Any, key: str) -> None:
             """
-            Handler robusto para sorting:
-            - En algunos builds llega e.ascending
-            - En otros solo llega e.column_index o nada útil => togglear manualmente
+            Handler robusto:
+            - Si Flet trae e.ascending, lo usamos
+            - Si no, alternamos asc/desc por columna (2 estados)
             """
             if on_sort is None:
                 return
 
             asc: Optional[bool] = None
-
-            # Caso 1: e.ascending (común)
             try:
                 if hasattr(e, "ascending"):
                     asc = bool(e.ascending)
             except Exception:
                 asc = None
 
-            # Caso 2: sin ascending => togglear si es la misma columna
             if asc is None:
                 try:
-                    if sort_key == key:
-                        asc = not bool(sort_ascending)
-                    else:
-                        asc = True
+                    # toggle interno por columna
+                    prev = self._sort_state.get(key)
+                    asc = True if prev is None else (not bool(prev))
                 except Exception:
                     asc = True
 
             try:
+                self._sort_state[key] = bool(asc)
                 on_sort(key, bool(asc))
             except Exception:
-                # nunca romper UI por handler externo
                 pass
 
         def _make_header(key: str) -> ft.DataColumn:
-            base_label = column_labels.get(key, key.replace("_", " ").title())
-
-            # Indicador manual en label (opcional)
-            if (not disable_sort_indicator_in_label) and (sort_key == key):
-                label_text = self.mark_sorted_column(base_label, bool(sort_ascending))
-            else:
-                label_text = base_label
+            # ✅ SIN mark_sorted_column y sin indicadores custom
+            label_text = column_labels.get(key, key.replace("_", " ").title())
 
             tooltip = tooltip_labels.get(key)
+            is_numeric = key in self.NUMERIC_COLS
 
-            # Container para fijar ancho y evitar “salto” visual
+            if key in self.ACTION_COLS:
+                header_align = ft.alignment.center
+            elif key in self.STATE_COLS:
+                header_align = ft.alignment.center
+            else:
+                header_align = ft.alignment.center_right if is_numeric else ft.alignment.center_left
+
+            text = ft.Text(
+                str(label_text),
+                size=self.font_size,
+                weight=ft.FontWeight.BOLD,
+                overflow=ft.TextOverflow.ELLIPSIS,
+                no_wrap=True,
+            )
+
+            if key in self.ACTION_COLS:
+                content = ft.Row([text], alignment=ft.MainAxisAlignment.CENTER, expand=True)
+            else:
+                content = text
+
             label = ft.Container(
-                content=ft.Text(
-                    label_text,
-                    size=self.font_size,
-                    weight=ft.FontWeight.BOLD,
-                    overflow=ft.TextOverflow.ELLIPSIS,
-                    no_wrap=True,
-                ),
+                content=content,
                 width=self._col_width(key),
                 padding=self._header_pad,
-                alignment=ft.alignment.center_left if key not in self.NUMERIC_COLS else ft.alignment.center_right,
+                alignment=ft.alignment.center if key in self.ACTION_COLS else header_align,
                 tooltip=tooltip,
+                margin=ft.margin.only(left=-self._estado_header_pull_left, right=0, top=0, bottom=0)
+                if key in self.STATE_COLS else None,
             )
 
             return ft.DataColumn(
                 label=label,
-                numeric=(key in self.NUMERIC_COLS),
+                numeric=is_numeric,
+                # ✅ Sorting nativo (sin “iconos” ni “mark_*”)
                 on_sort=((lambda e, k=key: _on_sort_event(e, k)) if (callable(on_sort) and key in sortable_set) else None),
             )
 
-        table = ft.DataTable(
+        return ft.DataTable(
             columns=[_make_header(c) for c in columns],
             rows=rows,
             heading_row_height=self.heading_row_height,
             data_row_min_height=self.data_row_min_height,
             data_row_max_height=self.data_row_max_height,
             column_spacing=self.column_spacing,
-            # Sorting props (Flet)
-            sort_column_index=sort_col_index,
-            sort_ascending=self._safe_bool(sort_ascending, True) if sort_col_index is not None else True,
+            horizontal_margin=self._horizontal_margin,
+            # Sorting nativo (opcional)
+            sort_column_index=sort_col_index if show_sort_indicator else None,
+            sort_ascending=self._safe_bool(sort_ascending, True) if (show_sort_indicator and sort_col_index is not None) else True,
         )
-        return table
-
-    def mark_sorted_column(self, label_text: str, ascending: bool) -> str:
-        """Añade flecha asc/desc a la etiqueta de columna ordenada."""
-        arrow = "▲" if ascending else "▼"
-        return f"{label_text} {arrow}"
 
     # ----------------------------------------------------
-    # Barra de filtros (opcional)
+    # wrap_cell (clave de hit-test)
     # ----------------------------------------------------
-    def build_filter_bar(
-        self,
-        *,
-        filters_for: Iterable[str],
-        values: Optional[Dict[str, str]] = None,
-        on_change: Optional[Callable[[str, str], None]] = None,
-        placeholder_map: Optional[Dict[str, str]] = None,
-        debounce_ms: Optional[int] = None,
-    ) -> ft.Row:
+    def wrap_cell(self, key: str, control: ft.Control, *, fallback: int = 90) -> ft.DataCell:
         """
-        Construye una barra de filtros compacta con TextField por columna.
+        Envuelve controles en un Container con width fijo para:
+        - alinear header y data
+        - asegurar hit-test correcto (especialmente en acciones)
 
-        Nota:
-        - debounce_ms se deja como parámetro “documental”.
-          El debounce real conviene hacerlo en el Container (con page.run_task / Timer),
-          para no acoplar este helper a Page.
+        Ajuste pedido:
+        - acercar "estado" a "acciones" reduciendo el aire.
         """
-        values = values or {}
-        placeholder_map = placeholder_map or {}
+        w = self._col_width(key, fallback=fallback)
+        is_numeric = key in self.NUMERIC_COLS
+        is_actions = key in self.ACTION_COLS
+        is_estado = key in self.STATE_COLS
 
-        controls: List[ft.Control] = []
+        pad = ft.padding.only(left=4, right=6, top=0, bottom=0)
 
-        for key in list(filters_for or []):
-            tf = ft.TextField(
-                value=str(values.get(key, "")),
-                height=32,
-                text_size=self.font_size,
-                dense=True,
-                content_padding=ft.padding.symmetric(6, 8),
-                width=self._col_width(key, fallback=120),
-                hint_text=placeholder_map.get(key, f"Filtrar {key}"),
-                on_change=(lambda e, k=key: on_change(k, e.control.value)) if callable(on_change) else None,
+        if key == "total":
+            pad = ft.padding.only(left=4, right=self._gap_total_right, top=0, bottom=0)
+
+        if is_actions:
+            # compacta acciones para evitar gap con estado
+            pad = ft.padding.only(
+                left=self._gap_acciones_left,
+                right=self._gap_acciones_right,
+                top=0,
+                bottom=0,
             )
-            controls.append(ft.Container(content=tf, padding=ft.padding.only(right=6)))
 
-        return ft.Row(controls=controls, spacing=6, wrap=True)
+        if is_estado:
+            pad = ft.padding.only(
+                left=self._gap_estado_left,
+                right=2,
+                top=0,
+                bottom=0,
+            )
+
+        # Alignment
+        if is_actions:
+            # Pegar acciones hacia la derecha para quedar junto a "estado"
+            align = ft.alignment.center_right
+        elif is_estado:
+            align = ft.alignment.center
+        else:
+            align = ft.alignment.center_right if is_numeric else ft.alignment.center_left
+
+        # HITBOX blindado para acciones
+        if is_actions:
+            control = ft.Container(
+                content=control,
+                width=w,
+                height=max(28, self.data_row_max_height),
+                alignment=ft.alignment.center_right,
+                padding=0,
+            )
+
+        return ft.DataCell(
+            ft.Container(
+                content=control,
+                width=w,
+                height=max(28, self.data_row_max_height) if is_actions else None,
+                alignment=align,
+                padding=pad,
+                margin=ft.margin.only(left=-self._estado_pull_left, right=0, top=0, bottom=0)
+                if is_estado else None,
+                clip_behavior=ft.ClipBehavior.HARD_EDGE if is_actions else ft.ClipBehavior.NONE,
+            )
+        )
 
     # ----------------------------------------------------
-    # Wrapper con scroll y (opcional) controles arriba
+    # ✅ wrap_scroll (compat con Pagos Editables)
     # ----------------------------------------------------
     def wrap_scroll(
         self,
-        table: ft.DataTable,
-        height: int = 220,
-        width: int = 1600,
+        control: ft.Control,
         *,
-        top_controls: Optional[List[ft.Control]] = None,
-        scroll_mode: ft.ScrollMode = ft.ScrollMode.ALWAYS,
-    ) -> ft.Container:
+        width: int | float | None = None,
+        height: int | float | None = None,
+        expand: bool = False,
+        padding: int = 0,
+        scroll: ft.ScrollMode = ft.ScrollMode.ALWAYS,
+    ) -> ft.Control:
         """
-        Envuelve la tabla en un contenedor con scroll vertical interno.
-        Si se pasan top_controls (ej. filtros), se muestran arriba.
+        Envuelve el control (usualmente DataTable) en un Row con scroll horizontal.
 
-        Importante:
-        - Para que el scroll funcione estable, el contenedor debe tener height fijo.
+        ✅ Compat clave:
+        - Acepta width=... (porque tu código actual ya lo manda, y antes te tronaba).
+        - Si ya tienes scroll horizontal externo (ej. PagosScrollHelper),
+          evita usar este wrapper para no anidar scrolls.
+
+        Ejemplo:
+            table = builder.build_table(...)
+            w = builder.get_table_width(cols, buffer=16)
+            return builder.wrap_scroll(table, width=w, padding=0)
         """
-        col_controls: List[ft.Control] = []
-        if top_controls:
-            col_controls.extend([c for c in top_controls if c is not None])
-        col_controls.append(table)
-
+        row = ft.Row([control], scroll=scroll)
         return ft.Container(
-            content=ft.Column(
-                controls=col_controls,
-                scroll=scroll_mode,
-                expand=True,
-                tight=True,  # evita espacios raros
-            ),
-            width=int(width),
-            height=int(height),
-            expand=False,
+            content=row,
+            width=width,
+            height=height,
+            expand=expand,
+            padding=padding,
         )

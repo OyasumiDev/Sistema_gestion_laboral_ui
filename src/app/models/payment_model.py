@@ -898,7 +898,20 @@ class PaymentModel:
         try:
             q = f"UPDATE {self.E.TABLE.value} SET {', '.join(sets)} WHERE {self.E.ID_PAGO_NOMINA.value}=%s"
             vals.append(id_pago)
-            self.db.run_query(q, tuple(vals))
+
+            cursor = self.db._cursor()
+            cursor.execute(q, tuple(vals))
+            rowcount = getattr(cursor, "rowcount", None)
+            try:
+                while cursor.nextset():
+                    pass
+            except Exception:
+                pass
+            cursor.close()
+            self.db.connection.commit()
+
+            if rowcount == 0:
+                print(f"⚠️ update_pago: 0 filas afectadas (id_pago={id_pago}).")
             return True
         except Exception as ex:
             print(f"❌ Error en update_pago: {ex}")

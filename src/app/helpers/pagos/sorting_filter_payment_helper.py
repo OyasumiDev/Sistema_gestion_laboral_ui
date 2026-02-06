@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple, Union, Literal
+from datetime import datetime
 import re
 import math
 import flet as ft
@@ -41,6 +42,8 @@ class PaymentSortFilterHelper:
         self._active_filters: Dict[int, Optional[set[int]]] = {}
         # id(datatable) -> (last_col_index, last_ascending) para toggle cuando Flet no da e.ascending
         self._sort_state: Dict[int, Tuple[int, bool]] = {}
+        # (tid, col_index) -> "none" | "asc" | "desc"
+        self._tri_state: Dict[Tuple[int, int], str] = {}
 
     # ------------------------------------------------------------------
     # Safe update
@@ -64,6 +67,71 @@ class PaymentSortFilterHelper:
     def refresh_snapshot(self, datatable: ft.DataTable) -> None:
         """Reemplaza snapshot con el estado actual de la tabla."""
         self._snapshots[id(datatable)] = list(datatable.rows or [])
+        # al refrescar snapshot, limpiamos tri-estado (nuevo orden base)
+        self.clear_sort_state(datatable)
+
+    def clear_sort_state(self, datatable: ft.DataTable) -> None:
+        tid = id(datatable)
+        # limpiar estados de sort/toggle para este datatable
+        self._sort_state.pop(tid, None)
+        for k in list(self._tri_state.keys()):
+            if k[0] == tid:
+                self._tri_state.pop(k, None)
+
+    # ------------------------------------------------------------------
+    # Tri-estado (none -> desc -> asc -> none)
+    # ------------------------------------------------------------------
+    def toggle_sort_tristate_table(
+        self,
+        datatable: ft.DataTable,
+        *,
+        column_index: int,
+        value_type: str = "text",
+        cycle: Tuple[str, str, str] = ("none", "desc", "asc"),
+    ) -> str:
+        """
+        Ordena con 3 estados:
+          none -> desc -> asc -> none
+        Retorna el estado aplicado.
+        """
+        if not isinstance(datatable, ft.DataTable):
+            return "none"
+
+        self._ensure_snapshot(datatable)
+        tid = id(datatable)
+        key = (tid, int(column_index))
+        cur = self._tri_state.get(key, cycle[0])
+        try:
+            idx = cycle.index(cur)
+            nxt = cycle[(idx + 1) % len(cycle)]
+        except Exception:
+            nxt = cycle[1]
+
+        base_rows = list(self._snapshots.get(tid, list(datatable.rows or [])))
+
+        if nxt == "none":
+            datatable.rows = base_rows
+        else:
+            ascending = (nxt == "asc")
+
+            def key_fn(row: ft.DataRow):
+                v = self._cell_value_as(row, column_index, value_type)
+                is_empty = (v is None) or (isinstance(v, str) and not v.strip())
+                return (is_empty, v)
+
+            try:
+                datatable.rows = sorted(base_rows, key=key_fn, reverse=not ascending)
+            except Exception:
+                datatable.rows = base_rows
+
+        self._tri_state[key] = nxt
+        # sin indicador visual
+        try:
+            datatable.sort_column_index = None
+        except Exception:
+            pass
+        self._safe_update(datatable)
+        return nxt
 
     # ------------------------------------------------------------------
     # Binding de sorting (manual sobre datatable.rows)
@@ -461,7 +529,33 @@ class PaymentSortFilterHelper:
         if value_type in {"money", "float"}:
             return self._money_to_float(raw)
 
+        if value_type == "date":
+            return self._date_to_key(raw)
+
         return self._text_value(raw)
+
+    @staticmethod
+    def _date_to_key(raw: Any) -> Any:
+        """
+        Convierte fechas a un key comparable.
+        Soporta YYYY-MM-DD y DD/MM/YYYY. Si falla, retorna None.
+        """
+        if raw is None:
+            return None
+        try:
+            if isinstance(raw, datetime):
+                return raw.date()
+        except Exception:
+            pass
+        s = str(raw).strip()
+        if not s:
+            return None
+        for fmt in ("%Y-%m-%d", "%d/%m/%Y"):
+            try:
+                return datetime.strptime(s, fmt).date()
+            except Exception:
+                continue
+        return None
 
     # ------------------------------------------------------------------
     # Integración con listas (expansibles)

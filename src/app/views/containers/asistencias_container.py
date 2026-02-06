@@ -15,7 +15,11 @@ from app.views.containers.modal_alert import ModalAlert
 from app.helpers.asistencias_column_builder import AsistenciasColumnBuilder
 from app.helpers.asistencias_row_helper import AsistenciasRowHelper
 from app.helpers.calculo_horas_helper import CalculoHorasHelper
-from app.helpers.boton_factory import crear_boton_importar, crear_boton_exportar
+from app.helpers.boton_factory import (
+    crear_boton_importar,
+    crear_boton_exportar,
+    crear_boton_agregar_asistencias,
+)
 
 from app.models.employes_model import EmployesModel
 from app.helpers.sworting_helper import Sworting
@@ -34,26 +38,27 @@ class AsistenciasContainer(ft.Container):
     """
 
     # ---- Config UI / rendimiento ----
-    _BASE_MIN_WIDTH = 1450
+    _BASE_MIN_WIDTH = 1200
     _PAGE_MARGIN_W = 80
     _HEADER_ESTIMATE = 180
     _PANEL_MIN_H = 400
     _PANEL_MAX_H = 550
+    _TABLE_COL_SPACING = 8
 
     # Anchos por columna
     _COL_WIDTHS = {
-        "numero_nomina": 100,
-        "nombre_completo": 260,
-        "fecha": 120,
-        "hora_entrada": 120,
-        "hora_salida": 120,
-        "descanso": 140,
-        "tiempo_trabajo": 160,
-        "estado": 160,
+        "numero_nomina": 80,
+        "nombre_completo": 205,
+        "fecha": 100,
+        "hora_entrada": 100,
+        "hora_salida": 100,
+        "descanso": 108,
+        "tiempo_trabajo": 122,
+        "estado": 122,
     }
 
     def __init__(self):
-        super().__init__(expand=True, padding=16, alignment=ft.alignment.top_center)
+        super().__init__(expand=True, padding=16, alignment=ft.alignment.top_left)
 
         # Core
         self.page = AppState().page
@@ -85,6 +90,8 @@ class AsistenciasContainer(ft.Container):
 
         # tablas por grupo
         self._tablas_por_grupo: dict[str, ft.DataTable] = {}
+        # grupos manuales (para permitir agregar cuando no hay importados)
+        self._manual_groups: set[str] = set()
 
         # Helpers
         # ✅ callbacks "a prueba de balas": aceptan distintas firmas desde el RowHelper
@@ -126,6 +133,7 @@ class AsistenciasContainer(ft.Container):
         )
         self.import_button = crear_boton_importar(on_click=lambda: self.import_controller.file_invoker.open())
         self.export_button = crear_boton_exportar(on_click=lambda: self.save_invoker.open_save())
+        self.add_button = crear_boton_agregar_asistencias(on_click=lambda: self._on_click_agregar_asistencia())
 
         # Toolbar
         self.sort_id_input = ft.TextField(
@@ -151,23 +159,33 @@ class AsistenciasContainer(ft.Container):
             icon=ft.icons.CLEAR, tooltip="Limpiar nombre", on_click=lambda e: self._limpiar_sort_nombre()
         )
 
-        self._title_label = ft.Text("Registro de Asistencias", size=22, weight="bold")
-        self._import_export_row = ft.Row(
-            [self.import_button, self.export_button], spacing=10, alignment=ft.MainAxisAlignment.START
-        )
-        self._toolbar_row = ft.Row(
-            controls=[self.sort_id_input, self.sort_id_clear_btn, self.sort_name_input, self.sort_name_clear_btn],
+        self._title_label = None
+        # Toolbar Ãºnica: botones + filtros en una sola lÃ­nea
+        self._top_row = ft.Row(
+            controls=[
+                self.add_button,
+                self.import_button,
+                self.export_button,
+                ft.Container(width=12),
+                self.sort_id_input,
+                self.sort_id_clear_btn,
+                self.sort_name_input,
+                self.sort_name_clear_btn,
+            ],
             spacing=10,
             alignment=ft.MainAxisAlignment.START,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            wrap=False,
+            scroll=ft.ScrollMode.AUTO,
         )
 
         # Contenedor principal
         self._root_column = ft.Column(
             scroll=ft.ScrollMode.AUTO,
             alignment=ft.MainAxisAlignment.START,
-            horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-            spacing=14,
-            controls=[self._title_label, self._import_export_row, self._toolbar_row],
+            horizontal_alignment=ft.CrossAxisAlignment.START,
+            spacing=10,
+            controls=[self._top_row],
         )
         self.content = ft.Container(expand=True, content=self._root_column)
 
@@ -667,6 +685,72 @@ class AsistenciasContainer(ft.Container):
             self._actualizar_tabla()
             self._safe_update()
 
+    # --------------------- Agregar asistencia manual ---------------------
+    def _on_click_agregar_asistencia(self):
+        # Siempre pedir fecha para crear/usar grupo explícito
+        self._prompt_fecha_para_grupo()
+
+    def _prompt_fecha_para_grupo(self):
+        if not self.page:
+            return
+
+        fecha_input = ft.TextField(
+            label="Fecha de asistencia (DD/MM/AAAA)",
+            hint_text="DD/MM/AAAA",
+            width=240,
+            autofocus=True,
+            value=date.today().strftime("%d/%m/%Y"),
+        )
+
+        def _cerrar_dialogo():
+            try:
+                dlg.open = False
+                self._safe_update()
+            except Exception:
+                pass
+
+        def _crear_grupo(_e=None):
+            val = (fecha_input.value or "").strip()
+            d = self._parse_fecha_any(val)
+            if not d:
+                self.window_snackbar.show_error("❌ Fecha inválida. Usa DD/MM/AAAA.")
+                return
+            if d > date.today():
+                self.window_snackbar.show_error("❌ La fecha no puede ser mayor a hoy.")
+                return
+            grupo = f"GRUPO:{d.strftime('%d/%m/%Y')}"
+            if grupo not in self.datos_por_grupo:
+                self._manual_groups.add(grupo)
+            _cerrar_dialogo()
+            self.grupos_expandido[grupo] = True
+            self._agregar_fila_en_grupo(grupo)
+
+        dlg = ft.AlertDialog(
+            modal=True,
+            title=ft.Text("Nueva asistencia"),
+            content=fecha_input,
+            actions=[
+                ft.TextButton("Cancelar", on_click=lambda e: _cerrar_dialogo()),
+                ft.ElevatedButton("Crear", on_click=_crear_grupo),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+        )
+        self.page.dialog = dlg
+        dlg.open = True
+        self._safe_update()
+
+    def _pick_default_group(self, grupos: list[str]) -> str | None:
+        try:
+            def _sort_key(g: str):
+                registros = self.datos_por_grupo.get(g, [])
+                d = self._grupo_date_for_sort(g, registros)
+                return -d.toordinal()
+
+            grupos_ordenados = sorted(grupos, key=_sort_key)
+            return grupos_ordenados[0] if grupos_ordenados else None
+        except Exception:
+            return grupos[0] if grupos else None
+
     # --------------------- Interacción de ordenamiento (POR PANEL) ---------------------
     def _get_group_sort(self, grupo: str) -> dict:
         st = self._group_sort.get(grupo)
@@ -720,8 +804,20 @@ class AsistenciasContainer(ft.Container):
                                 hrow: ft.Row = viewport_h_container.content
                                 if hrow.controls and isinstance(hrow.controls[0], ft.Container):
                                     inner_w_container: ft.Container = hrow.controls[0]
-                                    inner_w_container.width = self._panel_scroll_w
+                                    inner_w_container.width = self._get_table_width()
         self._safe_update()
+
+    def _get_table_width(self) -> int:
+        try:
+            acciones_w = 0
+            if getattr(self, "row_helper", None) is not None:
+                acciones_w = int(getattr(self.row_helper, "_W", {}).get("acciones", 0) or 0)
+            base = sum(int(v) for v in self._COL_WIDTHS.values()) + acciones_w
+            n_cols = len(self._COL_WIDTHS) + (1 if acciones_w > 0 else 0)
+            spacing = self._TABLE_COL_SPACING * max(0, n_cols - 1)
+            return max(300, int(base + spacing + 40))
+        except Exception:
+            return max(300, int(self._panel_scroll_w))
 
     # --------------------- Tabla y paneles ---------------------
     def _make_sortable_header(self, titulo: str, campo: str, width: int | None, grupo: str):
@@ -733,7 +829,7 @@ class AsistenciasContainer(ft.Container):
             on_tap=lambda e, f=campo, g=grupo: self._on_header_sort_click(g, f),
             mouse_cursor=ft.MouseCursor.CLICK,
             content=ft.Row(
-                [ft.Text(f"{titulo}{arrow}", size=12, weight="bold")],
+                [ft.Text(f"{titulo}{arrow}", size=11, weight="bold")],
                 alignment=ft.MainAxisAlignment.START,
                 spacing=4,
             ),
@@ -755,9 +851,9 @@ class AsistenciasContainer(ft.Container):
                 c.label = self._make_sortable_header(titulo, campo, width, grupo)
             else:
                 c.label = (
-                    ft.Container(ft.Text(titulo, size=12, weight="bold"), width=width)
+                    ft.Container(ft.Text(titulo, size=11, weight="bold"), width=width)
                     if width
-                    else ft.Text(titulo, size=12, weight="bold")
+                    else ft.Text(titulo, size=11, weight="bold")
                 )
 
         return cols
@@ -849,6 +945,10 @@ class AsistenciasContainer(ft.Container):
             self._normalize_row_for_ui(r)
 
         self.datos_por_grupo = self._agrupar_por_grupo_importacion(datos)
+        # incluir grupos manuales (sin registros importados)
+        for g in self._manual_groups:
+            if g not in self.datos_por_grupo:
+                self.datos_por_grupo[g] = []
 
         def _grupo_tiene_match(item) -> bool:
             _, registros = item
@@ -867,7 +967,7 @@ class AsistenciasContainer(ft.Container):
             grupos,
             key=lambda item: (
                 0 if _grupo_tiene_match(item) else 1,
-                -self._extraer_fecha_primer_registro(item[1]).toordinal(),
+                -self._grupo_date_for_sort(item[0], item[1]).toordinal(),
             ),
         )
 
@@ -925,9 +1025,9 @@ class AsistenciasContainer(ft.Container):
             tabla = ft.DataTable(
                 columns=cols,
                 rows=[],
-                column_spacing=12,
-                data_row_max_height=50,
-                heading_row_height=40,
+                column_spacing=self._TABLE_COL_SPACING,
+                data_row_max_height=44,
+                heading_row_height=34,
             )
             self._tablas_por_grupo[grupo] = tabla
 
@@ -953,7 +1053,7 @@ class AsistenciasContainer(ft.Container):
             self._vcols_by_group[grupo] = vertical_scroll_column
 
             inner_w_container = ft.Container(
-                content=vertical_scroll_column, width=self._panel_scroll_w, alignment=ft.alignment.top_left
+                content=vertical_scroll_column, width=self._get_table_width(), alignment=ft.alignment.top_left
             )
 
             horizontal_row = ft.Row(
@@ -1487,6 +1587,18 @@ class AsistenciasContainer(ft.Container):
         except Exception:
             return date.min
 
+    def _grupo_date_for_sort(self, grupo: str, registros: list) -> date:
+        if registros:
+            return self._extraer_fecha_primer_registro(registros)
+        try:
+            label = str(grupo or "")
+            if "GRUPO:" in label:
+                label = label.split("GRUPO:", 1)[-1].strip()
+            d = self._parse_fecha_any(label)
+            return d if d else date.min
+        except Exception:
+            return date.min
+
     # alias real llamado por AsistenciasColumnBuilder
     def _activar_edicion(self, numero_nomina, fecha_any):
         numero_nomina = int(numero_nomina)
@@ -1514,18 +1626,26 @@ class AsistenciasContainer(ft.Container):
             self._normalize_row_for_ui(r)
 
         self.datos_por_grupo = self._agrupar_por_grupo_importacion(datos)
+        for g in self._manual_groups:
+            if g not in self.datos_por_grupo:
+                self.datos_por_grupo[g] = []
+
+        grupos_ordenados = sorted(
+            list(self.datos_por_grupo.items()),
+            key=lambda item: -self._grupo_date_for_sort(item[0], item[1]).toordinal(),
+        )
 
         paneles = []
-        for grupo, _registros in self.datos_por_grupo.items():
+        for grupo, _registros in grupos_ordenados:
             self.grupos_expandido.setdefault(grupo, False)
 
             cols = self.crear_columnas(grupo)
             tabla = ft.DataTable(
                 columns=cols,
                 rows=[],
-                column_spacing=12,
-                data_row_max_height=50,
-                heading_row_height=40,
+                column_spacing=self._TABLE_COL_SPACING,
+                data_row_max_height=44,
+                heading_row_height=34,
             )
             self._tablas_por_grupo[grupo] = tabla
 
@@ -1551,7 +1671,7 @@ class AsistenciasContainer(ft.Container):
             self._vcols_by_group[grupo] = vertical_scroll_column
 
             inner_w_container = ft.Container(
-                content=vertical_scroll_column, width=self._panel_scroll_w, alignment=ft.alignment.top_left
+                content=vertical_scroll_column, width=self._get_table_width(), alignment=ft.alignment.top_left
             )
 
             horizontal_row = ft.Row(
@@ -1577,12 +1697,7 @@ class AsistenciasContainer(ft.Container):
 
         epl = ft.ExpansionPanelList(expand=True, controls=paneles)
 
-        self._root_column.controls = [
-            self._title_label,
-            self._import_export_row,
-            self._toolbar_row,
-            epl,
-        ]
+        self._root_column.controls = [self._top_row, epl]
         self._update_panels_viewport_sizes()
         self._safe_update()
 
@@ -1600,6 +1715,26 @@ class AsistenciasContainer(ft.Container):
                 return
 
             prev_blur = getattr(numero_tf, "on_blur", None)
+            prev_change = getattr(numero_tf, "on_change", None)
+            last_val = {"v": None}
+
+            def _sync_nombre(value: str):
+                try:
+                    val = str(value or "").strip()
+                    if val == last_val["v"]:
+                        return
+                    last_val["v"] = val
+                    if val.isdigit():
+                        nombre = (resolver_nombre(int(val)) or "").strip()
+                        registro["nombre_completo"] = nombre
+                        nombre_txt.value = nombre if nombre else "?"
+                    else:
+                        registro["nombre_completo"] = ""
+                        nombre_txt.value = "?"
+                except Exception:
+                    registro["nombre_completo"] = ""
+                    nombre_txt.value = "?"
+                self._safe_update()
 
             def _on_blur_compuesto(e):
                 try:
@@ -1607,23 +1742,18 @@ class AsistenciasContainer(ft.Container):
                         prev_blur(e)
                 except Exception:
                     pass
+                _sync_nombre(numero_tf.value)
 
+            def _on_change_compuesto(e):
                 try:
-                    val = str(numero_tf.value or "").strip()
-                    if val.isdigit():
-                        nombre = (resolver_nombre(int(val)) or "").strip()
-                        registro["nombre_completo"] = nombre
-                        nombre_txt.value = nombre if nombre else "—"
-                    else:
-                        registro["nombre_completo"] = ""
-                        nombre_txt.value = "—"
+                    if callable(prev_change):
+                        prev_change(e)
                 except Exception:
-                    registro["nombre_completo"] = ""
-                    nombre_txt.value = "—"
-
-                self._safe_update()
+                    pass
+                _sync_nombre(e.control.value)
 
             numero_tf.on_blur = _on_blur_compuesto
+            numero_tf.on_change = _on_change_compuesto
         except Exception:
             pass
 
@@ -1712,14 +1842,24 @@ class AsistenciasContainer(ft.Container):
             self._fix_row_cells(f, n_cols)
 
         tabla.rows = filas
+        # agrega espacio extra al final para que la nueva fila no quede pegada
+        vcol = self._vcols_by_group.get(grupo)
+        if vcol is not None:
+            if hay_fila_nueva:
+                vcol.controls = [tabla, ft.Container(height=95)]
+            else:
+                vcol.controls = [tabla, ft.Container(height=70)]
         self._safe_update()
 
         # Auto-scroll si hay fila nueva
         if hay_fila_nueva:
-            vcol = self._vcols_by_group.get(grupo)
             try:
                 if vcol is not None:
-                    vcol.scroll_to(offset=10**9, duration=160)
+                    self._safe_update()
+                    vcol.scroll_to(offset=10**9, duration=260)
+                    self._safe_update()
+                    # doble intento para asegurar que llegue al final tras el render
+                    vcol.scroll_to(offset=10**9, duration=260)
                     self._safe_update()
             except Exception:
                 pass
