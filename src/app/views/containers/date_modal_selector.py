@@ -1,28 +1,76 @@
-import flet as ft
-import calendar
-from datetime import datetime, date
-from app.core.app_state import AppState
-from app.models.assistance_model import AssistanceModel  # para sincronizar estados
+# app/views/containers/date_modal_selector.py
+from __future__ import annotations
 
-_cal = calendar.Calendar()
-_date_class = ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"]
-_month_class = {
+import calendar
+from dataclasses import dataclass
+from datetime import date, datetime
+from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Tuple
+
+import flet as ft
+
+from app.core.app_state import AppState
+from app.models.fechas_modal_model import FechasModalModel, CalendarState
+
+
+# -------------------------
+# Config estático calendario
+# -------------------------
+_CAL = calendar.Calendar()
+_WEEK_LABELS = ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"]
+_MONTH_LABELS = {
     1: "January", 2: "February", 3: "March", 4: "April", 5: "May", 6: "June",
     7: "July", 8: "August", 9: "September", 10: "October", 11: "November", 12: "December"
 }
 
 
+@dataclass(frozen=True)
+class DateModalSyncOptions:
+    """
+    Opciones de sincronización para el modal.
+
+    - numero_nomina:
+        Si lo pasas, el calendario se calcula SOLO con asistencias/pagos de ese empleado.
+        Si None, se calcula de forma global.
+
+    - bloquear_pagados:
+        Si True, bloquea fechas cubiertas por rangos ya pagados.
+        (Regla de inmutabilidad real)
+
+    - incluir_bloqueo_admin_pagado:
+        Si True, incluye bloqueo administrativo proveniente de `fecha_grupos_pagados` (si lo usas).
+    """
+    numero_nomina: Optional[int] = None
+    bloquear_pagados: bool = True
+    incluir_bloqueo_admin_pagado: bool = True
+
+
 class DateModalSelector:
     """
-    Selector de fechas para pagos.
-    - Muestra días con asistencias completas (verde claro) e incompletas (rojo).
-    - Bloquea la selección en días incompletos o días con grupo PAGADO.
-    - Selección individual o autorango (sin atravesar inválidas).
+    Selector de fechas (modal) para el área de pagos.
+
+    ✅ Dependencia ÚNICA de datos: FechasModalModel.build_calendar_state()
+       (el modelo es quien decide: disponibles, bloqueadas, completo/incompleto)
+
+    Reglas (alineadas a tu lógica final)
+    -----------------------------------
+    - Una fecha ES seleccionable si:
+        • está en fechas_disponibles (=> tiene asistencias existentes)
+        • NO está bloqueada (pagados o bloqueo admin)
+        • su estado de asistencias NO es "incompleto"
+    - NO se bloquea una fecha solo por "haber sido usada".
+      Si aparece una nueva asistencia en una fecha ya usada, puede volver a seleccionarse,
+      siempre que el modelo la considere disponible.
+
+    Flujo típico
+    ------------
+    selector = DateModalSelector(on_dates_confirmed=cb)
+    selector.sync_mes()   # trae estado del mes actual desde FechasModalModel
+    selector.abrir_dialogo()
     """
 
     def __init__(
         self,
-        on_dates_confirmed,
+        on_dates_confirmed: Callable[[List[date]], None],
         *,
         cell_size: int = 40,
         dialog_width: int = 480,
@@ -31,96 +79,136 @@ class DateModalSelector:
     ):
         self.page = AppState().page
         self.on_dates_confirmed = on_dates_confirmed
-        self.dialog = ft.AlertDialog(modal=True)
 
         self.cell_size = int(cell_size)
         self.dialog_width = int(dialog_width)
         self.dialog_height = int(dialog_height)
         self.auto_range = bool(auto_range)
 
-        hoy = datetime.now()
-        self.year = hoy.year
-        self.month = hoy.month
+        now = datetime.now()
+        self.year = now.year
+        self.month = now.month
 
-        self.fechas_bloqueadas: set[date] = set()     # solo PAGADOS
-        self.fechas_disponibles: set[date] = set()    # clicables
-        self.asistencias_estado: dict[date, str] = {} # {date: "completo"/"incompleto"}
+        # Estado de selección
+        self.seleccionadas: Set[date] = set()
+        self._anchor: Optional[date] = None
 
-        self.seleccionadas: set[date] = set()
-        self._anchor: date | None = None
+        # Estado calculado por modelo
+        self.fechas_disponibles: Set[date] = set()
+        self.fechas_bloqueadas: Set[date] = set()
+        self.asistencias_estado: Dict[date, str] = {}  # date -> "completo"/"incompleto"/...
 
-        # modelo (opcional para refrescar estados)
-        self.assistance_model = AssistanceModel()
+        # Debug opcional para inspección (si algo no pinta como esperas)
+        self.debug: Dict[str, Any] = {}
 
-        # modal centrado propio
+        # Modelo (única fuente)
+        self.fechas_model = FechasModalModel()
+
+        # Dialogs
+        self.dialog = ft.AlertDialog(modal=True)
         self._center_alert = ft.AlertDialog(modal=True)
 
-    # ------------------ API pública ------------------
+        # Últimas opciones de sync (para reusar al cambiar mes)
+        self._last_sync_opts = DateModalSyncOptions()
 
-    def sincronizar_asistencias(self, fi: date = None, ff: date = None, numero_nomina: int = None):
-        estados = self.assistance_model.get_fechas_estado_completo_y_incompleto(fi, ff, numero_nomina)
-        self.set_asistencias(estados)
+    # ------------------------------------------------------------------
+    # API pública
+    # ------------------------------------------------------------------
 
-    def set_fechas_bloqueadas(self, fechas):
-        self.fechas_bloqueadas = set(self._normalize_dates(fechas))
-        self._sanitize_selection()
-
-    def set_fechas_disponibles(self, fechas):
-        self.fechas_disponibles = set(self._normalize_dates(fechas))
-        self._sanitize_selection()
-
-    def set_asistencias(self, asistencias: dict):
-        # dict => {date/str: estado}
-        self.asistencias_estado = {
-            self._normalize_dates([k])[0]: (v or "").lower() for k, v in asistencias.items()
-        }
-
-    def reset(self):
+    def reset(self) -> None:
         self.seleccionadas.clear()
         self._anchor = None
 
-    def abrir_dialogo(self, *, reset_selection: bool = True):
+    def abrir_dialogo(self, *, reset_selection: bool = True) -> None:
         if reset_selection:
             self.reset()
 
         if self.dialog not in self.page.overlay:
             self.page.overlay.append(self.dialog)
+
+        # por default, asegúrate de tener estado del mes actual
+        if not self.fechas_disponibles and not self.asistencias_estado and not self.fechas_bloqueadas:
+            self.sync_mes(self._last_sync_opts)
+
         self._reconstruir()
         self.dialog.open = True
         self.page.update()
 
-    def cerrar_dialogo(self):
+    def cerrar_dialogo(self) -> None:
         self.dialog.open = False
         if self.page:
             self.page.update()
 
-    # ------------------ UI ------------------
+    # ------------------------------------------------------------------
+    # Sync (dependiente 100% de FechasModalModel)
+    # ------------------------------------------------------------------
 
-    def _reconstruir(self):
+    def sync_mes(self, opts: Optional[DateModalSyncOptions] = None) -> None:
+        """
+        Sincroniza el mes actual desde FechasModalModel.
+
+        Esto llena:
+        - fechas_disponibles
+        - fechas_bloqueadas
+        - asistencias_estado
+        """
+        if opts is None:
+            opts = self._last_sync_opts
+        else:
+            self._last_sync_opts = opts
+
+        try:
+            cal_state: CalendarState = self.fechas_model.build_calendar_state(
+                self.year,
+                self.month,
+                numero_nomina=opts.numero_nomina,
+                bloquear_pagados=opts.bloquear_pagados,
+                incluir_bloqueo_admin_pagado=opts.incluir_bloqueo_admin_pagado,
+            )
+
+            self.fechas_disponibles = set(cal_state.fechas_disponibles or set())
+            self.fechas_bloqueadas = set(cal_state.fechas_bloqueadas or set())
+            self.asistencias_estado = dict(cal_state.asistencias_estado or {})
+            self.debug = dict(cal_state.debug or {})
+
+        except Exception as ex:
+            # Fallback: sin bloqueos y sin asistencias (no habrá selección)
+            self.fechas_disponibles = set()
+            self.fechas_bloqueadas = set()
+            self.asistencias_estado = {}
+            self.debug = {"error": str(ex)}
+
+        self._sanitize_selection()
+
+    # ------------------------------------------------------------------
+    # UI builder
+    # ------------------------------------------------------------------
+
+    def _reconstruir(self) -> None:
         encabezado = ft.Row(
             [
                 ft.IconButton("chevron_left", on_click=lambda e: self._cambiar_mes(-1)),
-                ft.Text(f"{_month_class[self.month]} {self.year}", expand=True, text_align="center"),
+                ft.Text(f"{_MONTH_LABELS[self.month]} {self.year}", expand=True, text_align="center"),
                 ft.IconButton("chevron_right", on_click=lambda e: self._cambiar_mes(1)),
             ],
             alignment="center",
         )
 
         semana = ft.Row(
-            [ft.Text(d, width=self.cell_size, text_align="center") for d in _date_class],
+            [ft.Text(d, width=self.cell_size, text_align="center") for d in _WEEK_LABELS],
             alignment="center",
         )
 
         grid = ft.Column([encabezado, semana], expand=True, spacing=8)
 
-        for semana_dias in _cal.monthdayscalendar(self.year, self.month):
-            fila = ft.Row(alignment="center", spacing=6)
-            for dia in semana_dias:
-                if dia == 0:
-                    fila.controls.append(ft.Container(width=self.cell_size, height=self.cell_size))
+        for week in _CAL.monthdayscalendar(self.year, self.month):
+            row = ft.Row(alignment="center", spacing=6)
+            for day in week:
+                if day == 0:
+                    row.controls.append(ft.Container(width=self.cell_size, height=self.cell_size))
                     continue
 
-                f_actual = date(self.year, self.month, dia)
+                f_actual = date(self.year, self.month, day)
 
                 estado = (self.asistencias_estado.get(f_actual) or "").lower()
                 is_disponible = f_actual in self.fechas_disponibles
@@ -129,9 +217,9 @@ class DateModalSelector:
                 is_completa = estado == "completo"
                 is_selected = f_actual in self.seleccionadas
 
-                clickable = is_disponible and not is_bloqueada and not is_incompleta
+                clickable = is_disponible and (not is_bloqueada) and (not is_incompleta)
 
-                # Colores / prioridad visual
+                # prioridad visual
                 if is_selected:
                     bgcolor = ft.colors.GREEN
                     text_color = ft.colors.WHITE
@@ -151,18 +239,20 @@ class DateModalSelector:
                     bgcolor = ft.colors.GREY_100
                     text_color = ft.colors.BLACK38
 
-                box = ft.Container(
-                    width=self.cell_size,
-                    height=self.cell_size,
-                    bgcolor=bgcolor,
-                    border_radius=8,
-                    alignment=ft.alignment.center,
-                    content=ft.Text(str(dia), color=text_color, size=13),
-                    on_click=(lambda e, f=f_actual: self._toggle_fecha(f)) if clickable
-                             else (lambda e, f=f_actual: self._alerta_invalida(f)),
+                row.controls.append(
+                    ft.Container(
+                        width=self.cell_size,
+                        height=self.cell_size,
+                        bgcolor=bgcolor,
+                        border_radius=8,
+                        alignment=ft.alignment.center,
+                        content=ft.Text(str(day), color=text_color, size=13),
+                        on_click=(lambda e, f=f_actual: self._toggle_fecha(f)) if clickable
+                        else (lambda e, f=f_actual: self._alerta_invalida(f)),
+                    )
                 )
-                fila.controls.append(box)
-            grid.controls.append(fila)
+
+            grid.controls.append(row)
 
         leyenda = ft.Row(
             [
@@ -173,7 +263,7 @@ class DateModalSelector:
                 ft.Container(width=12, height=12, bgcolor=ft.colors.RED_400, border_radius=3),
                 ft.Text("Asistencia incompleta", size=11),
                 ft.Container(width=12, height=12, bgcolor=ft.colors.GREY_300, border_radius=3),
-                ft.Text("Bloqueada", size=11),
+                ft.Text("Bloqueada (pagado)", size=11),
             ],
             spacing=10,
         )
@@ -196,68 +286,20 @@ class DateModalSelector:
             alignment=ft.alignment.center,
         )
 
-    # ------------------ Interacción ------------------
+    # ------------------------------------------------------------------
+    # Interacción
+    # ------------------------------------------------------------------
 
-    def _show_center_alert(self, title: str, message: str, *, kind: str = "info"):
-        """Cuadro centrado en pantalla (reemplaza mensajes laterales)."""
-        icon = ft.Icon(ft.icons.ERROR_OUTLINE if kind == "error" else ft.icons.INFO_OUTLINE, size=26)
-        content = ft.Container(
-            width=520,
-            bgcolor=ft.colors.SURFACE,
-            padding=20,
-            border_radius=16,
-            content=ft.Column(
-                [
-                    ft.Row([icon, ft.Text(title or "Aviso", weight=ft.FontWeight.BOLD, size=16)], spacing=10),
-                    ft.Text(message or ""),
-                    ft.Row(
-                        [ft.ElevatedButton("Cerrar", on_click=lambda e: self._close_center_alert())],
-                        alignment="end",
-                    ),
-                ],
-                spacing=14,
-                tight=True,
-            ),
-        )
-        self._center_alert.content = content
-        if self._center_alert not in self.page.overlay:
-            self.page.overlay.append(self._center_alert)
-        self._center_alert.open = True
-        self.page.update()
-
-    def _close_center_alert(self):
-        self._center_alert.open = False
-        if self.page:
-            self.page.update()
-
-    def _alerta_invalida(self, f: date):
-        estado = (self.asistencias_estado.get(f) or "").lower()
-        if estado == "incompleto":
-            self._show_center_alert(
-                "Asistencia incompleta",
-                f"No puedes seleccionar el día {f.strftime('%d/%m/%Y')} porque su asistencia está INCOMPLETA.",
-                kind="error",
-            )
-        elif f in self.fechas_bloqueadas:
-            self._show_center_alert(
-                "Fecha bloqueada",
-                f"El día {f.strftime('%d/%m/%Y')} pertenece a un grupo PAGADO y no puede seleccionarse.",
-                kind="info",
-            )
-        else:
-            self._show_center_alert(
-                "No disponible",
-                f"El día {f.strftime('%d/%m/%Y')} no está disponible para selección.",
-                kind="info",
-            )
-
-    def _on_cancel(self):
+    def _on_cancel(self) -> None:
         self.reset()
         self.cerrar_dialogo()
 
-    def _toggle_fecha(self, f: date):
-        # Seguridad
-        if (self.asistencias_estado.get(f) or "").lower() == "incompleto" or f in self.fechas_bloqueadas:
+    def _toggle_fecha(self, f: date) -> None:
+        # hard guards, definidos por el modelo
+        if (self.asistencias_estado.get(f) or "").lower() == "incompleto":
+            self._alerta_invalida(f)
+            return
+        if f in self.fechas_bloqueadas:
             self._alerta_invalida(f)
             return
         if f not in self.fechas_disponibles:
@@ -274,11 +316,16 @@ class DateModalSelector:
                 self.seleccionadas.add(f)
                 self._anchor = f
         else:
-            f1, f2 = (self._anchor, f) if self._anchor < f else (f, self._anchor)
+            a = self._anchor
+            f1, f2 = (a, f) if a < f else (f, a)
             rango = list(self._daterange(f1, f2))
 
-            # Si hay incompletas o bloqueadas, cancelar y soltar anchor para evitar “movimientos raros”
-            invalidas = [d for d in rango if ((self.asistencias_estado.get(d) or "").lower() == "incompleto") or (d in self.fechas_bloqueadas)]
+            invalidas = [
+                d for d in rango
+                if (d in self.fechas_bloqueadas)
+                or ((self.asistencias_estado.get(d) or "").lower() == "incompleto")
+                or (d not in self.fechas_disponibles)
+            ]
             if invalidas:
                 fechas_txt = ", ".join(d.strftime("%d/%m/%Y") for d in invalidas)
                 self._show_center_alert(
@@ -288,36 +335,37 @@ class DateModalSelector:
                 )
                 self._anchor = None
                 self._reconstruir()
-                if self.page:
-                    self.page.update()
+                self.page.update()
                 return
 
-            # Aplicar solo válidas dentro del rango
-            rango_validas = [
-                d for d in rango
-                if d in self.fechas_disponibles and d not in self.fechas_bloqueadas
-                and (self.asistencias_estado.get(d) or "").lower() != "incompleto"
-            ]
-            self.seleccionadas.update(rango_validas)
-            self._anchor = f  # nuevo extremo
+            self.seleccionadas.update(rango)
+            self._anchor = f
 
         self._reconstruir()
-        if self.page:
-            self.page.update()
+        self.page.update()
 
-    def _guardar_fechas(self):
+    def _guardar_fechas(self) -> None:
         if not self.seleccionadas:
             self._show_center_alert("Sin selección", "Selecciona al menos una fecha disponible.", kind="info")
             return
 
         fechas = sorted(list(self.seleccionadas))
-        incompletas = [f for f in fechas if (self.asistencias_estado.get(f) or "").lower() == "incompleto"]
+        incompletas = [d for d in fechas if (self.asistencias_estado.get(d) or "").lower() == "incompleto"]
+        bloqueadas = [d for d in fechas if d in self.fechas_bloqueadas]
+        no_disponibles = [d for d in fechas if d not in self.fechas_disponibles]
 
-        if incompletas:
-            fechas_txt = ", ".join(d.strftime("%d/%m/%Y") for d in incompletas)
+        if incompletas or bloqueadas or no_disponibles:
+            parts = []
+            if incompletas:
+                parts.append("INCOMPLETAS: " + ", ".join(d.strftime("%d/%m/%Y") for d in incompletas))
+            if bloqueadas:
+                parts.append("BLOQUEADAS (pagado): " + ", ".join(d.strftime("%d/%m/%Y") for d in bloqueadas))
+            if no_disponibles:
+                parts.append("NO DISPONIBLES: " + ", ".join(d.strftime("%d/%m/%Y") for d in no_disponibles))
+
             self._show_center_alert(
-                "Asistencias incompletas",
-                f"No puedes continuar. Corrige primero las asistencias INCOMPLETAS: {fechas_txt}",
+                "Selección inválida",
+                "No puedes continuar. Corrige primero:\n\n" + "\n".join(parts),
                 kind="error",
             )
             return
@@ -328,7 +376,7 @@ class DateModalSelector:
             self.reset()
             self.cerrar_dialogo()
 
-    def _cambiar_mes(self, delta: int):
+    def _cambiar_mes(self, delta: int) -> None:
         self.month += int(delta)
         if self.month > 12:
             self.month = 1
@@ -336,38 +384,79 @@ class DateModalSelector:
         elif self.month < 1:
             self.month = 12
             self.year -= 1
-        self._sanitize_selection()
+
+        # ✅ clave: al cambiar mes, vuelve a sincronizar desde el modelo
+        self.sync_mes(self._last_sync_opts)
+
         self._reconstruir()
-        if self.page:
-            self.page.update()
+        self.page.update()
 
-    # ------------------ Utils ------------------
+    # ------------------------------------------------------------------
+    # Alertas centradas
+    # ------------------------------------------------------------------
 
-    @staticmethod
-    def _normalize_dates(items):
-        out = []
-        if not items:
-            return out
-        for x in items:
-            if isinstance(x, date):
-                out.append(x)
-            elif isinstance(x, str):
-                try:
-                    out.append(datetime.strptime(x, "%Y-%m-%d").date())
-                except Exception:
-                    continue
-        return out
+    def _show_center_alert(self, title: str, message: str, *, kind: str = "info") -> None:
+        icon = ft.Icon(ft.icons.ERROR_OUTLINE if kind == "error" else ft.icons.INFO_OUTLINE, size=26)
+        content = ft.Container(
+            width=520,
+            bgcolor=ft.colors.SURFACE,
+            padding=20,
+            border_radius=16,
+            content=ft.Column(
+                [
+                    ft.Row([icon, ft.Text(title or "Aviso", weight=ft.FontWeight.BOLD, size=16)], spacing=10),
+                    ft.Text(message or ""),
+                    ft.Row([ft.ElevatedButton("Cerrar", on_click=lambda e: self._close_center_alert())], alignment="end"),
+                ],
+                spacing=14,
+                tight=True,
+            ),
+        )
+        self._center_alert.content = content
+        if self._center_alert not in self.page.overlay:
+            self.page.overlay.append(self._center_alert)
+        self._center_alert.open = True
+        self.page.update()
 
-    @staticmethod
-    def _daterange(d1: date, d2: date):
-        cur = d1
-        while cur <= d2:
-            yield cur
-            cur = date.fromordinal(cur.toordinal() + 1)
+    def _close_center_alert(self) -> None:
+        self._center_alert.open = False
+        self.page.update()
 
-    def _sanitize_selection(self):
+    def _alerta_invalida(self, f: date) -> None:
+        estado = (self.asistencias_estado.get(f) or "").lower()
+        if estado == "incompleto":
+            self._show_center_alert(
+                "Asistencia incompleta",
+                f"No puedes seleccionar el día {f.strftime('%d/%m/%Y')} porque su asistencia está INCOMPLETA.",
+                kind="error",
+            )
+        elif f in self.fechas_bloqueadas:
+            self._show_center_alert(
+                "Fecha bloqueada",
+                f"El día {f.strftime('%d/%m/%Y')} pertenece a un rango PAGADO y no puede seleccionarse.",
+                kind="info",
+            )
+        elif f not in self.fechas_disponibles:
+            self._show_center_alert(
+                "No disponible",
+                f"El día {f.strftime('%d/%m/%Y')} no está disponible para selección (no hay asistencias).",
+                kind="info",
+            )
+        else:
+            self._show_center_alert(
+                "No disponible",
+                f"El día {f.strftime('%d/%m/%Y')} no está disponible para selección.",
+                kind="info",
+            )
+
+    # ------------------------------------------------------------------
+    # Utils
+    # ------------------------------------------------------------------
+
+    def _sanitize_selection(self) -> None:
         if not self.seleccionadas:
             return
+
         validas = {
             d for d in self.seleccionadas
             if (
@@ -379,151 +468,12 @@ class DateModalSelector:
         if validas != self.seleccionadas:
             self.seleccionadas = validas
 
-import flet as ft
-import calendar
-from datetime import datetime
-from app.core.app_state import AppState
-
-cal = calendar.Calendar()
-date_class = ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"]
-month_class = {
-    1: "January", 2: "February", 3: "March", 4: "April", 5: "May", 6: "June",
-    7: "July", 8: "August", 9: "September", 10: "October", 11: "November", 12: "December"
-}
-
-
-class Settings:
-    year = datetime.now().year
-    month = datetime.now().month
+        if self._anchor and self._anchor not in self.seleccionadas:
+            self._anchor = None
 
     @staticmethod
-    def get_year(): return Settings.year
-    @staticmethod
-    def get_month(): return Settings.month
-
-    @staticmethod
-    def get_date(delta: int):
-        if delta == 1:
-            if Settings.month + 1 > 12:
-                Settings.month = 1
-                Settings.year += 1
-            else:
-                Settings.month += 1
-        elif delta == -1:
-            if Settings.month - 1 < 1:
-                Settings.month = 12
-                Settings.year -= 1
-            else:
-                Settings.month -= 1
-
-
-class DateBox(ft.Container):
-    def __init__(self, day, date=None, grid_ref=None, on_select=None):
-        super().__init__(
-            width=30,
-            height=30,
-            alignment=ft.alignment.center,
-            border_radius=5,
-            bgcolor=None,
-            content=ft.Text(str(day), text_align="center"),
-            on_click=self._select
-        )
-        self.date = date
-        self.grid_ref = grid_ref
-        self.on_select = on_select
-
-    def _select(self, e):
-        for row in self.grid_ref.controls[2:]:
-            for cell in row.controls:
-                cell.bgcolor = None
-                cell.border = None
-        self.bgcolor = "#20303e"
-        self.border = ft.border.all(1, "#4fadf9")
-        if self.on_select:
-            formatted = datetime.strptime(self.date, "%B %d, %Y").strftime("%Y-%m-%d")
-            self.on_select(formatted)
-        self.grid_ref.update()
-
-
-class DateRangePicker(ft.Container):
-    def __init__(self, text_inicio="Inicio", text_fin="Fin", on_range_selected=None, square_style=False):
-        super().__init__(alignment=ft.alignment.center, padding=10)
-
-        self.page = AppState().page
-        self.on_range_selected = on_range_selected
-        self.fecha_inicio = None
-        self.fecha_fin = None
-        self.tipo_activo = None
-        self.square_style = square_style
-
-        self.dialog = ft.AlertDialog(modal=True, content=ft.Container(), actions=[])
-
-        self.inicio_btn = ft.TextButton(text_inicio, on_click=lambda _: self._abrir_modal("inicio"))
-        self.fin_btn = ft.TextButton(text_fin, on_click=lambda _: self._abrir_modal("fin"))
-        self.mensaje = ft.Text("Selecciona una fecha", size=12)
-
-        self.content = ft.Column([
-            ft.Row([self.inicio_btn, self.fin_btn], alignment="center", spacing=10),
-            self.mensaje
-        ])
-
-    def _abrir_modal(self, tipo):
-        self.tipo_activo = tipo
-        self._actualizar_contenido_dialogo()
-        if self.dialog not in self.page.overlay:
-            self.page.overlay.append(self.dialog)
-        self.dialog.open = True
-        self.page.update()
-
-    def _actualizar_contenido_dialogo(self):
-        year = Settings.get_year()
-        month = Settings.get_month()
-        tipo = self.tipo_activo
-
-        def seleccionar_fecha(fecha_mysql):
-            if tipo == "inicio":
-                self.fecha_inicio = fecha_mysql
-                self.inicio_btn.text = f"Inicio: {fecha_mysql}"
-            else:
-                self.fecha_fin = fecha_mysql
-                self.fin_btn.text = f"Fin: {fecha_mysql}"
-
-            if self.on_range_selected and self.fecha_inicio and self.fecha_fin:
-                self.on_range_selected(self.fecha_inicio, self.fecha_fin)
-
-            self.dialog.open = False
-            self.page.update()
-
-        encabezado = ft.Row([
-            ft.IconButton("chevron_left", on_click=lambda e: self._cambiar_mes(-1)),
-            ft.Text(f"{month_class[month]} {year}", expand=True, text_align="center"),
-            ft.IconButton("chevron_right", on_click=lambda e: self._cambiar_mes(1))
-        ], alignment="center")
-
-        semana = ft.Row([ft.Text(day, width=30, text_align="center") for day in date_class], alignment="center")
-        grid = ft.Column([encabezado, semana], expand=True)
-
-        for semana_dias in cal.monthdayscalendar(year, month):
-            fila = ft.Row(alignment="center")
-            for dia in semana_dias:
-                if dia == 0:
-                    fila.controls.append(ft.Container(width=30, height=30))
-                else:
-                    fecha = f"{month_class[month]} {dia}, {year}"
-                    fila.controls.append(DateBox(dia, fecha, grid, on_select=seleccionar_fecha))
-            grid.controls.append(fila)
-
-        self.dialog.content = ft.Container(
-            content=grid,
-            padding=20,
-            bgcolor=ft.colors.SURFACE_VARIANT,
-            border_radius=10,
-            alignment=ft.alignment.center,
-            width=360 if self.square_style else None,
-            height=360 if self.square_style else None,
-        )
-
-    def _cambiar_mes(self, delta):
-        Settings.get_date(delta)
-        self._actualizar_contenido_dialogo()
-        self.page.update()
+    def _daterange(d1: date, d2: date):
+        cur = d1
+        while cur <= d2:
+            yield cur
+            cur = date.fromordinal(cur.toordinal() + 1)

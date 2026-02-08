@@ -62,16 +62,15 @@ class ModalPrestamos:
         self.observaciones_input: Optional[ft.TextField] = None
         self.lbl_preview = ft.Text("-", weight=ft.FontWeight.BOLD)
         self.resumen_text = ft.Text("")
-        self.boton_guardar: Optional[ft.Control] = None
 
         self._cargar_datos()
 
     # ---------------- API ----------------
     def mostrar(self):
-        if self.page and self.dialog not in self.page.overlay:
-            self.page.overlay.append(self.dialog)
-        self.dialog.open = True
-        self.page.update()
+        if self.page:
+            self.page.dialog = self.dialog
+            self.dialog.open = True
+            self.page.update()
 
     # ------------- Internos --------------
     def _cerrar(self, _=None):
@@ -174,23 +173,12 @@ class ModalPrestamos:
             disabled=not self.puede_editar,
         )
 
-        # Acción guardar (solo si editable)
-        def _chip(label: str, icon, on_tap):
-            return ft.GestureDetector(
-                on_tap=lambda _: on_tap(),
-                content=ft.Container(
-                    padding=10,
-                    border_radius=12,
-                    bgcolor=ft.colors.SURFACE_VARIANT,
-                    content=ft.Row(
-                        [ft.Icon(icon, size=18), ft.Text(label, size=12, weight="bold")],
-                        spacing=6, alignment=ft.MainAxisAlignment.CENTER
-                    )
-                )
-            )
-
-        self.boton_guardar = _chip("Guardar pago", ft.icons.SAVE, lambda: self._guardar()) if self.puede_editar else ft.Container()
+        # Acciones nativas del dialog (hitbox/orden más estables en Flet 0.24)
         boton_cancelar = ft.TextButton("Cancelar", on_click=self._cerrar)
+        if self.puede_editar:
+            boton_guardar = ft.ElevatedButton("Guardar pago", icon=ft.icons.SAVE, on_click=lambda _: self._guardar())
+        else:
+            boton_guardar = ft.ElevatedButton("Guardar pago", icon=ft.icons.SAVE, disabled=True)
 
         # Layout
         self.dialog.content = ft.Container(
@@ -211,13 +199,12 @@ class ModalPrestamos:
                     self.lbl_preview,
                     self.observaciones_input,
                     self._info_resumen(),
-
-                    ft.Row([self.boton_guardar, boton_cancelar],
-                           alignment=ft.MainAxisAlignment.END, spacing=16),
                 ],
                 spacing=14,
             ),
         )
+        self.dialog.actions = [boton_cancelar, boton_guardar]
+        self.dialog.actions_alignment = ft.MainAxisAlignment.END
 
     def _info_resumen(self) -> ft.Text:
         self.resumen_text = ft.Text("", color=ft.colors.BLUE_GREY)
@@ -290,18 +277,21 @@ class ModalPrestamos:
         try:
             interes = float((self.interes_input.value or "0").replace(",", "."))
         except Exception:
-            ModalAlert.mostrar_info("Error", "Interés inválido.")
+            self.resumen_text.value = "❌ Interés inválido."
+            self.page.update()
             return
         try:
             monto = float((self.monto_input.value or "0").replace(",", "."))
         except Exception:
-            ModalAlert.mostrar_info("Error", "Monto inválido.")
+            self.resumen_text.value = "❌ Monto inválido."
+            self.page.update()
             return
 
         prev = self._calc_preview(monto=monto, interes_pct=interes)
         saldo_con_interes = prev["saldo_con_interes"]
         if monto <= 0 or monto > saldo_con_interes:
-            ModalAlert.mostrar_info("Error", "Monto fuera de rango.")
+            self.resumen_text.value = "❌ Monto fuera de rango."
+            self.page.update()
             return
 
         obs = (self.observaciones_input.value or "").strip()
@@ -309,7 +299,8 @@ class ModalPrestamos:
         # Asegurar id_pago de nómina para registrar el pago real
         id_pago = self.pago_model.ensure_id_pago_nomina(self.numero_nomina, self.fecha_pago_base)
         if not id_pago:
-            ModalAlert.mostrar_info("Error", "No se pudo crear/obtener el id_pago para registrar el pago.")
+            self.resumen_text.value = "❌ No se pudo crear/obtener el id_pago para registrar el pago."
+            self.page.update()
             return
 
         res = self.pago_model.add_payment(
@@ -325,12 +316,12 @@ class ModalPrestamos:
         )
 
         if res.get("status") == "success":
-            ModalAlert.mostrar_info("Éxito", res.get("message", "Pago aplicado correctamente."))
             self.dialog.open = False
             try:
                 self.on_confirmar(None)
             finally:
                 self.page.update()
+            ModalAlert.mostrar_info("Éxito", res.get("message", "Pago aplicado correctamente."))
         else:
-            ModalAlert.mostrar_info("Error", res.get("message", "No se pudo aplicar el pago."))
+            self.resumen_text.value = f"❌ {res.get('message', 'No se pudo aplicar el pago.')}"
             self.page.update()

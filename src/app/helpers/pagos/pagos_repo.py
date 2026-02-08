@@ -424,6 +424,13 @@ class PagosRepo:
     def crear_grupo_pagado(self, fecha: str, **kwargs) -> Dict[str, Any]:
         pm = self.payment_model
 
+        # Flujo UI "Agregar fecha pagada": crear grupo VACIO sin tocar pagos.
+        if hasattr(pm, "crear_grupo_pagado_vacio"):
+            res = self._try(self._call_maybe_kwargs, pm.crear_grupo_pagado_vacio, fecha, **kwargs)
+            if self._is_success(res):
+                self._after_change("crear_grupo_pagado", fecha=fecha)
+            return res if isinstance(res, dict) else {"status": "error", "message": "Respuesta inválida"}
+
         if hasattr(pm, "crear_grupo_pagado"):
             res = self._try(self._call_maybe_kwargs, pm.crear_grupo_pagado, fecha, crear_vacio=True, **kwargs)
             if self._is_success(res):

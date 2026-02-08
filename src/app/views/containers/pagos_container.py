@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime, date
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 import inspect
 import flet as ft
 
@@ -110,7 +110,7 @@ class PagosContainer(ft.Container):
             row_refresh=self.row_refresh_pend,
             on_data_changed=self._on_data_changed,
             on_pago_confirmado=self._on_pago_confirmado_desde_pendientes,
-            on_pago_eliminado=lambda *_: self._on_data_changed(),
+            on_pago_eliminado=self._on_pago_eliminado_desde_pendientes,
         )
 
         self.confirmados_ui = _safe_new(
@@ -193,9 +193,6 @@ class PagosContainer(ft.Container):
         # --------- Secciones ----------
         self.resumen_pagos = ft.Text(value="", weight=ft.FontWeight.BOLD, size=13)
 
-        # ✅ FIX QUIRÚRGICO (Flet 0.24):
-        # Antes: width=5000 forzaba overflow permanente → Row(scroll=ALWAYS) arriba capturaba gesto como drag
-        # Ahora: sin width forzado; el ancho real lo gobierna el módulo (y el scaffold solo hace scroll si hay overflow real).
         section_pend = ft.Column(
             spacing=6,
             controls=[
@@ -259,6 +256,28 @@ class PagosContainer(ft.Container):
                 except Exception:
                     continue
         return None
+
+    # ---------------- util: int seguro / estado pagado ----------------
+    @staticmethod
+    def _safe_int(v: Any) -> int:
+        try:
+            if v is None:
+                return 0
+            if isinstance(v, bool):
+                return 0
+            return int(str(v).strip() or "0")
+        except Exception:
+            return 0
+
+    @staticmethod
+    def _is_pagado(p: Dict[str, Any]) -> bool:
+        st = (p.get("estado") or p.get("status") or "").strip().lower()
+        return st == "pagado" or st == "confirmado"
+
+    @classmethod
+    def _norm_pid(cls, p: Dict[str, Any]) -> int:
+        # Nueva lógica suele usar id_pago_nomina; mantenemos fallback a id_pago
+        return cls._safe_int(p.get("id_pago_nomina") or p.get("id_pago") or p.get("id"))
 
     # ---------------- util: refresco/caché ----------------
     def _invalidate_caches(self):
@@ -447,13 +466,54 @@ class PagosContainer(ft.Container):
         return []
 
     def _abrir_modal_rango(self):
+        """
+        ✅ Compatibilidad con NUEVA lógica del modal:
+        - Si el DateModalSelector nuevo se alimenta de FechasModalModel internamente,
+          entonces NO debemos llamar set_fechas_bloqueadas/set_asistencias/set_fechas_disponibles.
+        - Si el selector aún es versión vieja, cae al flujo antiguo sin romper.
+        """
         if not getattr(self, "selector_rango", None):
             ModalAlert.mostrar_info("No disponible", "No está cargado el selector de fechas.")
             return
 
         try:
+            selector = self.selector_rango
+
+            # NUEVO: si existe sync/sync_mes => el modal se auto-sincroniza con la nueva lógica
+            # (y opcionalmente respeta filtro de empleado si lo soporta).
+            if hasattr(selector, "sync_mes") or hasattr(selector, "sync") or hasattr(selector, "reload"):
+                # Intentar pasar numero_nomina (si está filtrado) sin asumir firmas rígidas
+                numero_nomina: Optional[int] = None
+                txt = (self.filters_pend.get("id_empleado") or "").strip()
+                if txt.isdigit():
+                    numero_nomina = int(txt)
+
+                # probamos llamadas tolerantes
+                called = False
+                for nm in ("sync_mes", "sync", "reload", "refresh"):
+                    fn = getattr(selector, nm, None)
+                    if callable(fn):
+                        try:
+                            sig = inspect.signature(fn)
+                            kwargs = {}
+                            if "numero_nomina" in sig.parameters and numero_nomina is not None:
+                                kwargs["numero_nomina"] = numero_nomina
+                            if "id_empleado" in sig.parameters and numero_nomina is not None:
+                                kwargs["id_empleado"] = numero_nomina
+                            fn(**kwargs)
+                            called = True
+                            break
+                        except Exception:
+                            continue
+
+                # si no pudimos sincronizar, igual abrimos (el modal podría auto-cargar al abrir)
+                selector.abrir_dialogo(reset_selection=True)
+                return
+
+            # VIEJO (fallback): tu lógica anterior intacta
             bloqueadas_set = set(self._parse_fechas(self._fechas_grupos_pagados()))
-            self.selector_rango.set_fechas_bloqueadas(sorted(bloqueadas_set))
+            if hasattr(selector, "set_fechas_bloqueadas"):
+                selector.set_fechas_bloqueadas(sorted(bloqueadas_set))
 
             fi = self.assistance_model.get_fecha_minima_asistencia()
             ff = self.assistance_model.get_fecha_maxima_asistencia()
@@ -465,7 +525,8 @@ class PagosContainer(ft.Container):
                 fechas_estado = self.assistance_model.get_fechas_estado_completo_y_incompleto(fi, ff) or {}
             else:
                 fechas_estado = self.assistance_model.get_fechas_estado(fi, ff) or {}
-            self.selector_rango.set_asistencias(fechas_estado)
+            if hasattr(selector, "set_asistencias"):
+                selector.set_asistencias(fechas_estado)
 
             disponibles = self.assistance_model.get_fechas_disponibles_para_pago() or []
             disponibles = set(self._parse_fechas(disponibles))
@@ -480,8 +541,9 @@ class PagosContainer(ft.Container):
                 ModalAlert.mostrar_info("Sin fechas", "No hay fechas disponibles para generar nómina.")
                 return
 
-            self.selector_rango.set_fechas_disponibles(disponibles)
-            self.selector_rango.abrir_dialogo(reset_selection=True)
+            if hasattr(selector, "set_fechas_disponibles"):
+                selector.set_fechas_disponibles(disponibles)
+            selector.abrir_dialogo(reset_selection=True)
 
         except Exception as ex:
             ModalAlert.mostrar_info("Error", f"No se pudo abrir el calendario: {str(ex)}")
@@ -513,6 +575,7 @@ class PagosContainer(ft.Container):
         ff_s = ff.strftime("%Y-%m-%d")
 
         try:
+            # Mantengo validación existente (NO negocio nuevo)
             if hasattr(self.assistance_model, "get_fechas_estado"):
                 estados = self.assistance_model.get_fechas_estado(fi, ff)  # type: ignore[arg-type]
                 incompletas = [f for f, st in estados.items() if (st or "").lower() == "incompleto"]
@@ -527,7 +590,22 @@ class PagosContainer(ft.Container):
                     ModalAlert.mostrar_info("Rango inválido para generar nómina", msg)
                     return
 
-            res = self.payment_model.generar_pagos_por_rango(fecha_inicio=fi_s, fecha_fin=ff_s)
+            # ✅ Compatibilidad: si existe un método nuevo por lista, lo intentamos SIN reimplementar lógica.
+            res = None
+            for nm in ("generar_pagos_por_fechas", "generar_pagos_por_lista_fechas", "generar_pagos_por_dias"):
+                fn = getattr(self.payment_model, nm, None)
+                if callable(fn):
+                    try:
+                        sig = inspect.signature(fn)
+                        if len(sig.parameters) >= 1:
+                            res = fn(fechas)
+                            break
+                    except Exception:
+                        res = None
+
+            # Fallback: tu método clásico por rango
+            if res is None:
+                res = self.payment_model.generar_pagos_por_rango(fecha_inicio=fi_s, fecha_fin=ff_s)
 
             try:
                 if hasattr(self.assistance_model, "marcar_asistencias_como_generadas"):
@@ -535,10 +613,10 @@ class PagosContainer(ft.Container):
             except Exception:
                 pass
 
-            if res.get("status") == "success":
-                ModalAlert.mostrar_info("Nómina por rango", res.get("message", "Pagos generados."))
+            if (res or {}).get("status") == "success":
+                ModalAlert.mostrar_info("Nómina", (res or {}).get("message", "Pagos generados."))
             else:
-                ModalAlert.mostrar_info("Nómina por rango", res.get("message", "Ocurrió un problema."))
+                ModalAlert.mostrar_info("Nómina", (res or {}).get("message", "Ocurrió un problema."))
         except Exception as ex:
             ModalAlert.mostrar_info("Error", f"No se pudo generar la nómina: {str(ex)}")
 
@@ -570,16 +648,21 @@ class PagosContainer(ft.Container):
                 ModalAlert.mostrar_info("Ya cerrado", f"El grupo del {fecha} ya fue confirmado previamente.")
                 return
 
-            if hasattr(self.payment_model, "crear_grupo_pagado"):
-                res = self.payment_model.crear_grupo_pagado(fecha)
-            elif hasattr(self.repo, "crear_grupo_pagado"):
+            # IMPORTANTE: "Agregar fecha pagada" NO debe confirmar pendientes.
+            # Usar siempre creación de grupo vacío/manual.
+            if hasattr(self.repo, "crear_grupo_pagado"):
                 res = self.repo.crear_grupo_pagado(fecha)
+            elif hasattr(self.payment_model, "crear_grupo_pagado_vacio"):
+                res = self.payment_model.crear_grupo_pagado_vacio(fecha)
             else:
                 ModalAlert.mostrar_info("Sin soporte", "No se encontró un método válido para confirmar el grupo.")
                 return
 
             if (res or {}).get("status") == "success":
-                ModalAlert.mostrar_info("Confirmación de pagos", res.get("message", f"Pagos del {fecha} confirmados correctamente."))
+                ModalAlert.mostrar_info(
+                    "Confirmación de pagos",
+                    res.get("message", f"Pagos del {fecha} confirmados correctamente."),
+                )
             else:
                 msg = (res or {}).get("message", "Error al confirmar pagos.")
                 ModalAlert.mostrar_info("Error", msg)
@@ -597,13 +680,31 @@ class PagosContainer(ft.Container):
 
     # ---------------- Eventos desde PagosPendientesEditables ----------------
     def _on_pago_confirmado_desde_pendientes(self, pago_ok: Dict[str, Any] | None = None):
+        """
+        ✅ Ajuste mínimo para nueva lógica:
+        - Normaliza id: id_pago_nomina vs id_pago
+        - Si ya está pagado, NO intenta confirmar; solo refresca puntual.
+        - Tras confirmar, reconsulta el pago (si existe repo.obtener_pago)
+        - Refresh mínimo: actualiza confirmados y recarga pendientes para reflejar el cambio inmediato.
+        """
         try:
             self._invalidate_caches()
 
             p = dict(pago_ok or {})
-            pid = int(p.get("id_pago_nomina") or p.get("id_pago") or 0)
+            pid = self._norm_pid(p)
+
             if pid <= 0:
                 print("⚠️ Confirmar pago: id_pago inválido.")
+                return
+
+            # Si ya venía como pagado/confirmado, evitamos re-confirmar (respeta bloqueo).
+            if self._is_pagado(p):
+                # Refresh visual mínimo: asegurar que la tabla se vea consistente
+                self._call(self.pendientes_ui, ["reload", "refresh"], id_empleado=self.filters_pend.get("id_empleado", ""), id_pago=self.filters_pend.get("id_pago", ""))
+                self._call(self.confirmados_ui, ["reload", "refresh"], preserve_expansion=True)
+                self._actualizar_resumen()
+                if self.page:
+                    self.page.update()
                 return
 
             # 1) Confirmar en DB (fuente de verdad)
@@ -618,25 +719,84 @@ class PagosContainer(ft.Container):
                 ModalAlert.mostrar_info("Error al confirmar", msg)
                 return
 
-            # 2) Leer el registro actualizado para UI
+            # 2) Releer el registro actualizado para UI (si existe)
             if hasattr(self.repo, "obtener_pago"):
-                p = self.repo.obtener_pago(pid) or p
+                try:
+                    p = self.repo.obtener_pago(pid) or p
+                except Exception:
+                    pass
 
+            # 3) Reflejar en confirmados (mínimo) + refrescar pendientes (para que desaparezca/actualice)
             if p:
-                fecha = str(p.get("fecha_pago") or "")
+                fecha = str(p.get("fecha_pago") or "")  # confirmados agrupan por fecha
 
                 if fecha:
                     self._call(self.confirmados_ui, ["ensure_group_panel", "ensure_panel", "create_panel"], fecha, expand=True)
 
-                self._call(self.confirmados_ui, ["push_pago_pagado"], pago_row=p, keep_expanded=True)
-                self._call(self.confirmados_ui, ["add_or_update_pagado"], pago=p, keep_expanded=True)
-                self._call(self.confirmados_ui, ["reload"], preserve_expansion=True)
+                # Preferimos métodos incrementales si existen; si no, reload.
+                pushed = False
+                for nm in ("push_pago_pagado", "add_or_update_pagado"):
+                    fn = getattr(self.confirmados_ui, nm, None)
+                    if callable(fn):
+                        try:
+                            if nm == "push_pago_pagado":
+                                fn(pago_row=p, keep_expanded=True)
+                            else:
+                                fn(pago=p, keep_expanded=True)
+                            pushed = True
+                        except Exception:
+                            pass
+
+                # reload confirmados para asegurar totales/expansión consistente
+                self._call(self.confirmados_ui, ["reload", "refresh"], preserve_expansion=True)
 
                 if fecha:
                     self._call(self.confirmados_ui, ["open_group", "expand_group"], fecha)
 
+            # ✅ Refresh mínimo faltante: pendientes (para reflejar pendiente → pagado)
+            self._call(
+                self.pendientes_ui,
+                ["reload", "refresh"],
+                id_empleado=self.filters_pend.get("id_empleado", ""),
+                id_pago=self.filters_pend.get("id_pago", ""),
+            )
+
             self._actualizar_resumen()
             if self.page:
                 self.page.update()
+
         except Exception as ex:
             ModalAlert.mostrar_info("Actualización", f"No se pudo reflejar el pago confirmado en la vista: {ex}")
+
+    def _on_pago_eliminado_desde_pendientes(self, id_pago: int | None = None):
+        """
+        Elimina un pago pendiente desde la tabla de pendientes con confirmación explícita.
+        """
+        try:
+            pid = self._safe_int(id_pago)
+            if pid <= 0:
+                ModalAlert.mostrar_info("Eliminar pago", "ID de pago inválido.")
+                return
+
+            def _confirmar():
+                try:
+                    res = self.repo.eliminar_pago(pid)
+                except Exception as ex:
+                    res = {"status": "error", "message": str(ex)}
+
+                if (res or {}).get("status") != "success":
+                    msg = (res or {}).get("message", "No se pudo eliminar el pago.")
+                    ModalAlert.mostrar_info("Error al eliminar", msg)
+                    return
+
+                self._invalidate_caches()
+                self._recargar_todo(preserve_expansion=True)
+
+            ModalAlert.confirm_async(
+                "Eliminar pago pendiente",
+                f"¿Deseas eliminar el pago #{pid}? Esta acción es permanente.",
+                on_confirm=_confirmar,
+                on_cancel=lambda: None,
+            )
+        except Exception as ex:
+            ModalAlert.mostrar_info("Error", f"No se pudo iniciar la eliminación: {ex}")

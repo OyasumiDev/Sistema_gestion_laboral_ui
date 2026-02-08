@@ -58,9 +58,11 @@ class PagosPagadosExpansibles(ft.UserControl):
         repo: Optional[Any] = None,
         table_builder: Optional[PaymentTableBuilder] = None,
         row_refresh: Optional[PaymentRowRefresh] = None,
+        on_data_changed: Optional[callable] = None,
     ):
         super().__init__()
         self.page = AppState().page
+        self.on_data_changed = on_data_changed
 
         # --------- Modelos / helpers de negocio ----------
         self.payment_model = payment_model or PaymentModel()
@@ -153,6 +155,7 @@ class PagosPagadosExpansibles(ft.UserControl):
         self._sync_panels_with_db_dates(preserve_expansion=preserve_expansion)
         # y luego rellena/ordena cada tabla con los filtros actuales
         self._refill_all_tables(preserve_expansion=preserve_expansion)
+        self._update_ui()
 
     def _sync_panels_with_db_dates(self, *, preserve_expansion: bool):
         # 1) guardar expansiones actuales si procede
@@ -175,17 +178,22 @@ class PagosPagadosExpansibles(ft.UserControl):
         except Exception:
             fechas_db = set()
 
-        # 3) unimos con las fechas que ya están en UI (paneles vacíos incluidos)
+        # 3) elimina paneles stale: ya no existen en DB y tampoco son manuales
+        fechas_actuales = set(self._panel_by_date.keys())
+        stale = sorted(fechas_actuales - (fechas_db | self._manual_panels))
+        for f in stale:
+            self._remove_panel(f)
+
+        # 4) unimos estado final de DB + manuales
         fechas_actuales = set(self._panel_by_date.keys())
         todas = sorted(fechas_db | fechas_actuales | self._manual_panels, reverse=True)
 
-        # 4) crea los paneles que falten, en orden
+        # 5) crea los paneles que falten, en orden
         for f in todas:
             self._ensure_panel_for_date(f, expand=(f in expanded_dates))
 
         # (opcional) quitar paneles que ya no existan en union —no lo hacemos para no perder vacíos manuales
-        if self.page:
-            self.page.update()
+        self._update_ui()
 
 
     def _refill_all_tables(self, *, preserve_expansion: bool = True):
@@ -194,8 +202,7 @@ class PagosPagadosExpansibles(ft.UserControl):
             return
         for fecha in list(self._table_by_date.keys()):
             self._refill_table_for_date(fecha)
-        if self.page:
-            self.page.update()
+        self._update_ui()
 
 
     def _refill_table_for_date(self, fecha: str):
@@ -1024,8 +1031,9 @@ class PagosPagadosExpansibles(ft.UserControl):
             if hasattr(self.repo, "crear_grupo_pagado"):
                 r = self.repo.crear_grupo_pagado(fecha)
                 ok = (r or {}).get("status") == "success"
-            elif hasattr(self.payment_model, "crear_grupo_pagado"):
-                r = self.payment_model.crear_grupo_pagado(fecha)
+            elif hasattr(self.payment_model, "crear_grupo_pagado_vacio"):
+                # Flujo manual: crear grupo vacío, sin confirmar pendientes.
+                r = self.payment_model.crear_grupo_pagado_vacio(fecha)
                 ok = (r or {}).get("status") == "success"
             elif hasattr(self.payment_model, "crear_grupo_por_fecha"):
                 r = self.payment_model.crear_grupo_por_fecha(fecha, estado="pagado")
@@ -1060,10 +1068,11 @@ class PagosPagadosExpansibles(ft.UserControl):
                     self._manual_panels.discard(fecha)
                     # quitar panel y mapas
                     self._remove_panel(fecha)
-                    if self.page:
-                        self.page.update()
-                    # 👇 refresh solicitado
-                    self._refresh_now()
+                    # refresco inmediato de lo que queda visible (sin re-sincronizar fechas)
+                    # para evitar que un caché stale vuelva a montar el grupo recién borrado.
+                    self._refill_all_tables(preserve_expansion=True)
+                    self._update_ui()
+                    self._notify_data_changed()
                 else:
                     ModalAlert.mostrar_info("Error", "No existe método backend para eliminar el grupo por fecha.")
             except Exception as ex:
@@ -1331,6 +1340,12 @@ class PagosPagadosExpansibles(ft.UserControl):
         p = self._panel_by_date.pop(fecha, None)
         if p and p in self.view.controls:
             self.view.controls.remove(p)
+        # Fallback robusto: elimina cualquier panel cuyo header termine en la misma fecha
+        # (protege contra desalineaciones de referencia de objeto en recargas parciales).
+        self.view.controls = [
+            ctrl for ctrl in self.view.controls
+            if str(getattr(getattr(ctrl, "header", None), "controls", [ft.Text("")])[0].value or "").split()[-1] != fecha
+        ]
         self._table_by_date.pop(fecha, None)
         self._total_lbl_by_date.pop(fecha, None)
         # limpiar ids relacionados
@@ -1485,21 +1500,31 @@ class PagosPagadosExpansibles(ft.UserControl):
         confirmaciones, invalidación de cache o cambios de esquema).
         """
         try:
-            # Si se afecta una fecha concreta, garantízala y expándela
-            fecha = payload.get("fecha")
+            fecha = str(payload.get("fecha") or "").strip()
+            kind_l = str(kind or "").strip().lower()
+
+            # Eliminación de grupo: nunca re-asegurar panel, solo quitarlo y refrescar.
+            if kind_l in ("eliminar_grupo", "eliminar_grupo_fallback"):
+                if fecha:
+                    self._manual_panels.discard(fecha)
+                    self._remove_panel(fecha)
+                self.reload(preserve_expansion=True)
+                self._update_ui()
+                return
+
+            # Si se afecta una fecha concreta en eventos no-eliminación, garantízala y expándela.
             if fecha:
-                self.ensure_group_panel(str(fecha), expand=True)
+                self.ensure_group_panel(fecha, expand=True)
 
             # Refresca sin perder expansiones
             self.reload(preserve_expansion=True)
 
             # Opcional: enfocar el grupo afectado
             if fecha:
-                self.open_group(str(fecha))
+                self.open_group(fecha)
 
             # Seguridad: refresco visual
-            if self.page:
-                self.page.update()
+            self._update_ui()
         except Exception:
             # fallback simple
             try:
@@ -1515,6 +1540,36 @@ class PagosPagadosExpansibles(ft.UserControl):
             self.reload(preserve_expansion=True)
             if fecha:
                 self.open_group(fecha)
+            self._update_ui()
+        except Exception:
+            pass
+
+    def _notify_data_changed(self):
+        try:
+            if callable(self.on_data_changed):
+                self.on_data_changed()
+        except Exception:
+            pass
+
+    def _update_ui(self):
+        """
+        Fuerza repaint del subárbol correcto.
+        Importante en Flet: mutar `view.controls` + `page.update()` no siempre repinta
+        este UserControl si no quedó marcado como dirty.
+        """
+        try:
+            if getattr(self.view, "page", None) is not None:
+                self.view.update()
+                return
+        except Exception:
+            pass
+        try:
+            if getattr(self, "page", None) is not None:
+                self.update()
+                return
+        except Exception:
+            pass
+        try:
             if self.page:
                 self.page.update()
         except Exception:

@@ -635,52 +635,35 @@ class PagosPendientesEditables(ft.UserControl):
             ModalAlert.mostrar_info("Error", f"No se pudo abrir Descuentos: {ex}")
 
     def _abrir_modal_prestamos(self, pago_row: Dict[str, Any]) -> None:
-        """
-        Mantiene compat: apertura flexible por si ModalPrestamosNomina cambió en tu proyecto.
-        (No sabemos su firma exacta en este turno, así que conservamos robustez.)
-        """
         try:
-            page = self.page or AppState().page
-            if not page:
+            id_pago = int(pago_row.get("id_pago_nomina") or pago_row.get("id_pago") or 0)
+            numero_nomina = int(pago_row.get("numero_nomina") or 0)
+            estado = str(pago_row.get("estado") or "pendiente").strip().lower() or "pendiente"
+
+            if id_pago <= 0 or numero_nomina <= 0:
+                ModalAlert.mostrar_info("Préstamos", "No se pudo identificar el pago o empleado.")
                 return
 
-            # primer intento: helpers estáticos comunes
-            if self._call_first_callable(ModalPrestamosNomina, ["mostrar", "abrir", "open"], page, pago_row):
-                return
+            payload = {
+                "id_pago": id_pago,
+                "id_pago_nomina": id_pago,
+                "numero_nomina": numero_nomina,
+                "estado": estado,
+            }
 
-            # fallback por signature introspection
-            try:
-                sig = inspect.signature(ModalPrestamosNomina)  # type: ignore[arg-type]
-                params = {p.name for p in sig.parameters.values()}
-            except Exception:
-                params = set()
+            print(f"[PagosPendientesEditables] abrir ModalPrestamosNomina: id_pago={id_pago}, nomina={numero_nomina}")
 
-            kwargs: Dict[str, Any] = {}
-            if "page" in params:
-                kwargs["page"] = page
-            if "pago_data" in params:
-                kwargs["pago_data"] = pago_row
-            elif "pago_row" in params:
-                kwargs["pago_row"] = pago_row
-            elif "pago" in params:
-                kwargs["pago"] = pago_row
-
-            if "loan_model" in params:
-                kwargs["loan_model"] = self.loan_model
-            if "payment_model" in params:
-                kwargs["payment_model"] = self.payment_model
-            if "repo" in params:
-                kwargs["repo"] = self.repo
-
-            modal = ModalPrestamosNomina(**kwargs) if kwargs else ModalPrestamosNomina()  # type: ignore[call-arg]
-            if not self._call_first_callable(modal, ["mostrar", "abrir", "open"], pago_row):
-                page.dialog = modal  # type: ignore[assignment]
+            def _on_ok(_):
+                print(f"[PagosPendientesEditables] on_confirmar ModalPrestamosNomina: id_pago={id_pago}")
                 try:
-                    modal.open = True  # type: ignore[attr-defined]
+                    self._actualizar_fila(id_pago, persist=False)
                 except Exception:
                     pass
-                page.update()
+                # Evita recarga global inmediata al cerrar modal (puede interferir interacción).
+                # La fila ya se refresca arriba y el resto se actualizará en el siguiente ciclo normal.
 
+            ModalPrestamosNomina(pago_data=payload, on_confirmar=_on_ok).mostrar()
+            print("[PagosPendientesEditables] mostrar ModalPrestamosNomina: done")
         except Exception as ex:
             ModalAlert.mostrar_info("Error", f"No se pudo abrir Préstamos: {ex}")
 

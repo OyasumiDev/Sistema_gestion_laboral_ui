@@ -69,15 +69,29 @@ class ModalPrestamosNomina:
         self.historial_table: Optional[ft.DataTable] = None
 
         self.current_prestamo_id: Optional[int] = None
+        self._is_closing: bool = False
         self._construir_modal()
 
     # ---------------- API ----------------
     def mostrar(self):
         # Usar page.dialog es más estable que overlays para diálogos modales
         if self.page:
+            print("[ModalPrestamosNomina] mostrar(): before open")
+            # Evita dejar un dialog previo activo bloqueando interacción.
+            prev = getattr(self.page, "dialog", None)
+            if prev is not None and prev is not self.dialog:
+                try:
+                    prev.open = False
+                except Exception:
+                    pass
             self.page.dialog = self.dialog
             self.dialog.open = True
             self.page.update()
+            print("[ModalPrestamosNomina] mostrar(): after open")
+
+    def _on_click_cerrar(self, _):
+        print("[ModalPrestamosNomina] click Cerrar")
+        self._cerrar(True)
 
     # ---------------- Internos ----------------
     def _cargar_detalles_guardados_en_buffers(self):
@@ -110,6 +124,8 @@ class ModalPrestamosNomina:
         return bool(p and str(p.get("estado", "")).lower() == "terminado")
 
     def _construir_modal(self):
+        btn_cerrar = ft.TextButton("Cerrar", on_click=self._on_click_cerrar)
+
         # Sin préstamos
         if not self.prestamos:
             self.dialog.content = ft.Container(
@@ -126,14 +142,12 @@ class ModalPrestamosNomina:
                             "Este empleado no tiene préstamos disponibles para detallar.",
                             color=ft.colors.GREY_700,
                         ),
-                        ft.Row(
-                            [ft.TextButton("Cerrar", on_click=lambda _: self._cerrar(True))],
-                            alignment=ft.MainAxisAlignment.END,
-                        ),
                     ],
                     spacing=12,
                 ),
             )
+            self.dialog.actions = [btn_cerrar]
+            self.dialog.actions_alignment = ft.MainAxisAlignment.END
             return
 
         # Dropdown
@@ -171,7 +185,10 @@ class ModalPrestamosNomina:
             multiline=True,
             min_lines=2,
             max_lines=3,
-            on_change=self._on_change_inputs,
+            # Evitar upsert por cada tecla en observaciones (causa recargas en cascada).
+            # Se persiste al perder foco/cerrar/cambiar préstamo.
+            on_change=self._on_change_observaciones,
+            on_blur=self._on_blur_observaciones,
         )
 
         # Historial
@@ -208,17 +225,12 @@ class ModalPrestamosNomina:
                     self.lbl_preview,
                     self.obs_input,
                     self.resumen_text,
-                    ft.Row(
-                        [
-                            ft.TextButton("Cerrar", on_click=lambda _: self._cerrar(True)),
-                        ],
-                        alignment=ft.MainAxisAlignment.END,
-                        spacing=12,
-                    ),
                 ],
                 spacing=12,
             ),
         )
+        self.dialog.actions = [btn_cerrar]
+        self.dialog.actions_alignment = ft.MainAxisAlignment.END
 
         # Selección inicial
         try:
@@ -234,15 +246,29 @@ class ModalPrestamosNomina:
             self._set_inputs_enabled(False)
 
     def _cerrar(self, notify: bool = False):
-        # Auto-guardar lo que esté seleccionado y notificar para recálculo
-        if self.current_prestamo_id is not None:
-            self._auto_upsert(self.current_prestamo_id)
-        if notify:
-            self._notify_parent_refresh()
+        print("[ModalPrestamosNomina] _cerrar(): start")
+        self._is_closing = True
+        try:
+            # 1) Cierre visual inmediato (liberar taps primero).
+            self.dialog.open = False
+            if self.page:
+                self.page.update()
 
-        self.dialog.open = False
-        if self.page:
-            self.page.update()
+            # 2) Trabajo pesado después de cerrar visualmente.
+            if self.current_prestamo_id is not None:
+                try:
+                    self._auto_upsert(self.current_prestamo_id, touch_ui=False)
+                except Exception as ex:
+                    print(f"[ModalPrestamosNomina] _cerrar() auto_upsert error: {ex}")
+
+            if notify:
+                try:
+                    self._notify_parent_refresh()
+                except Exception as ex:
+                    print(f"[ModalPrestamosNomina] _cerrar() notify error: {ex}")
+        finally:
+            self._is_closing = False
+            print("[ModalPrestamosNomina] _cerrar(): end")
 
     def _set_inputs_enabled(self, enabled: bool):
         # Deshabilita si nómina pagada o préstamo terminado
@@ -358,6 +384,22 @@ class ModalPrestamosNomina:
         if pid is not None:
             self._auto_upsert(pid)
 
+    def _on_change_observaciones(self, _):
+        pid = self.current_prestamo_id
+        if pid is None:
+            return
+        # Mantener buffer local en caliente sin golpear DB por cada tecla.
+        self._guardar_buffer_local(pid)
+
+    def _on_blur_observaciones(self, _):
+        if self._is_closing:
+            return
+        pid = self.current_prestamo_id
+        if pid is None:
+            return
+        # En blur sólo persistimos buffer local para evitar bloqueos al clicar "Cerrar".
+        self._guardar_buffer_local(pid)
+
     def _calc_preview(self, pid: int, monto: float, interes_pct: float) -> dict:
         saldo_actual = 0.0
         try:
@@ -419,7 +461,7 @@ class ModalPrestamosNomina:
             self.page.update()
 
     # ---------------- AUTO-GUARDADO ----------------
-    def _auto_upsert(self, pid: int):
+    def _auto_upsert(self, pid: int, *, touch_ui: bool = True):
         """
         Guarda el detalle temporal del préstamo (solo si editable).
         Evita sobreescribir datos ya confirmados o de préstamos terminados.
@@ -428,8 +470,9 @@ class ModalPrestamosNomina:
         if self._solo_lectura_global() or self._prestamo_eliminado(pid) or self._prestamo_terminado(pid):
             # Conserva buffers locales pero no escribe nada
             self._guardar_buffer_local(pid)
-            self.resumen_text.value = "🔒 Este préstamo está cerrado o la nómina ya fue pagada. No se guardarán cambios."
-            if self.page:
+            if touch_ui:
+                self.resumen_text.value = "🔒 Este préstamo está cerrado o la nómina ya fue pagada. No se guardarán cambios."
+            if touch_ui and self.page:
                 self.page.update()
             return
 
@@ -446,8 +489,9 @@ class ModalPrestamosNomina:
 
         prev = self._calc_preview(pid, monto, interes)
         if monto <= 0 or monto > prev["saldo_con_interes"]:
-            self.resumen_text.value = "⚠️ Monto inválido o superior al saldo con interés."
-            if self.page:
+            if touch_ui:
+                self.resumen_text.value = "⚠️ Monto inválido o superior al saldo con interés."
+            if touch_ui and self.page:
                 self.page.update()
             return
 
@@ -468,12 +512,16 @@ class ModalPrestamosNomina:
         if res.get("status") == "success":
             self._guardar_buffer_local(pid)
             self.ultimos_guardados[pid] = snapshot
-            self.resumen_text.value = f"✓ guardado • 💸 ${monto:.2f} | 🔚 Restante con interés: ${prev['saldo_con_interes'] - monto:.2f}"
-            self._notify_parent_refresh()
+            if touch_ui:
+                self.resumen_text.value = f"✓ guardado • 💸 ${monto:.2f} | 🔚 Restante con interés: ${prev['saldo_con_interes'] - monto:.2f}"
+            # IMPORTANTE:
+            # no notificar al padre por cada autoguardado porque dispara recargas completas
+            # mientras el modal sigue abierto y puede romper la interacción del diálogo.
         else:
-            self.resumen_text.value = f"❌ No se pudo guardar: {res.get('message','Error desconocido')}"
+            if touch_ui:
+                self.resumen_text.value = f"❌ No se pudo guardar: {res.get('message','Error desconocido')}"
 
-        if self.page:
+        if touch_ui and self.page:
             self.page.update()
 
     # ---------------- Notificación al contenedor ----------------
