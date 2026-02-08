@@ -201,12 +201,17 @@ class PagosContainer(ft.Container):
             ],
         )
 
+        try:
+            conf_columns = list(getattr(self.confirmados_ui, "COLUMNS", []) or [])
+            conf_section_width = int(self.table_builder.get_table_width(conf_columns, buffer=240)) if conf_columns else 1670
+        except Exception:
+            conf_section_width = 1670
+
         section_conf = ft.Column(
             spacing=6,
             controls=[
                 ft.Text("Confirmados por fecha", weight=ft.FontWeight.BOLD, size=12),
-                # (Se mantiene como estaba para no tocar más de lo necesario.)
-                ft.Container(self._as_control(self.confirmados_ui), expand=False, width=4200),
+                ft.Container(self._as_control(self.confirmados_ui), expand=False, width=conf_section_width),
             ],
         )
 

@@ -45,6 +45,43 @@ class PaymentSortFilterHelper:
         # (tid, col_index) -> "none" | "asc" | "desc"
         self._tri_state: Dict[Tuple[int, int], str] = {}
 
+    # Whitelist exacta de columnas sorteables en Pagos
+    ALLOWED_SORT_KEYS: Tuple[str, ...] = (
+        "id_pago",
+        "id_empleado",
+        "horas",
+        "sueldo_hora",
+        "monto_base",
+        "descuentos",
+        "prestamos",
+        "deposito",
+        "saldo",
+        "efectivo",
+        "total",
+    )
+
+    SORT_VALUE_TYPE_BY_KEY: Dict[str, str] = {
+        "id_pago": "int",
+        "id_empleado": "int",
+        "horas": "float",
+        "sueldo_hora": "money",
+        "monto_base": "money",
+        "descuentos": "money",
+        "prestamos": "money",
+        "deposito": "money",
+        "saldo": "money",
+        "efectivo": "money",
+        "total": "money",
+    }
+
+    @classmethod
+    def is_sort_allowed_key(cls, key: str) -> bool:
+        return str(key or "") in cls.ALLOWED_SORT_KEYS
+
+    @classmethod
+    def value_type_for_sort_key(cls, key: str, default: str = "text") -> str:
+        return cls.SORT_VALUE_TYPE_BY_KEY.get(str(key or ""), default)
+
     # ------------------------------------------------------------------
     # Safe update
     # ------------------------------------------------------------------
@@ -575,15 +612,39 @@ class PaymentSortFilterHelper:
                 return int(row.get(id_pago_fields[0]) or row.get(id_pago_fields[1]) or 0)
             if key == "id_empleado":
                 return int(row.get(emp_field) or 0)
+            if key == "horas":
+                return float(row.get("horas") or 0.0)
+            if key == "sueldo_hora":
+                return self._money_to_float(row.get("sueldo_por_hora") or row.get("sueldo_hora") or 0.0)
             if key == "monto_base":
-                return float(row.get("monto_base") or 0.0)
+                return self._money_to_float(row.get("monto_base") or 0.0)
+            if key == "descuentos":
+                return self._money_to_float(
+                    row.get("descuentos")
+                    or row.get("monto_descuento")
+                    or row.get("descuentos_view")
+                    or 0.0
+                )
+            if key == "prestamos":
+                return self._money_to_float(
+                    row.get("prestamos")
+                    or row.get("monto_prestamo")
+                    or row.get("prestamos_view")
+                    or 0.0
+                )
+            if key == "deposito":
+                return self._money_to_float(row.get("deposito") or row.get("pago_deposito") or 0.0)
+            if key == "saldo":
+                return self._money_to_float(row.get("saldo") or 0.0)
+            if key == "efectivo":
+                return self._money_to_float(row.get("efectivo") or row.get("pago_efectivo") or 0.0)
             if key == "total":
                 if compute_total:
                     try:
                         return float(compute_total(row))
                     except Exception:
-                        return float(row.get("monto_base") or 0.0)
-                return float(row.get("monto_base") or 0.0)
+                        return self._money_to_float(row.get("monto_base") or 0.0)
+                return self._money_to_float(row.get("monto_total") or row.get("monto_base") or 0.0)
             return 0
 
         return sorted(items, key=k, reverse=not bool(asc))

@@ -58,6 +58,20 @@ class PaymentTableBuilder:
 
     ACTION_COLS = {"acciones"}
     STATE_COLS = {"estado"}
+    # Whitelist exacta de columnas sorteables para pagos
+    ALLOWED_SORTABLE_COLS = {
+        "id_pago",
+        "id_empleado",
+        "horas",
+        "sueldo_hora",
+        "monto_base",
+        "descuentos",
+        "prestamos",
+        "deposito",
+        "saldo",
+        "efectivo",
+        "total",
+    }
 
     def __init__(self):
         # Layout compacto
@@ -175,6 +189,7 @@ class PaymentTableBuilder:
         columns = [c for c in columns if c != "ediciones"]
 
         sortable_set = set(sortable_cols) if sortable_cols is not None else set(columns)
+        sortable_set &= self.ALLOWED_SORTABLE_COLS
 
         sort_col_index: Optional[int] = None
         if sort_key and sort_key in columns:

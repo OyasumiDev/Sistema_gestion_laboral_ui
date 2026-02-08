@@ -41,7 +41,19 @@ class PagosPagadosExpansibles(ft.UserControl):
         "acciones", "estado"
     ]
     # columnas con ordenamiento por click en header
-    CLICK_SORT = ("id_pago", "id_empleado", "monto_base", "total")
+    CLICK_SORT = (
+        "id_pago",
+        "id_empleado",
+        "horas",
+        "sueldo_hora",
+        "monto_base",
+        "descuentos",
+        "prestamos",
+        "deposito",
+        "saldo",
+        "efectivo",
+        "total",
+    )
     # índice rápido por nombre de columna
     IDX: Dict[str, int] = {k: i for i, k in enumerate(COLUMNS)}
 
@@ -387,7 +399,11 @@ class PagosPagadosExpansibles(ft.UserControl):
                 # snapshot del grupo ya con todas las filas
                 self._refresh_table_snapshot(fecha)
 
-                tabla_scroll = self.table_builder.wrap_scroll(tabla, height=240, width=1600)
+                # Evita scroll horizontal anidado: el contenedor padre (PagosScrollHelper)
+                # ya maneja el desplazamiento horizontal global de forma más fluida en touchpad.
+                # Colchón extra para evitar corte al extremo derecho (acciones/estado/márgenes internos).
+                tabla_w = self.table_builder.get_table_width(self.COLUMNS, buffer=240)
+                tabla_scroll = ft.Container(content=tabla, height=240, width=tabla_w)
 
                 total_lbl = ft.Text(f"Total día: ${total_dia:,.2f}", italic=True, size=11)
                 header = ft.Row(
@@ -426,9 +442,11 @@ class PagosPagadosExpansibles(ft.UserControl):
     # Añade este ayudante dentro de la clase
     def _value_type_for_col(self, key: str) -> str:
         # tipos de dato por columna para ordenar correctamente
-        if key in ("id_pago", "id_empleado", "horas"):
+        if key in ("id_pago", "id_empleado"):
             return "int"
-        if key in ("monto_base", "deposito", "efectivo", "saldo", "total", "sueldo_hora"):
+        if key == "horas":
+            return "float"
+        if key in ("sueldo_hora", "monto_base", "descuentos", "prestamos", "deposito", "saldo", "efectivo", "total"):
             return "money"
         return "text"
 
@@ -468,10 +486,16 @@ class PagosPagadosExpansibles(ft.UserControl):
 
             # Handler nativo (si on_sort existe en tu versión)
             def _on_sort(e, idx=i, k=key, t=vtype, tbl=table):
-                asc = bool(getattr(e, "ascending", True))
-                self._sort_table_inplace(tbl, column_index=idx, value_type=t, ascending=asc)
-                # recuerda último sort global (para crear tablas con flecha correcta)
-                self.sort_key, self.sort_asc = k, asc
+                state = self.sort_helper.toggle_sort_tristate_table(
+                    tbl,
+                    column_index=idx,
+                    value_type=t,
+                    cycle=("none", "desc", "asc"),
+                )
+                if state == "desc":
+                    self.sort_key, self.sort_asc = k, False
+                elif state == "asc":
+                    self.sort_key, self.sort_asc = k, True
 
             try:
                 table.columns[i].on_sort = _on_sort  # type: ignore[attr-defined]
@@ -481,25 +505,27 @@ class PagosPagadosExpansibles(ft.UserControl):
                 if isinstance(label, ft.Container):
                     label.content = ft.GestureDetector(
                         on_tap=lambda e, idx=i, k=key, t=vtype, tbl=table: (
-                            self._sort_table_inplace(tbl, column_index=idx, value_type=t, ascending=not tbl.sort_ascending),
-                            setattr(tbl, "sort_column_index", idx),
-                            setattr(tbl, "sort_ascending", not bool(getattr(tbl, "sort_ascending", True))),
-                            tbl.update(),
-                            setattr(self, "sort_key", k),
-                            setattr(self, "sort_asc", bool(tbl.sort_ascending)),
+                            (lambda st: (
+                                setattr(self, "sort_key", k) if st in ("asc", "desc") else None,
+                                setattr(self, "sort_asc", st == "asc") if st in ("asc", "desc") else None,
+                            ))(
+                                self.sort_helper.toggle_sort_tristate_table(
+                                    tbl,
+                                    column_index=idx,
+                                    value_type=t,
+                                    cycle=("none", "desc", "asc"),
+                                )
+                            )
                         ),
                         content=label.content,
                     )
-
-        # 4) flecha inicial (si aplica)
-        if self.sort_key in self.IDX:
-            table.sort_column_index = self.IDX[self.sort_key]
-            table.sort_ascending = self.sort_asc
 
         return table
 
     def _on_header_sort(self, key: str, *, ascending: Optional[bool] = None):
         try:
+            if not self.sort_helper.is_sort_allowed_key(key):
+                return
             idx = self.IDX.get(key, None)
             if idx is None:
                 return
@@ -541,8 +567,7 @@ class PagosPagadosExpansibles(ft.UserControl):
             rows.sort(key=lambda r: (not _match(r)))
 
         table.rows = rows
-        table.sort_column_index = column_index
-        table.sort_ascending = ascending
+        table.sort_column_index = None
         table.update()
 
         # refresca snapshot del grupo dueño
@@ -1261,12 +1286,14 @@ class PagosPagadosExpansibles(ft.UserControl):
         # --- Crear tabla y panel nuevos ---
         tabla = self._build_table_with_click_sort()
 
-        # Flecha de orden consistente con la preferencia actual
-        if self.sort_key in self.IDX:
-            tabla.sort_column_index = self.IDX[self.sort_key]
-            tabla.sort_ascending = self.sort_asc
+        # Sin indicador visual de sorting (requisito UI)
+        tabla.sort_column_index = None
 
-        tabla_scroll = self.table_builder.wrap_scroll(tabla, height=240, width=1600)
+        # Evita scroll horizontal anidado: el contenedor padre (PagosScrollHelper)
+        # ya maneja el desplazamiento horizontal global de forma más fluida en touchpad.
+        # Colchón extra para evitar corte al extremo derecho (acciones/estado/márgenes internos).
+        tabla_w = self.table_builder.get_table_width(self.COLUMNS, buffer=240)
+        tabla_scroll = ft.Container(content=tabla, height=240, width=tabla_w)
 
         total_lbl = ft.Text("Total día: $0.00", italic=True, size=11)
         header = ft.Row(

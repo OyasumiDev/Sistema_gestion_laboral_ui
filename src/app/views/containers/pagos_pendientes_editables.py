@@ -103,8 +103,8 @@ class PagosPendientesEditables(ft.UserControl):
             self.COL_KEYS,
             rows=[],
             sortable_cols=(
-                "id_pago", "id_empleado", "nombre", "fecha_pago", "horas", "sueldo_hora",
-                "monto_base", "descuentos", "prestamos", "saldo", "deposito", "efectivo", "total",
+                "id_pago", "id_empleado", "horas", "sueldo_hora",
+                "monto_base", "descuentos", "prestamos", "deposito", "saldo", "efectivo", "total",
             ),
             on_sort=self._handle_sort_event,
             sort_key=self.sort_key,
@@ -199,7 +199,7 @@ class PagosPendientesEditables(ft.UserControl):
     def _handle_sort_event(self, column_key: str, ascending: bool) -> None:
         # Tri-estado en tabla (none -> desc -> asc -> none)
         key = str(column_key or "")
-        if key in ("acciones", "estado"):
+        if not self.sort_helper.is_sort_allowed_key(key):
             return
 
         idx_map = {k: i for i, k in enumerate(self.COL_KEYS)}
@@ -207,22 +207,7 @@ class PagosPendientesEditables(ft.UserControl):
         if col_idx is None:
             return
 
-        # tipo por columna
-        value_type = {
-            "id_pago": "int",
-            "id_empleado": "int",
-            "nombre": "text",
-            "fecha_pago": "date",
-            "horas": "float",
-            "sueldo_hora": "money",
-            "monto_base": "money",
-            "descuentos": "money",
-            "prestamos": "money",
-            "saldo": "money",
-            "deposito": "money",
-            "efectivo": "money",
-            "total": "money",
-        }.get(key, "text")
+        value_type = self.sort_helper.value_type_for_sort_key(key, default="text")
 
         self.sort_helper.toggle_sort_tristate_table(
             self.table,
@@ -235,7 +220,7 @@ class PagosPendientesEditables(ft.UserControl):
 
     def set_sort_state(self, key: str, asc: bool) -> None:
         # ✅ solo llaves presentes en esta tabla
-        allowed = {"id_pago", "id_empleado", "fecha_pago", "horas", "monto_base", "total"}
+        allowed = set(self.sort_helper.ALLOWED_SORT_KEYS)
         self.sort_key = key if key in allowed else "id_pago"
         self.sort_asc = bool(asc)
         AppState().set("pagos.sort.pend", self.get_sort_state())
