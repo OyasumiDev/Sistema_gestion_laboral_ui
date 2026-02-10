@@ -1,5 +1,7 @@
 # app/views/containers/database_settings_area.py
 import os
+import asyncio
+from types import SimpleNamespace
 from datetime import datetime
 import flet as ft
 
@@ -24,8 +26,9 @@ class DatabaseSettingsArea(ft.Container):
         # Page
         self.page = page
 
-        # Estado "ocupado" (solo para deshabilitar botones; sin overlay)
+        # Estado "ocupado"
         self._busy = False
+        self._busy_dialog: ft.AlertDialog | None = None
 
         # Modelo
         self.db = DatabaseMysql()
@@ -78,48 +81,82 @@ class DatabaseSettingsArea(ft.Container):
         ):
             if isinstance(btn, (ft.ElevatedButton, ft.OutlinedButton, ft.FilledButton, ft.TextButton)):
                 btn.disabled = not enabled
+        dd = getattr(self, "import_mode_dd", None)
+        if isinstance(dd, ft.Dropdown):
+            dd.disabled = not enabled
         self._safe_update()
 
-    # ---- SIN OVERLAY DE CARGA ----
-    def _show_busy(self):
+    def _show_busy(self, message: str = "Procesando operación..."):
         if self._busy:
             return
         self._busy = True
         self._set_buttons_enabled(False)
+        p = self._get_page()
+        if p:
+            self._busy_dialog = ft.AlertDialog(
+                modal=True,
+                title=ft.Text("Procesando"),
+                content=ft.Row(
+                    controls=[ft.ProgressRing(width=20, height=20), ft.Text(message)],
+                    spacing=12,
+                ),
+                actions=[],
+            )
+            try:
+                p.dialog = self._busy_dialog
+                self._busy_dialog.open = True
+                p.update()
+            except Exception:
+                pass
 
     def _hide_busy(self):
         if not self._busy:
             return
         self._busy = False
+        p = self._get_page()
+        dlg = self._busy_dialog
+        self._busy_dialog = None
+        if p and dlg:
+            try:
+                dlg.open = False
+            except Exception:
+                pass
+            try:
+                if getattr(p, "dialog", None) is dlg:
+                    p.dialog = None
+                p.update()
+            except Exception:
+                pass
         self._set_buttons_enabled(True)
-        self._close_any_dialog()
 
-    def _run_bg(self, target, *args, after=None):
+    def _ensure_not_busy(self) -> bool:
+        if not self._busy:
+            return True
+        mostrar_mensaje(self.page, "Operación en curso", "Espera a que termine el proceso actual.")
+        return False
+
+    def _run_bg(self, target, *args, after=None, busy_message: str = "Procesando operación..."):
         """
-        Ejecuta target en background (si run_thread existe) sin overlay.
+        Ejecuta target en background de forma segura.
         Llama after(resultado, error) al finalizar.
         """
-        self._show_busy()
+        if self._busy:
+            mostrar_mensaje(self.page, "Operación en curso", "Espera a que termine el proceso actual.")
+            return
+        self._show_busy(busy_message)
+
         p = self._get_page()
-
-        def worker(*_ignored_args, **_ignored_kwargs):
+        async def _runner():
             try:
-                return (target(*args), None)
-            except Exception as e:
-                return (None, e)
-
-        def on_done(res):
-            try:
-                if isinstance(res, tuple) and len(res) == 2 and (
-                    res[1] is None or isinstance(res[1], BaseException)
-                ):
-                    result, error = res
-                else:
-                    result, error = res, None
+                result = await asyncio.to_thread(target, *args)
+                error = None
             except Exception as e:
                 result, error = None, e
-            finally:
+
+            try:
                 self._hide_busy()
+            except Exception:
+                pass
 
             if callable(after):
                 try:
@@ -127,16 +164,25 @@ class DatabaseSettingsArea(ft.Container):
                 except Exception:
                     pass
 
-        if p and hasattr(p, "run_thread"):
-            p.run_thread(worker, on_done)
-        else:
-            result, error = worker()
-            self._hide_busy()
-            if callable(after):
-                try:
-                    after(result, error)
-                except Exception:
-                    pass
+        if p and hasattr(p, "run_task"):
+            try:
+                p.run_task(_runner)
+                return
+            except Exception:
+                pass
+
+        # Fallback si run_task no existe
+        try:
+            result = target(*args)
+            error = None
+        except Exception as e:
+            result, error = None, e
+        self._hide_busy()
+        if callable(after):
+            try:
+                after(result, error)
+            except Exception:
+                pass
 
     # ------ Invokers: asegurar siempre la Page antes de abrir diálogos ------
     def _ensure_invoker_page(self, invoker: FileSaveInvoker):
@@ -148,6 +194,36 @@ class DatabaseSettingsArea(ft.Container):
         except Exception:
             pass
         return p
+
+    def _notify_db_changed(self):
+        """
+        Notifica cambios de DB y fuerza repaint de la vista actual.
+        Esto evita quedarse con listas/cachés visuales viejas tras limpiar/restaurar.
+        """
+        p = self._get_page()
+        if not p:
+            return
+
+        pubsub = getattr(p, "pubsub", None)
+        if pubsub:
+            try:
+                if hasattr(pubsub, "publish"):
+                    pubsub.publish("db:refrescar_datos", True)
+                elif hasattr(pubsub, "send_all"):
+                    pubsub.send_all("db:refrescar_datos", True)
+            except Exception:
+                pass
+
+        # Refresh duro de la ruta actual (sin navegar a otra pantalla).
+        try:
+            current = p.route or "/home"
+            from app.views.window_main_view import window_main
+            window_main.route_change(SimpleNamespace(route=current))
+        except Exception:
+            try:
+                p.update()
+            except Exception:
+                pass
 
     # -------------------------- UI --------------------------
     def _build_ui(self):
@@ -324,6 +400,8 @@ class DatabaseSettingsArea(ft.Container):
 
     # ---------------------- Confirmaciones ----------------------
     def _open_confirm(self, title: str, bullets: list[str], on_confirm):
+        if not self._ensure_not_busy():
+            return
         # Cierra lo que esté abierto antes de abrir otro diálogo
         self._close_any_dialog()
 
@@ -376,6 +454,8 @@ class DatabaseSettingsArea(ft.Container):
 
     # ---------------------- Exportar ----------------------
     def _confirm_export_zip(self, _e):
+        if not self._ensure_not_busy():
+            return
         self._open_confirm(
             "Exportar datos (ZIP JSONL)",
             bullets=[
@@ -386,6 +466,8 @@ class DatabaseSettingsArea(ft.Container):
         )
 
     def _proceed_export_zip(self, dlg):
+        if not self._ensure_not_busy():
+            return
         self._close_dialog(dlg)
         self._ensure_invoker_page(self.invoker_data)
         try:
@@ -394,6 +476,8 @@ class DatabaseSettingsArea(ft.Container):
             mostrar_mensaje(self.page, "❌ No se pudo abrir el diálogo de guardado", str(e))
 
     def _confirm_export_sql(self, _e):
+        if not self._ensure_not_busy():
+            return
         self._open_confirm(
             "Exportar base completa (SQL)",
             bullets=[
@@ -404,6 +488,8 @@ class DatabaseSettingsArea(ft.Container):
         )
 
     def _proceed_export_sql(self, dlg):
+        if not self._ensure_not_busy():
+            return
         self._close_dialog(dlg)
         self._ensure_invoker_page(self.invoker_sql)
         try:
@@ -413,6 +499,8 @@ class DatabaseSettingsArea(ft.Container):
 
     # ---------------------- Importar ----------------------
     def _confirm_import_zip(self, _e):
+        if not self._ensure_not_busy():
+            return
         modo = (self.import_mode_dd.value or "upsert").strip()
         explicacion = {
             "truncate": "TRUNCATE + INSERT: borra el contenido de cada tabla y vuelve a insertar todo.",
@@ -429,6 +517,8 @@ class DatabaseSettingsArea(ft.Container):
         )
 
     def _proceed_import_zip(self, dlg):
+        if not self._ensure_not_busy():
+            return
         self._close_dialog(dlg)
         self._ensure_invoker_page(self.invoker_data)
         try:
@@ -437,6 +527,8 @@ class DatabaseSettingsArea(ft.Container):
             mostrar_mensaje(self.page, "❌ No se pudo abrir el diálogo de importación", str(e))
 
     def _confirm_import_sql(self, _e):
+        if not self._ensure_not_busy():
+            return
         self._open_confirm(
             "Importar base completa (SQL)",
             bullets=[
@@ -447,6 +539,8 @@ class DatabaseSettingsArea(ft.Container):
         )
 
     def _proceed_import_sql(self, dlg):
+        if not self._ensure_not_busy():
+            return
         self._close_dialog(dlg)
         self._ensure_invoker_page(self.invoker_sql)
         try:
@@ -485,7 +579,7 @@ class DatabaseSettingsArea(ft.Container):
             else:
                 mostrar_mensaje(self.page, "⚠️ Error", "No se pudo exportar los datos.")
 
-        self._run_bg(work, after=done)
+        self._run_bg(work, after=done, busy_message="Exportando datos ZIP...")
 
     def _do_import_data_zip(self, import_path: str):
         import_path = (import_path or "").strip()
@@ -515,19 +609,11 @@ class DatabaseSettingsArea(ft.Container):
                     self.db.connect()
                 except Exception:
                     pass
-                pubsub = getattr(self.page, "pubsub", None)
-                if pubsub:
-                    try:
-                        if hasattr(pubsub, "publish"):
-                            pubsub.publish("db:refrescar_datos", True)
-                        elif hasattr(pubsub, "send_all"):
-                            pubsub.send_all("db:refrescar_datos", True)
-                    except Exception:
-                        pass
+                self._notify_db_changed()
             else:
                 mostrar_mensaje(self.page, "⚠️ Error", "No se pudo importar los datos.")
 
-        self._run_bg(work, after=done)
+        self._run_bg(work, after=done, busy_message="Importando datos ZIP...")
 
     # ---------------------- Operaciones reales (SQL completo) ----------------------
     def _do_export_db_sql(self, path: str):
@@ -547,7 +633,7 @@ class DatabaseSettingsArea(ft.Container):
             else:
                 mostrar_mensaje(self.page, "⚠️ Error", "No se pudo exportar la base.")
 
-        self._run_bg(work, after=done)
+        self._run_bg(work, after=done, busy_message="Exportando base SQL...")
 
     def _do_import_db_sql(self, path: str):
         path = (path or "").strip()
@@ -577,13 +663,16 @@ class DatabaseSettingsArea(ft.Container):
                     self.page, "✅ Importación completa",
                     f"La base de datos '{self.db.database}' fue reconstruida correctamente.\nArchivo: {path}"
                 )
+                self._notify_db_changed()
             else:
                 mostrar_mensaje(self.page, "⚠️ Error", f"No se pudo importar la base '{self.db.database}'.")
 
-        self._run_bg(work, after=done)
+        self._run_bg(work, after=done, busy_message="Restaurando base SQL...")
 
     # ---------------------- Borrar datos del programa ----------------------
     def borrar_datos_programa(self, _e=None):
+        if not self._ensure_not_busy():
+            return
         self._close_any_dialog()
 
         dlg = ft.AlertDialog(
@@ -670,11 +759,19 @@ class DatabaseSettingsArea(ft.Container):
             mostrar_mensaje(self.page, "✅ Respaldo guardado", f"Archivo guardado en:\n{path}")
             self._proceed_clear_tables()
 
-        self._run_bg(work, after=done)
+        self._run_bg(work, after=done, busy_message="Generando respaldo previo...")
 
     def _proceed_clear_tables(self):
         def work():
-            return self.db.clear_tables()
+            ok = self.db.clear_tables()
+            if ok:
+                # Re-sembrar usuarios base para evitar estado "sin root" después de limpiar.
+                try:
+                    from app.models.user_model import UserModel
+                    UserModel()
+                except Exception:
+                    pass
+            return ok
 
         def done(result, error):
             self._close_any_dialog()
@@ -686,16 +783,12 @@ class DatabaseSettingsArea(ft.Container):
                     self.page, "✅ Limpieza completada",
                     f"Todas las tablas de '{self.db.database}' fueron limpiadas correctamente."
                 )
-                pubsub = getattr(self.page, "pubsub", None)
-                if pubsub:
-                    try:
-                        if hasattr(pubsub, "publish"):
-                            pubsub.publish("db:refrescar_datos", True)
-                        elif hasattr(pubsub, "send_all"):
-                            pubsub.send_all("db:refrescar_datos", True)
-                    except Exception:
-                        pass
+                try:
+                    self.db.connect()
+                except Exception:
+                    pass
+                self._notify_db_changed()
             else:
                 mostrar_mensaje(self.page, "⚠️ Error", "No se pudo limpiar las tablas.")
 
-        self._run_bg(work, after=done)
+        self._run_bg(work, after=done, busy_message="Limpiando todas las tablas...")

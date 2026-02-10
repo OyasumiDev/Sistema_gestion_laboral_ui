@@ -488,7 +488,112 @@ class PrestamosContainer(ft.Container):
     # Otras acciones
     # ---------------------------------------------------------------------
     def _editar_prestamo(self, prestamo: dict):
-        ModalAlert.mostrar_info("Editar", "Edición no implementada aún en esta vista.")
+        id_prestamo = prestamo.get("id_prestamo") or prestamo.get(self.E.PRESTAMO_ID.value)
+        if not id_prestamo:
+            ModalAlert.mostrar_info("Error", "No se pudo determinar el prestamo a editar.")
+            return
+
+        monto_actual = self._to_float(prestamo.get("monto_prestamo", prestamo.get(self.E.PRESTAMO_MONTO.value, 0)))
+        saldo_actual = self._to_float(prestamo.get("saldo_prestamo", prestamo.get(self.E.PRESTAMO_SALDO.value, 0)))
+        estado_actual = str(prestamo.get("estado", prestamo.get(self.E.PRESTAMO_ESTADO.value, "pagando")) or "pagando")
+        fecha_actual = str(prestamo.get("fecha_solicitud", prestamo.get(self.E.PRESTAMO_FECHA_SOLICITUD.value, "")) or "")
+        fecha_ui = self._fecha_sql_a_ui(fecha_actual)
+
+        tf_monto = ft.TextField(
+            label="Monto",
+            value=f"{monto_actual:.2f}",
+            keyboard_type=ft.KeyboardType.NUMBER,
+            dense=True,
+        )
+        tf_saldo = ft.TextField(
+            label="Saldo",
+            value=f"{saldo_actual:.2f}",
+            keyboard_type=ft.KeyboardType.NUMBER,
+            dense=True,
+        )
+        tf_fecha = ft.TextField(
+            label="Fecha (DD/MM/YYYY)",
+            value=fecha_ui,
+            dense=True,
+        )
+        dd_estado = ft.Dropdown(
+            label="Estado",
+            value=estado_actual if estado_actual in ("pagando", "terminado") else "pagando",
+            options=[ft.dropdown.Option("pagando"), ft.dropdown.Option("terminado")],
+            dense=True,
+        )
+
+        def _cerrar_dialogo(_=None):
+            try:
+                dlg.open = False
+            except Exception:
+                pass
+            if self.page:
+                self._safe_refresh()
+
+        def _guardar_edicion(_):
+            ok_monto = self.validador.validar_monto(tf_monto, limite=10000.0)
+            ok_fecha = self.validador.validar_fecha(tf_fecha)
+
+            saldo_txt = (tf_saldo.value or "").strip().replace(",", ".")
+            try:
+                saldo_nuevo = float(saldo_txt)
+                ok_saldo = saldo_nuevo >= 0
+            except Exception:
+                ok_saldo = False
+                saldo_nuevo = -1
+
+            tf_saldo.border_color = ft.colors.GREY_400 if ok_saldo else ft.colors.RED_400
+            try:
+                tf_saldo.update()
+            except Exception:
+                pass
+
+            if not (ok_monto and ok_saldo and ok_fecha):
+                ModalAlert.mostrar_info("Validacion", "Corrige los campos marcados en rojo.")
+                return
+
+            monto_nuevo = float((tf_monto.value or "0").strip().replace(",", "."))
+            estado_nuevo = (dd_estado.value or "pagando").strip().lower()
+            fecha_sql = self.validador.convertir_fecha_mysql((tf_fecha.value or "").strip())
+
+            if estado_nuevo == "terminado" and saldo_nuevo > 0:
+                ModalAlert.mostrar_info("Validacion", "Un prestamo terminado debe tener saldo 0.00.")
+                return
+
+            campos = {
+                self.E.PRESTAMO_MONTO: monto_nuevo,
+                self.E.PRESTAMO_SALDO: saldo_nuevo,
+                self.E.PRESTAMO_FECHA_SOLICITUD: fecha_sql,
+                self.E.PRESTAMO_ESTADO: estado_nuevo,
+            }
+            res = self.loan_model.update_by_id_prestamo(int(id_prestamo), campos)
+
+            if res.get("status") == "success":
+                _cerrar_dialogo()
+                ModalAlert.mostrar_info("Exito", f"Prestamo ID {id_prestamo} actualizado.")
+                self._actualizar_vista()
+            else:
+                ModalAlert.mostrar_info("Error", res.get("message", "No se pudo actualizar el prestamo."))
+
+        dlg = ft.AlertDialog(
+            modal=True,
+            title=ft.Text(f"Editar prestamo ID {id_prestamo}"),
+            content=ft.Column(
+                tight=True,
+                controls=[tf_monto, tf_saldo, tf_fecha, dd_estado],
+            ),
+            actions=[
+                ft.TextButton("Cancelar", on_click=_cerrar_dialogo),
+                ft.ElevatedButton("Guardar", on_click=_guardar_edicion),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+        )
+
+        if self.page:
+            self.page.dialog = dlg
+            dlg.open = True
+            self._safe_refresh()
 
     def _ver_pagos_de_prestamo(self, prestamo: dict, numero_nomina: int):
         pid = prestamo.get("id_prestamo") or prestamo.get(self.E.PRESTAMO_ID.value)
@@ -644,6 +749,16 @@ class PrestamosContainer(ft.Container):
             return int(float(str(x).strip()))
         except Exception:
             return 0
+
+    @staticmethod
+    def _fecha_sql_a_ui(fecha_txt: str) -> str:
+        s = (fecha_txt or "").strip()
+        if not s:
+            return ""
+        try:
+            return datetime.strptime(s[:10], "%Y-%m-%d").strftime("%d/%m/%Y")
+        except Exception:
+            return s
 
     @staticmethod
     def _to_date_ymd(x) -> date:

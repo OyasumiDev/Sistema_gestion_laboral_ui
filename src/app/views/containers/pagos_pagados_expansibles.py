@@ -401,7 +401,7 @@ class PagosPagadosExpansibles(ft.UserControl):
 
                 # Evita scroll horizontal anidado: el contenedor padre (PagosScrollHelper)
                 # ya maneja el desplazamiento horizontal global de forma más fluida en touchpad.
-                # Colchón extra para evitar corte al extremo derecho (acciones/estado/márgenes internos).
+                                                                                                                                                                                # Colchón extra para evitar corte al extremo derecho (acciones/estado/márgenes internos).
                 tabla_w = self.table_builder.get_table_width(self.COLUMNS, buffer=240)
                 tabla_scroll = ft.Container(content=tabla, height=240, width=tabla_w)
 

@@ -14,7 +14,7 @@ class FileSaveInvoker:
         file_name: str | None = None,
         initial_directory: str | None = None,
         allowed_extensions: list[str] | None = None,
-        import_extensions: list[str] | None = None
+        import_extensions: list[str] | None = None,
     ):
         self.page = page
         self.on_save = on_save
@@ -26,6 +26,7 @@ class FileSaveInvoker:
         self.allowed_extensions = allowed_extensions or []
         self.import_extensions = import_extensions or []
 
+        # Fallback legacy cuando no se proveen callbacks.
         self.db = DatabaseMysql()
 
         self.save_picker = FilePicker(on_result=self._on_save_result)
@@ -39,73 +40,105 @@ class FileSaveInvoker:
             if picker not in self.page.overlay:
                 self.page.overlay.append(picker)
 
+    def _show_snackbar(self, message: str) -> None:
+        try:
+            if not self.page:
+                return
+            self.page.snack_bar = ft.SnackBar(ft.Text(message))
+            self.page.snack_bar.open = True
+            self.page.update()
+        except Exception:
+            pass
+
     def open_save(self) -> None:
         self._safe_append_overlay(self.save_picker)
-        self.page.update()
+        if self.page:
+            self.page.update()
         self.save_picker.save_file(
             dialog_title=self.save_dialog_title,
             file_name=self.file_name,
             initial_directory=self.initial_directory,
-            allowed_extensions=[ext.lower().lstrip(".") for ext in self.allowed_extensions]
+            allowed_extensions=[ext.lower().lstrip(".") for ext in self.allowed_extensions],
         )
 
     def open_import(self) -> None:
         self._safe_append_overlay(self.import_picker)
-        self.page.update()
+        if self.page:
+            self.page.update()
         self.import_picker.pick_files(
             dialog_title=self.import_dialog_title,
             allow_multiple=False,
-            allowed_extensions=[ext.lower().lstrip(".") for ext in self.import_extensions]
+            allowed_extensions=[ext.lower().lstrip(".") for ext in self.import_extensions],
         )
 
     def _on_save_result(self, e: FilePickerResultEvent) -> None:
-        if e.path:
-            success = self.db.exportar_base_datos(e.path)
-            msg = (
-                "✅ Base de datos exportada exitosamente."
-                if success else
-                "⚠️ No se pudo exportar la base de datos."
-            )
-            self.page.snack_bar = ft.SnackBar(ft.Text(msg))
-            self.page.snack_bar.open = True
-            self.page.update()
+        if not e.path:
+            return
 
-            if self.on_save:
+        # Flujo principal: delegar al m�dulo consumidor.
+        if callable(self.on_save):
+            try:
                 self.on_save(e.path)
+            except Exception as ex:
+                self._show_snackbar(f"Error al guardar archivo: {ex}")
+            return
+
+        # Fallback legacy: export SQL directo si no hay callback.
+        success = self.db.exportar_base_datos(e.path)
+        msg = (
+            "Base de datos exportada exitosamente."
+            if success
+            else "No se pudo exportar la base de datos."
+        )
+        self._show_snackbar(msg)
 
     def _on_import_result(self, e: FilePickerResultEvent) -> None:
-        if e.files and e.files[0].path:
-            path = e.files[0].path
-            success = self.db.importar_base_datos(path)
-            msg = (
-                f"✅ Base de datos importada correctamente desde: {path}"
-                if success else
-                f"❌ No se pudo importar la base de datos desde: {path}"
-            )
-            print(msg)
-            self.page.snack_bar = ft.SnackBar(ft.Text(msg))
-            self.page.snack_bar.open = True
-            self.page.update()
+        if not (e.files and e.files[0].path):
+            return
 
-            if self.on_import:
+        path = e.files[0].path
+
+        # Flujo principal: delegar al m�dulo consumidor.
+        if callable(self.on_import):
+            try:
                 self.on_import(path)
+            except Exception as ex:
+                self._show_snackbar(f"Error al importar archivo: {ex}")
+            return
 
-    def get_import_button(self, text="Importar archivo", icon_path="assets/buttons/import_database-button.png") -> ft.ElevatedButton:
+        # Fallback legacy: import SQL directo si no hay callback.
+        success = self.db.importar_base_datos(path)
+        msg = (
+            f"Base de datos importada correctamente desde: {path}"
+            if success
+            else f"No se pudo importar la base de datos desde: {path}"
+        )
+        self._show_snackbar(msg)
+
+    def get_import_button(
+        self,
+        text="Importar archivo",
+        icon_path="assets/buttons/import_database-button.png",
+    ) -> ft.ElevatedButton:
         return ft.ElevatedButton(
             content=ft.Row(
                 controls=[ft.Image(src=icon_path, width=24, height=24), ft.Text(text)],
                 spacing=10,
                 alignment=ft.MainAxisAlignment.CENTER,
             ),
-            on_click=lambda _: self.open_import()
+            on_click=lambda _: self.open_import(),
         )
 
-    def get_save_button(self, text="Guardar archivo", icon_path="assets/buttons/save-database-button.png") -> ft.OutlinedButton:
+    def get_save_button(
+        self,
+        text="Guardar archivo",
+        icon_path="assets/buttons/save-database-button.png",
+    ) -> ft.OutlinedButton:
         return ft.OutlinedButton(
             content=ft.Row(
                 controls=[ft.Image(src=icon_path, width=24, height=24), ft.Text(text)],
                 spacing=10,
                 alignment=ft.MainAxisAlignment.CENTER,
             ),
-            on_click=lambda _: self.open_save()
+            on_click=lambda _: self.open_save(),
         )

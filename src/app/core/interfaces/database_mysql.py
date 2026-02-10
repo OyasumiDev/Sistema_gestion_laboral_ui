@@ -850,6 +850,8 @@ class DatabaseMysql:
         - Devuelve True si se completa sin errores.
         """
         import traceback
+        cur = None
+        fk_disabled = False
         try:
             self._ensure_connection()
             cn = self.connection
@@ -857,6 +859,7 @@ class DatabaseMysql:
 
             print(f"[DB_LOG] ⚠️ Iniciando limpieza completa de todas las tablas en '{self.database}'...")
             cur.execute("SET FOREIGN_KEY_CHECKS = 0")
+            fk_disabled = True
 
             # Obtener todas las tablas base
             cur.execute("""
@@ -884,6 +887,7 @@ class DatabaseMysql:
                     print(f"[DB_LOG] ⚠️ No se pudo limpiar tabla '{tbl}': {e}")
 
             cur.execute("SET FOREIGN_KEY_CHECKS = 1")
+            fk_disabled = False
             cn.commit()
 
             print(f"[DB_LOG] ✅ Limpieza completa finalizada correctamente en '{self.database}'.\n")
@@ -923,7 +927,20 @@ class DatabaseMysql:
 
         finally:
             try:
-                cur.close()
+                if fk_disabled and getattr(self, "connection", None):
+                    c2 = self.connection.cursor()
+                    c2.execute("SET FOREIGN_KEY_CHECKS = 1")
+                    self.connection.commit()
+                    c2.close()
+            except Exception:
+                pass
+            try:
+                if cur:
+                    cur.close()
+            except Exception:
+                pass
+            try:
+                self._ensure_connection()
             except Exception:
                 pass
 
