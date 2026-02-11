@@ -1,4 +1,4 @@
-# app/models/payment_model.py
+﻿# app/models/payment_model.py
 from __future__ import annotations
 
 from datetime import datetime, date
@@ -20,37 +20,37 @@ from app.models.descuento_detalles_model import DescuentoDetallesModel
 
 class PaymentModel:
     """
-    Modelo de Pagos (Nómina) – versión robusta y alineada al flujo actual del sistema.
+    Modelo de Pagos (NÃ³mina) â€“ versiÃ³n robusta y alineada al flujo actual del sistema.
 
     Conceptos base
     --------------
-    1) Pagos de nómina (tabla `pagos`)
+    1) Pagos de nÃ³mina (tabla `pagos`)
        - Cada pago pertenece a un empleado (numero_nomina).
        - Puede ser "auto" (generado desde asistencias) o "manual" (sin fecha_inicio/fecha_fin).
        - Estados:
-         - 'pendiente': editable (depósito/efectivo/montos según reglas).
-         - 'pagado': INMUTABLE por defecto (solo lectura). Ajustes excepcionales vía flags/force.
+         - 'pendiente': editable (depÃ³sito/efectivo/montos segÃºn reglas).
+         - 'pagado': INMUTABLE por defecto (solo lectura). Ajustes excepcionales vÃ­a flags/force.
          - 'cancelado': reservado.
 
     2) Grupos
        - Auto: grupo_pago = GP-YYYY-MM-DD_AL_YYYY-MM-DD, con fecha_inicio/fecha_fin.
-       - Manual por FECHA (UI): tabla `grupos_pagos` permite mostrar fechas "vacías" aun sin pagos.
+       - Manual por FECHA (UI): tabla `grupos_pagos` permite mostrar fechas "vacÃ­as" aun sin pagos.
 
-    3) Borradores / confirmación
+    3) Borradores / confirmaciÃ³n
        - Descuentos: borrador (descuento_detalles) se prellena y luego se aplica a `descuentos`.
-       - Préstamos: detalles_pagos_prestamo se aplican a `pagos_prestamo` al confirmar.
-       - Confirmar: fija estado='pagado', recalcula totales, respeta depósito/efectivo existentes.
+       - PrÃ©stamos: detalles_pagos_prestamo se aplican a `pagos_prestamo` al confirmar.
+       - Confirmar: fija estado='pagado', recalcula totales, respeta depÃ³sito/efectivo existentes.
 
-    Reglas críticas
+    Reglas crÃ­ticas
     ---------------
-    A) Pagos 'pagado' no deben modificarse por sincronizaciones automáticas.
+    A) Pagos 'pagado' no deben modificarse por sincronizaciones automÃ¡ticas.
        - Por defecto: refresh/restore/sync NO tocan pagados.
-       - Excepción controlada: allow_paid_updates / overwrite_paid => ajusta SOLO horas y audita.
+       - ExcepciÃ³n controlada: allow_paid_updates / overwrite_paid => ajusta SOLO horas y audita.
 
     B) update_pago:
-       - Si solo llega depósito (o solo efectivo), NO fuerza el complemento.
+       - Si solo llega depÃ³sito (o solo efectivo), NO fuerza el complemento.
        - Recalcula saldo = total - (dep + efec) y permite saldo negativo (adelanto).
-       - Si el pago ya está 'pagado', bloquea cambios salvo force=True.
+       - Si el pago ya estÃ¡ 'pagado', bloquea cambios salvo force=True.
 
     Compatibilidad
     --------------
@@ -94,7 +94,7 @@ class PaymentModel:
     # ---------------------------------------------------------------------
     def check_table(self) -> bool:
         """
-        Garantiza la tabla `pagos` con columnas/índices necesarios.
+        Garantiza la tabla `pagos` con columnas/Ã­ndices necesarios.
         Si existe, ejecuta migraciones tolerantes.
         """
         try:
@@ -106,7 +106,7 @@ class PaymentModel:
             result = self.db.get_data(query, (self.db.database, self.E.TABLE.value), dictionary=True)
 
             if (result or {}).get("c", 0) == 0:
-                print(f"⚠️ La tabla {self.E.TABLE.value} no existe. Creando...")
+                print(f"âš ï¸ La tabla {self.E.TABLE.value} no existe. Creando...")
                 create_query = f"""
                 CREATE TABLE IF NOT EXISTS {self.E.TABLE.value} (
                     {self.E.ID_PAGO_NOMINA.value} INT AUTO_INCREMENT PRIMARY KEY,
@@ -143,14 +143,14 @@ class PaymentModel:
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
                 """
                 self.db.run_query(create_query)
-                print(f"✅ Tabla {self.E.TABLE.value} creada correctamente.")
+                print(f"âœ… Tabla {self.E.TABLE.value} creada correctamente.")
             else:
-                print(f"✔️ La tabla {self.E.TABLE.value} ya existe. Verificación completa.")
+                print(f"âœ”ï¸ La tabla {self.E.TABLE.value} ya existe. VerificaciÃ³n completa.")
                 self._ensure_schema_migrations()
 
             return True
         except Exception as ex:
-            print(f"❌ Error al verificar/crear la tabla {self.E.TABLE.value}: {ex}")
+            print(f"âŒ Error al verificar/crear la tabla {self.E.TABLE.value}: {ex}")
             return False
 
     def _ensure_schema_migrations(self) -> None:
@@ -160,7 +160,7 @@ class PaymentModel:
             cols = self._maybe_rename_legacy_pk(cols)
             self._ensure_additional_columns(cols)
         except Exception as ex:
-            print(f"⚠️ No se pudo actualizar el esquema de '{self.E.TABLE.value}': {ex}")
+            print(f"âš ï¸ No se pudo actualizar el esquema de '{self.E.TABLE.value}': {ex}")
 
     def _get_columns_meta(self, table_name: str) -> Dict[str, Dict[str, Any]]:
         q = """
@@ -194,12 +194,12 @@ class PaymentModel:
             CHANGE COLUMN {legacy} {pk} INT NOT NULL AUTO_INCREMENT
         """
         self.db.run_query(alter)
-        print("✅ Columna 'id_pago' renombrada a 'id_pago_nomina'.")
+        print("âœ… Columna 'id_pago' renombrada a 'id_pago_nomina'.")
         columns = self._get_columns_meta(self.E.TABLE.value)
 
         if dropped:
-            print("ℹ️ Se eliminaron temporalmente llaves foráneas antiguas. "
-                  "Los modelos dependientes las recrearán automáticamente si aplica.")
+            print("â„¹ï¸ Se eliminaron temporalmente llaves forÃ¡neas antiguas. "
+                  "Los modelos dependientes las recrearÃ¡n automÃ¡ticamente si aplica.")
         return columns
 
     def _drop_foreign_keys_referencing(self, referenced_table: str, referenced_column: str) -> List[Tuple[str, str]]:
@@ -220,13 +220,13 @@ class PaymentModel:
             try:
                 self.db.run_query(f"ALTER TABLE {table} DROP FOREIGN KEY {constraint}")
                 dropped.append((table, constraint))
-                print(f"⚠️ FK '{constraint}' eliminada en '{table}' (referencia a {referenced_table}.{referenced_column}).")
+                print(f"âš ï¸ FK '{constraint}' eliminada en '{table}' (referencia a {referenced_table}.{referenced_column}).")
             except Exception as ex:
-                print(f"⚠️ No se pudo eliminar FK {constraint} en {table}: {ex}")
+                print(f"âš ï¸ No se pudo eliminar FK {constraint} en {table}: {ex}")
         return dropped
 
     def _ensure_additional_columns(self, columns: Dict[str, Dict[str, Any]]) -> None:
-        """Asegura columnas nuevas para agrupación por corridas."""
+        """Asegura columnas nuevas para agrupaciÃ³n por corridas."""
         add_specs = [
             (self.E.GRUPO_PAGO.value, "VARCHAR(100) DEFAULT NULL", self.E.NUMERO_NOMINA.value),
             (self.E.FECHA_INICIO.value, "DATE DEFAULT NULL", self.E.GRUPO_PAGO.value),
@@ -242,7 +242,7 @@ class PaymentModel:
                 sql += f" AFTER {after}"
             self.db.run_query(sql)
             columns[key] = {"column_name": name}
-            print(f"✅ Columna '{name}' añadida en {self.E.TABLE.value}.")
+            print(f"âœ… Columna '{name}' aÃ±adida en {self.E.TABLE.value}.")
 
         # Ajuste tolerante del tipo de horas
         horas_col = self.E.TOTAL_HORAS_TRABAJADAS.value.lower()
@@ -256,9 +256,9 @@ class PaymentModel:
                         MODIFY COLUMN {self.E.TOTAL_HORAS_TRABAJADAS.value} DECIMAL(8,4) NOT NULL DEFAULT 0
                     """
                     self.db.run_query(sql)
-                    print(f"✅ Columna '{self.E.TOTAL_HORAS_TRABAJADAS.value}' ajustada a DECIMAL(8,4).")
+                    print(f"âœ… Columna '{self.E.TOTAL_HORAS_TRABAJADAS.value}' ajustada a DECIMAL(8,4).")
                 except Exception as ex:
-                    print(f"⚠️ No se pudo ajustar tipo de '{self.E.TOTAL_HORAS_TRABAJADAS.value}': {ex}")
+                    print(f"âš ï¸ No se pudo ajustar tipo de '{self.E.TOTAL_HORAS_TRABAJADAS.value}': {ex}")
 
     # ---------------------------------------------------------------------
     # Stored Procedure horas
@@ -266,7 +266,7 @@ class PaymentModel:
     def crear_sp_horas_trabajadas_para_pagos(self):
         """
         Crea/recrea SP 'horas_trabajadas_para_pagos' para sumar horas desde asistencias
-        adaptándose a si asistencias.tiempo_trabajo es TIME o DECIMAL.
+        adaptÃ¡ndose a si asistencias.tiempo_trabajo es TIME o DECIMAL.
         """
         try:
             check_query = """
@@ -349,23 +349,23 @@ class PaymentModel:
             """
 
             if (result or {}).get("c", 0) == 0:
-                print("⚠️ SP 'horas_trabajadas_para_pagos' no existe. Creando...")
+                print("âš ï¸ SP 'horas_trabajadas_para_pagos' no existe. Creando...")
             else:
-                print("🔁 SP 'horas_trabajadas_para_pagos' existe. Re-creando para consistencia.")
+                print("ðŸ” SP 'horas_trabajadas_para_pagos' existe. Re-creando para consistencia.")
 
             cursor = self.db.connection.cursor()
             cursor.execute("DROP PROCEDURE IF EXISTS horas_trabajadas_para_pagos")
             cursor.execute(sp_sql)
             self.db.connection.commit()
             cursor.close()
-            print("✅ SP 'horas_trabajadas_para_pagos' creado/recreado correctamente.")
+            print("âœ… SP 'horas_trabajadas_para_pagos' creado/recreado correctamente.")
         except Exception as ex:
-            print(f"❌ Error al crear SP 'horas_trabajadas_para_pagos': {ex}")
+            print(f"âŒ Error al crear SP 'horas_trabajadas_para_pagos': {ex}")
 
     def get_total_horas_trabajadas(
         self, fecha_inicio: str, fecha_fin: str, numero_nomina: Optional[int] = None
     ) -> Dict[str, Any]:
-        """Obtiene horas trabajadas (sin redondeo extra) vía SP."""
+        """Obtiene horas trabajadas (sin redondeo extra) vÃ­a SP."""
         try:
             self.crear_sp_horas_trabajadas_para_pagos()
 
@@ -388,7 +388,7 @@ class PaymentModel:
             cursor.close()
             return {"status": "success", "data": data}
         except Exception as ex:
-            print(f"❌ Error en get_total_horas_trabajadas: {ex}")
+            print(f"âŒ Error en get_total_horas_trabajadas: {ex}")
             return {"status": "error", "message": "No fue posible obtener horas."}
 
     # ---------------------------------------------------------------------
@@ -397,7 +397,13 @@ class PaymentModel:
     def _sueldo_hora(self, numero_nomina: int) -> float:
         try:
             e = self.employee_model.get_by_numero_nomina(numero_nomina) or {}
-            sh = float(e.get("sueldo_por_hora", 0) or 0)
+            # Compatibilidad de esquemas: algunas BD antiguas usan sueldo_hora.
+            sh_raw = (
+                e.get("sueldo_por_hora", None)
+                if e.get("sueldo_por_hora", None) is not None
+                else e.get("sueldo_hora", None)
+            )
+            sh = float(sh_raw or 0)
             if sh <= 0:
                 sd = float(e.get("sueldo_diario", 0) or 0)
                 if sd > 0:
@@ -446,6 +452,22 @@ class PaymentModel:
             self._assistance_model = AssistanceModel()
         return self._assistance_model
 
+    @staticmethod
+    def _merge_date_bounds(fi_new: str, ff_new: str, rows: List[Dict[str, Any]]) -> tuple[str, str]:
+        """
+        Fusiona el rango nuevo con rangos existentes (YYYY-MM-DD) y retorna (fi, ff) acumulado.
+        """
+        fis = [fi_new]
+        ffs = [ff_new]
+        for r in rows or []:
+            fi = str(r.get("fecha_inicio") or "").strip()
+            ff = str(r.get("fecha_fin") or "").strip()
+            if fi:
+                fis.append(fi)
+            if ff:
+                ffs.append(ff)
+        return min(fis), max(ffs)
+
     # ---------------------------------------------------------------------
     # Borrador descuentos (prefill)
     # ---------------------------------------------------------------------
@@ -467,10 +489,10 @@ class PaymentModel:
         """
         Prellena/actualiza borrador de descuentos para pago pendiente.
         Defaults: IMSS=50, Transporte=100.
-        Si hay último pago pagado, clona valores finales.
+        Si hay Ãºltimo pago pagado, clona valores finales.
         """
         if not self.detalles_desc_model:
-            return {"status": "warning", "message": "Módulo detalles_desc no disponible, se omitió prellenado."}
+            return {"status": "warning", "message": "MÃ³dulo detalles_desc no disponible, se omitiÃ³ prellenado."}
 
         aplicado_imss, monto_imss = True, 50.0
         aplicado_transporte, monto_transporte = True, 100.0
@@ -505,7 +527,7 @@ class PaymentModel:
             return {"status": "error", "message": f"Error al prellenar borrador: {ex}"}
 
     # ---------------------------------------------------------------------
-    # Generación pagos
+    # GeneraciÃ³n pagos
     # ---------------------------------------------------------------------
     def existe_pago_para_fecha(self, numero_nomina: int, fecha: str, *, incluir_pendientes: bool = False) -> bool:
         try:
@@ -529,9 +551,9 @@ class PaymentModel:
     def generar_pagos_por_rango(self, fecha_inicio: str, fecha_fin: str) -> Dict[str, Any]:
         """
         Genera/actualiza pagos PENDIENTES por empleado para el rango [fecha_inicio, fecha_fin].
-        - Dedup por (numero_nomina, fecha_inicio, fecha_fin): conserva el último, borra duplicados.
+        - Dedup por (numero_nomina, fecha_inicio, fecha_fin): conserva el Ãºltimo, borra duplicados.
         - Si existe pagado en ese rango => omite (inmutabilidad).
-        - Actualiza totales SIN pisar depósito/efectivo (update_pago recalcula saldo).
+        - Actualiza totales SIN pisar depÃ³sito/efectivo (update_pago recalcula saldo).
         """
         try:
             fecha_inicio = self._normalize_date(fecha_inicio)
@@ -566,23 +588,32 @@ class PaymentModel:
 
                     q_exist = f"""
                         SELECT {self.E.ID_PAGO_NOMINA.value} AS id_pago,
-                               {self.E.ESTADO.value} AS estado
+                               {self.E.ESTADO.value} AS estado,
+                               {self.E.FECHA_INICIO.value} AS fecha_inicio,
+                               {self.E.FECHA_FIN.value} AS fecha_fin
                         FROM {self.E.TABLE.value}
                         WHERE {self.E.NUMERO_NOMINA.value}=%s
-                          AND {self.E.FECHA_INICIO.value}=%s
-                          AND {self.E.FECHA_FIN.value}=%s
+                          AND {self.E.ESTADO.value}='pendiente'
+                          AND {self.E.FECHA_INICIO.value} IS NOT NULL
+                          AND {self.E.FECHA_FIN.value} IS NOT NULL
                         ORDER BY {self.E.ID_PAGO_NOMINA.value} ASC
                     """
-                    existentes = self.db.get_data_list(
-                        q_exist, (numero_nomina, fecha_inicio, fecha_fin), dictionary=True
-                    ) or []
-
-                    if any(str(x.get("estado", "")).lower() == "pagado" for x in existentes):
-                        omitidos_pagados += 1
-                        continue
+                    existentes = self.db.get_data_list(q_exist, (numero_nomina,), dictionary=True) or []
 
                     id_pago_target = None
                     if existentes:
+                        fi_acc, ff_acc = self._merge_date_bounds(fecha_inicio, fecha_fin, existentes)
+                        rs_acc = self.get_total_horas_trabajadas(fi_acc, ff_acc, numero_nomina)
+                        if rs_acc.get("status") != "success" or not rs_acc.get("data"):
+                            sin_horas_sueldo += 1
+                            continue
+                        horas_acc = float(rs_acc["data"][0].get("total_horas_trabajadas", 0.0) or 0.0)
+                        if horas_acc <= 0:
+                            sin_horas_sueldo += 1
+                            continue
+                        monto_base_acc = round(sh * horas_acc, 2)
+                        grupo_token_acc = self._build_grupo_token(fi_acc, ff_acc)
+
                         id_pago_target = int(existentes[-1]["id_pago"])
                         dup_ids = [int(x["id_pago"]) for x in existentes[:-1]]
                         if dup_ids:
@@ -597,14 +628,14 @@ class PaymentModel:
                             eliminados += len(dup_ids)
 
                         self.update_pago(id_pago_target, {
-                            self.E.GRUPO_PAGO.value: grupo_token,
-                            self.E.FECHA_INICIO.value: fecha_inicio,
-                            self.E.FECHA_FIN.value: fecha_fin,
+                            self.E.GRUPO_PAGO.value: grupo_token_acc,
+                            self.E.FECHA_INICIO.value: fi_acc,
+                            self.E.FECHA_FIN.value: ff_acc,
                             self.E.ESTADO_GRUPO.value: "abierto",
                             self.E.FECHA_PAGO.value: hoy,
-                            self.E.TOTAL_HORAS_TRABAJADAS.value: horas_dec,
-                            self.E.MONTO_BASE.value: monto_base,
-                            self.E.MONTO_TOTAL.value: monto_base,
+                            self.E.TOTAL_HORAS_TRABAJADAS.value: horas_acc,
+                            self.E.MONTO_BASE.value: monto_base_acc,
+                            self.E.MONTO_TOTAL.value: monto_base_acc,
                             self.D.MONTO_DESCUENTO.value: 0.0,
                             self.P.PRESTAMO_MONTO.value: 0.0,
                             self.E.ESTADO.value: "pendiente",
@@ -652,7 +683,7 @@ class PaymentModel:
         """Crea pago manual unitario (fecha_inicio=fecha_fin=hoy)."""
         try:
             if not isinstance(numero_nomina, int) or numero_nomina <= 0:
-                return {"status": "error", "message": "Número de nómina inválido"}
+                return {"status": "error", "message": "NÃºmero de nÃ³mina invÃ¡lido"}
             today = self._today_str()
             if self.existe_pago_para_fecha(numero_nomina, today, incluir_pendientes=True):
                 return {"status": "error", "message": "Ya existe un pago registrado para hoy"}
@@ -663,59 +694,84 @@ class PaymentModel:
     def generar_pago_por_empleado(self, numero_nomina: int, fecha_inicio: str, fecha_fin: str) -> Dict[str, Any]:
         """
         Genera pago pendiente del empleado para el rango dado.
-        - Si existe el rango pendiente: actualiza totales sin pisar depósito/efectivo.
-        - Si existe el rango pagado: error (inmutabilidad).
+        - Si ya existe pendiente auto del empleado, acumula el rango en ese mismo pago.
+        - Mantiene un solo pendiente auto por empleado (dedup de pendientes).
         """
         try:
             fecha_inicio = self._normalize_date(fecha_inicio)
             fecha_fin = self._normalize_date(fecha_fin)
 
             if not numero_nomina or not isinstance(numero_nomina, int):
-                return {"status": "error", "message": "Número de nómina inválido."}
+                return {"status": "error", "message": "Numero de nomina invalido."}
 
             horas_rs = self.get_total_horas_trabajadas(fecha_inicio, fecha_fin, numero_nomina)
             if horas_rs.get("status") != "success" or not horas_rs.get("data"):
-                return {"status": "error", "message": f"No hay horas válidas para el empleado {numero_nomina}."}
+                return {"status": "error", "message": f"No hay horas validas para el empleado {numero_nomina}."}
 
             horas_dec = float(horas_rs["data"][0].get("total_horas_trabajadas", 0.0) or 0.0)
             sh = self._sueldo_hora(numero_nomina)
             if horas_dec <= 0 or sh <= 0:
-                return {"status": "error", "message": "Horas o sueldo por hora inválidos."}
+                return {"status": "error", "message": "Horas o sueldo por hora invalidos."}
 
-            monto_base = round(sh * horas_dec, 2)
-            grupo_token = self._build_grupo_token(fecha_inicio, fecha_fin)
             hoy = self._today_str()
 
             q_exist = f"""
-                SELECT {self.E.ID_PAGO_NOMINA.value} AS id_pago, {self.E.ESTADO.value} AS estado
+                SELECT {self.E.ID_PAGO_NOMINA.value} AS id_pago,
+                       {self.E.ESTADO.value} AS estado,
+                       {self.E.FECHA_INICIO.value} AS fecha_inicio,
+                       {self.E.FECHA_FIN.value} AS fecha_fin
                 FROM {self.E.TABLE.value}
                 WHERE {self.E.NUMERO_NOMINA.value}=%s
-                  AND {self.E.FECHA_INICIO.value}=%s
-                  AND {self.E.FECHA_FIN.value}=%s
+                  AND {self.E.ESTADO.value}='pendiente'
+                  AND {self.E.FECHA_INICIO.value} IS NOT NULL
+                  AND {self.E.FECHA_FIN.value} IS NOT NULL
                 ORDER BY {self.E.ID_PAGO_NOMINA.value} ASC
             """
-            existentes = self.db.get_data_list(q_exist, (numero_nomina, fecha_inicio, fecha_fin), dictionary=True) or []
-
-            if any(str(x.get("estado", "")).lower() == "pagado" for x in existentes):
-                return {"status": "error", "message": "Ese rango ya está pagado para el empleado."}
+            existentes = self.db.get_data_list(q_exist, (numero_nomina,), dictionary=True) or []
 
             if existentes:
+                fi_acc, ff_acc = self._merge_date_bounds(fecha_inicio, fecha_fin, existentes)
+                horas_rs_acc = self.get_total_horas_trabajadas(fi_acc, ff_acc, numero_nomina)
+                if horas_rs_acc.get("status") != "success" or not horas_rs_acc.get("data"):
+                    return {"status": "error", "message": f"No hay horas validas para el empleado {numero_nomina}."}
+                horas_acc = float(horas_rs_acc["data"][0].get("total_horas_trabajadas", 0.0) or 0.0)
+                if horas_acc <= 0 or sh <= 0:
+                    return {"status": "error", "message": "Horas o sueldo por hora invalidos."}
+
+                monto_base_acc = round(sh * horas_acc, 2)
+                grupo_token_acc = self._build_grupo_token(fi_acc, ff_acc)
+
                 id_pago = int(existentes[-1]["id_pago"])
+                dup_ids = [int(x["id_pago"]) for x in existentes[:-1]]
+                if dup_ids:
+                    self.db.run_query(
+                        f"DELETE FROM detalles_pagos_prestamo WHERE id_pago_nomina IN ({', '.join(['%s']*len(dup_ids))})",
+                        tuple(dup_ids),
+                    )
+                    self.db.run_query(
+                        f"DELETE FROM {self.E.TABLE.value} WHERE {self.E.ID_PAGO_NOMINA.value} IN ({', '.join(['%s']*len(dup_ids))})",
+                        tuple(dup_ids),
+                    )
+
                 self.update_pago(id_pago, {
-                    self.E.GRUPO_PAGO.value: grupo_token,
-                    self.E.FECHA_INICIO.value: fecha_inicio,
-                    self.E.FECHA_FIN.value: fecha_fin,
+                    self.E.GRUPO_PAGO.value: grupo_token_acc,
+                    self.E.FECHA_INICIO.value: fi_acc,
+                    self.E.FECHA_FIN.value: ff_acc,
                     self.E.ESTADO_GRUPO.value: "abierto",
                     self.E.FECHA_PAGO.value: hoy,
-                    self.E.TOTAL_HORAS_TRABAJADAS.value: horas_dec,
-                    self.E.MONTO_BASE.value: monto_base,
-                    self.E.MONTO_TOTAL.value: monto_base,
+                    self.E.TOTAL_HORAS_TRABAJADAS.value: horas_acc,
+                    self.E.MONTO_BASE.value: monto_base_acc,
+                    self.E.MONTO_TOTAL.value: monto_base_acc,
                     self.D.MONTO_DESCUENTO.value: 0.0,
                     self.P.PRESTAMO_MONTO.value: 0.0,
                     self.E.ESTADO.value: "pendiente",
                 })
                 id_pago_target = id_pago
+                monto_base = monto_base_acc
             else:
+                monto_base = round(sh * horas_dec, 2)
+                grupo_token = self._build_grupo_token(fecha_inicio, fecha_fin)
+
                 insert_q = f"""
                     INSERT INTO {self.E.TABLE.value} (
                         {self.E.NUMERO_NOMINA.value},
@@ -784,25 +840,25 @@ class PaymentModel:
     def get_by_id(self, id_pago: int) -> Dict[str, Any]:
         try:
             if not isinstance(id_pago, int) or id_pago <= 0:
-                return {"status": "error", "message": "ID de pago inválido"}
+                return {"status": "error", "message": "ID de pago invÃ¡lido"}
             q = f"SELECT * FROM {self.E.TABLE.value} WHERE {self.E.ID_PAGO_NOMINA.value}=%s"
             r = self.db.get_data(q, (id_pago,), dictionary=True)
             if not r:
-                return {"status": "error", "message": "No se encontró el pago con ese ID"}
+                return {"status": "error", "message": "No se encontrÃ³ el pago con ese ID"}
             return {"status": "success", "data": r}
         except Exception as ex:
             return {"status": "error", "message": f"Error al obtener el pago: {ex}"}
 
     # ---------------------------------------------------------------------
-    # Update (núcleo)
+    # Update (nÃºcleo)
     # ---------------------------------------------------------------------
     def update_pago(self, id_pago: int, cambios: Dict[str, Any], *, force: bool = False) -> bool:
         """
         Actualiza campos permitidos con reglas robustas.
 
         Protecciones:
-        - Si el pago ya está 'pagado', se bloquea cualquier modificación salvo force=True.
-        - Si llega solo depósito o solo efectivo, NO fuerza complemento.
+        - Si el pago ya estÃ¡ 'pagado', se bloquea cualquier modificaciÃ³n salvo force=True.
+        - Si llega solo depÃ³sito o solo efectivo, NO fuerza complemento.
         - Recalcula saldo = total - (dep + efec) y permite saldo negativo (adelanto).
 
         Nota:
@@ -828,7 +884,7 @@ class PaymentModel:
         estado_actual = str(cur.get(self.E.ESTADO.value, "") or "").lower()
         if estado_actual == "pagado" and not force:
             # Bloquea modificaciones a pagados por defecto
-            # (La UI ya lo bloquea, pero aquí queda blindado).
+            # (La UI ya lo bloquea, pero aquÃ­ queda blindado).
             return False
 
         def _f(x):
@@ -899,22 +955,22 @@ class PaymentModel:
             self.db.connection.commit()
 
             if rowcount == 0:
-                print(f"⚠️ update_pago: 0 filas afectadas (id_pago={id_pago}).")
+                print(f"âš ï¸ update_pago: 0 filas afectadas (id_pago={id_pago}).")
             return True
         except Exception as ex:
-            print(f"❌ Error en update_pago: {ex}")
+            print(f"âŒ Error en update_pago: {ex}")
             return False
 
     # ---------------------------------------------------------------------
-    # Confirmación
+    # ConfirmaciÃ³n
     # ---------------------------------------------------------------------
     def confirmar_pago(self, id_pago: int, fecha_real_pago: Optional[str] = None) -> Dict[str, Any]:
         """
         Confirma el pago:
         - Aplica borrador de descuentos -> descuentos y limpia borrador.
-        - Aplica detalles préstamo -> pagos_prestamo.
+        - Aplica detalles prÃ©stamo -> pagos_prestamo.
         - Recalcula monto_total = monto_base - descuentos - prestamos.
-        - Respeta depósito/efectivo existentes; update_pago recalcula saldo.
+        - Respeta depÃ³sito/efectivo existentes; update_pago recalcula saldo.
         """
         try:
             pago = self.get_by_id(id_pago)
@@ -939,14 +995,14 @@ class PaymentModel:
                 except Exception as _ex:
                     return {"status": "error", "message": f"No se pudo aplicar descuentos del borrador: {_ex}"}
 
-                # No confirmar silenciosamente si falló la aplicación de descuentos.
+                # No confirmar silenciosamente si fallÃ³ la aplicaciÃ³n de descuentos.
                 if isinstance(res_desc, dict) and str(res_desc.get("status") or "").lower() == "error":
                     return {
                         "status": "error",
                         "message": (res_desc.get("message") or "Error al aplicar descuentos del borrador."),
                     }
 
-            # 2) aplicar detalles préstamo -> pagos_prestamo
+            # 2) aplicar detalles prÃ©stamo -> pagos_prestamo
             self._aplicar_detalles_prestamo_de_pago(
                 id_pago_nomina=id_pago,
                 fecha_pago=fecha_guardada,
@@ -990,8 +1046,8 @@ class PaymentModel:
 
     def crear_grupo_pagado(self, fecha: str) -> Dict[str, Any]:
         """
-        CONFIRMA pagos pendientes del día `fecha` y cierra el grupo en `pagos`.
-        (Este es el comportamiento 'seguro' para el botón de confirmar/cerrar fecha).
+        CONFIRMA pagos pendientes del dÃ­a `fecha` y cierra el grupo en `pagos`.
+        (Este es el comportamiento 'seguro' para el botÃ³n de confirmar/cerrar fecha).
         """
         try:
             fecha = self._normalize_date(fecha)
@@ -1035,11 +1091,11 @@ class PaymentModel:
             return {"status": "error", "message": f"Error al confirmar/cerrar grupo por fecha: {ex}"}
 
     # ---------------------------------------------------------------------
-    # Grupos manuales vacíos (UI)
+    # Grupos manuales vacÃ­os (UI)
     # ---------------------------------------------------------------------
     def crear_grupo_pagado_vacio(self, fecha: str) -> dict:
         """
-        Crea grupo 'pagado' VACÍO (manual) para que aparezca en UI aunque no tenga pagos.
+        Crea grupo 'pagado' VACÃO (manual) para que aparezca en UI aunque no tenga pagos.
         NO confirma ni toca pagos.
         """
         try:
@@ -1060,12 +1116,12 @@ class PaymentModel:
                 VALUES (%s, 'pagado', 'abierto')
             """
             self.db.run_query(q_ins, (fecha,))
-            return {"status": "success", "message": f"Grupo 'pagado' vacío creado para {fecha}."}
+            return {"status": "success", "message": f"Grupo 'pagado' vacÃ­o creado para {fecha}."}
         except Exception as ex:
             return {"status": "error", "message": f"No fue posible crear el grupo: {ex}"}
 
     def eliminar_grupo_por_fecha(self, fecha: str) -> dict:
-        """Elimina grupo manual vacío (si NO hay pagos pagados en esa fecha)."""
+        """Elimina grupo manual vacÃ­o (si NO hay pagos pagados en esa fecha)."""
         try:
             fecha = self._normalize_date(fecha)
             datetime.strptime(fecha, "%Y-%m-%d")
@@ -1211,14 +1267,14 @@ class PaymentModel:
                 return resultado
 
             if estado == "pagado":
-                # ✅ Inmutabilidad por defecto
+                # âœ… Inmutabilidad por defecto
                 if not allow_paid_updates:
                     detalle["accion"] = "skip"
                     detalle["motivo"] = "pagado_inmutable"
                     resultado["omitidos_pagados"].append(id_pago)
                     return resultado
 
-                # Excepción: solo ajustar horas y auditar
+                # ExcepciÃ³n: solo ajustar horas y auditar
                 payload = {self.E.TOTAL_HORAS_TRABAJADAS.value: horas}
                 ok = self.update_pago(id_pago, payload, force=True)
                 if not ok:
@@ -1389,7 +1445,7 @@ class PaymentModel:
 
         try:
             if not numero_nomina or not isinstance(numero_nomina, int):
-                return {"status": "noop", "message": "Número de nómina inválido."}
+                return {"status": "noop", "message": "NÃºmero de nÃ³mina invÃ¡lido."}
             if not fecha:
                 return {"status": "noop", "message": "Fecha vacia; no se sincroniza."}
 
@@ -1410,7 +1466,7 @@ class PaymentModel:
 
             fecha_ref = _parse_fecha(fecha)
             if not fecha_ref:
-                return {"status": "noop", "message": f"Fecha {fecha} inválida; usa YYYY-MM-DD."}
+                return {"status": "noop", "message": f"Fecha {fecha} invÃ¡lida; usa YYYY-MM-DD."}
 
             q = f"""
                 SELECT
@@ -1539,11 +1595,11 @@ class PaymentModel:
             return {"status": "error", "message": f"Fallo al sincronizar pagos: {ex}"}
 
     # ---------------------------------------------------------------------
-    # Eliminación (safe)
+    # EliminaciÃ³n (safe)
     # ---------------------------------------------------------------------
     def eliminar_pago(self, id_pago: int, force: bool = False) -> dict:
         """
-        Elimina un pago. Si está 'pagado' requiere force=True.
+        Elimina un pago. Si estÃ¡ 'pagado' requiere force=True.
         Limpia dependencias si existen:
         - detalles_pagos_prestamo
         - pagos_prestamo
@@ -1564,7 +1620,19 @@ class PaymentModel:
             prestamos_afectados = self._get_prestamos_relacionados_a_pago(id_pago)
 
             self._safe_delete_by_pago("detalles_pagos_prestamo", id_col, id_pago)
-            self._safe_delete_by_pago("pagos_prestamo", id_col, id_pago)
+
+            # Importante:
+            # Para pagos ya confirmados (pagado), evitar borrado masivo por id_pago_nomina,
+            # porque puede arrastrar historico completo del prestamo.
+            # En su lugar, borrar solo el ultimo pago por prestamo ligado a este id_pago.
+            if estado == "pagado":
+                for id_pago_prestamo in self._get_ultimos_pagos_prestamo_por_pago(id_pago):
+                    try:
+                        self.loan_payment_model.delete_by_id_pago(int(id_pago_prestamo))
+                    except Exception:
+                        pass
+            else:
+                self._safe_delete_by_pago("pagos_prestamo", id_col, id_pago)
             self._safe_delete_by_pago("descuentos", id_col, id_pago)
 
             try:
@@ -1573,9 +1641,22 @@ class PaymentModel:
             except Exception:
                 pass
 
-            self.db.run_query(f"DELETE FROM {pagos_tab} WHERE {id_col}=%s", (id_pago,))
+            # Para pagos ya confirmados, evitar DELETE fÃ­sico del padre en `pagos`
+            # porque la FK de `pagos_prestamo.id_pago_nomina -> pagos.id_pago_nomina`
+            # tiene ON DELETE CASCADE y podrÃ­a arrastrar pagos de prÃ©stamo no deseados.
+            if estado == "pagado":
+                self.db.run_query(
+                    f"""
+                    UPDATE {pagos_tab}
+                    SET {self.E.ESTADO.value}='cancelado'
+                    WHERE {id_col}=%s
+                    """,
+                    (id_pago,),
+                )
+            else:
+                self.db.run_query(f"DELETE FROM {pagos_tab} WHERE {id_col}=%s", (id_pago,))
 
-            # Recalcula saldos/estado de préstamos impactados tras eliminar pagos_prestamo.
+            # Recalcula saldos/estado de prÃ©stamos impactados tras eliminar pagos_prestamo.
             for id_prestamo in prestamos_afectados:
                 self._recalcular_saldo_y_estado_prestamo(id_prestamo)
 
@@ -1636,7 +1717,7 @@ class PaymentModel:
             return {"status": "error", "message": f"No fue posible eliminar pagos por fecha: {ex}"}
 
     # ---------------------------------------------------------------------
-    # Préstamos (confirmados + pendientes)
+    # PrÃ©stamos (confirmados + pendientes)
     # ---------------------------------------------------------------------
     def _get_prestamos_totales_para_pago(self, id_pago: int, numero_nomina: int, fecha_fin: str) -> float:
         try:
@@ -1680,10 +1761,10 @@ class PaymentModel:
                     fecha_real_pago=fecha_real
                 )
         except Exception as ex:
-            print(f"❌ Error aplicando detalle de préstamo: {ex}")
+            print(f"âŒ Error aplicando detalle de prÃ©stamo: {ex}")
 
     # ---------------------------------------------------------------------
-    # Auditoría + grupos auxiliares
+    # AuditorÃ­a + grupos auxiliares
     # ---------------------------------------------------------------------
     def _ensure_auditoria_table(self):
         """Crea tabla pagos_auditoria si hace falta."""
@@ -1706,7 +1787,7 @@ class PaymentModel:
             """
             self.db.run_query(q)
         except Exception as ex:
-            print(f"❌ No se pudo asegurar la tabla pagos_auditoria: {ex}")
+            print(f"âŒ No se pudo asegurar la tabla pagos_auditoria: {ex}")
 
     def _registrar_auditoria_pago(
         self,
@@ -1719,7 +1800,7 @@ class PaymentModel:
         valor_nuevo,
         motivo: str,
     ) -> None:
-        """Inserta fila de auditoría (silencioso si falla)."""
+        """Inserta fila de auditorÃ­a (silencioso si falla)."""
         try:
             if not self._table_exists("pagos_auditoria"):
                 return
@@ -1741,7 +1822,7 @@ class PaymentModel:
                 ),
             )
         except Exception as ex:
-            print(f"❌ Auditoría no registrada ({campo}): {ex}")
+            print(f"âŒ AuditorÃ­a no registrada ({campo}): {ex}")
 
     def _ensure_grupos_table(self):
         """Crea tabla grupos_pagos para mostrar grupos manuales por fecha en UI."""
@@ -1783,7 +1864,7 @@ class PaymentModel:
 
     def _get_prestamos_relacionados_a_pago(self, id_pago: int) -> List[int]:
         """
-        Obtiene los id_prestamo vinculados a un pago de nómina
+        Obtiene los id_prestamo vinculados a un pago de nÃ³mina
         (confirmados y/o detalles pendientes).
         """
         ids: set[int] = set()
@@ -1819,10 +1900,35 @@ class PaymentModel:
 
         return sorted(ids)
 
+    def _get_ultimos_pagos_prestamo_por_pago(self, id_pago: int) -> List[int]:
+        """
+        Devuelve IDs de pagos_prestamo a eliminar para un id_pago_nomina.
+        Regla: ultimo registro por prestamo (max id_pago_prestamo).
+        Esto evita borrar historico completo si hubo multiples filas con el mismo id_pago_nomina.
+        """
+        if id_pago <= 0 or not self._table_exists("pagos_prestamo"):
+            return []
+        try:
+            q = f"""
+                SELECT MAX({self.LP.ID_PAGO_PRESTAMO.value}) AS id_pago_prestamo
+                FROM pagos_prestamo
+                WHERE {self.LP.ID_PAGO_NOMINA.value}=%s
+                GROUP BY {self.LP.ID_PRESTAMO.value}
+            """
+            rows = self.db.get_data_list(q, (id_pago,), dictionary=True) or []
+            out: List[int] = []
+            for r in rows:
+                pid = int(r.get("id_pago_prestamo") or 0)
+                if pid > 0:
+                    out.append(pid)
+            return out
+        except Exception:
+            return []
+
     def _recalcular_saldo_y_estado_prestamo(self, id_prestamo: int) -> None:
         """
-        Ajusta saldo/estado del préstamo tras eliminar pagos:
-        - Si aún hay pagos_prestamo del préstamo, toma el último saldo_restante.
+        Ajusta saldo/estado del prÃ©stamo tras eliminar pagos:
+        - Si aÃºn hay pagos_prestamo del prÃ©stamo, toma el Ãºltimo saldo_restante.
         - Si no hay pagos, restaura saldo al monto original.
         """
         if id_prestamo <= 0:
@@ -1882,3 +1988,4 @@ class PaymentModel:
     def get_all(self) -> Dict[str, Any]:
         """Alias retrocompatible."""
         return self.get_all_pagos()
+

@@ -108,7 +108,10 @@ class PrestamosRowHelper:
                     ft.Text(f"Monto: {monto}", width=self.W_MONTO),
                     ft.Text(f"Fecha: {fecha}", width=self.W_FECHA),
                     ft.Container(chips, expand=True),
-                    ft.Row(acciones, spacing=8),
+                    ft.Container(
+                        content=ft.Row(acciones, spacing=8),
+                        margin=ft.margin.only(right=15),
+                    ),
                 ],
                 alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
                 vertical_alignment=ft.CrossAxisAlignment.CENTER,

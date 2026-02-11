@@ -56,7 +56,11 @@ class HomeView(ft.View):
             self.content_area.update()
         except Exception:
             pass
-        self.page.update()
+        try:
+            if self.page is not None:
+                self.page.update()
+        except Exception:
+            pass
 
     def update_content(self, section: str):
         if self.page is None:

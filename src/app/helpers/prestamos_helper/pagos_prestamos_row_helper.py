@@ -16,12 +16,12 @@ class PagosPrestamosRowHelper:
     # Anchos de “columnas” (alineados al estilo de PrestamosRowHelper)
     W_ID = 80
     W_FECHA = 120
-    W_NUM = 110
-    W_SALDO = 120
+    W_NUM = 80
+    W_SALDO = 100
     W_SALDOI = 130
     W_INTERES = 90
     W_OBS = 340
-    W_ACC = 130
+    W_ACC = 115
 
     def _fmt_float(self, v, d=0.0) -> float:
         try:

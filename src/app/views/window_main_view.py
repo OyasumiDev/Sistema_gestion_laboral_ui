@@ -80,18 +80,18 @@ class WindowMain:
                 section = path[len('/home/'):]  # Captura sección completa, incl. subrutas como prestamos/pagosprestamos
             else:
                 section = path.lstrip('/')
-            self.home_view.update_content(section)
             self._page.views.clear()
             self._page.views.append(self.home_view)
+            self.home_view.update_content(section)
 
         elif path == '/settings' or path.startswith('/settings/'):
             if path == '/settings':
                 section = 'settings'
             else:
                 section = path.split('/')[-1]
-            self.settings_view.update_content(section)
             self._page.views.clear()
             self._page.views.append(self.settings_view)
+            self.settings_view.update_content(section)
 
         else:
             self._page.views.clear()

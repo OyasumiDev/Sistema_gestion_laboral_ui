@@ -134,6 +134,97 @@ class LoanPaymentModel:
         """
         return self.db.get_data_list(q, (self.db.database, self.table), dictionary=True) or []
 
+    @staticmethod
+    def _to_decimal(value: Any, default: str = "0.00") -> Decimal:
+        try:
+            return Decimal(str(value))
+        except Exception:
+            return Decimal(default)
+
+    @staticmethod
+    def _q2(value: Decimal) -> Decimal:
+        return value.quantize(Decimal("0.01"))
+
+    def _recalcular_prestamo_y_pagos(self, id_prestamo: int) -> Decimal:
+        """
+        Recalcula cadena completa del préstamo:
+        - saldo base = monto_prestamo original
+        - por cada pago restante (ordenado por fecha/id), recalcula interés y saldo_restante
+        - actualiza saldo/estado del préstamo
+        """
+        row_prestamo = self.db.get_data(
+            f"""
+            SELECT
+                {self.P.PRESTAMO_MONTO.value} AS monto_prestamo
+            FROM {self.P.TABLE_PRESTAMOS.value}
+            WHERE {self.P.PRESTAMO_ID.value} = %s
+            """,
+            (id_prestamo,),
+            dictionary=True,
+        )
+        if not row_prestamo:
+            return Decimal("0.00")
+
+        saldo_actual = self._q2(self._to_decimal(row_prestamo.get("monto_prestamo", 0)))
+
+        pagos = self.db.get_data_list(
+            f"""
+            SELECT
+                {self.E.ID_PAGO_PRESTAMO.value} AS id_pago,
+                {self.E.PAGO_MONTO_PAGADO.value} AS monto_pagado,
+                {self.E.PAGO_INTERES_PORCENTAJE.value} AS interes_porcentaje
+            FROM {self.E.TABLE_PAGOS_PRESTAMOS.value}
+            WHERE {self.E.ID_PRESTAMO.value} = %s
+            ORDER BY {self.E.PAGO_FECHA_PAGO.value} ASC, {self.E.ID_PAGO_PRESTAMO.value} ASC
+            """,
+            (id_prestamo,),
+            dictionary=True,
+        ) or []
+
+        for pago in pagos:
+            id_pago = int(pago.get("id_pago"))
+            interes_pct = int(pago.get("interes_porcentaje") or 0)
+            interes_pct = max(0, min(interes_pct, 100))
+
+            interes_aplicado = self._q2(saldo_actual * Decimal(interes_pct) / Decimal("100"))
+            saldo_con_interes = self._q2(saldo_actual + interes_aplicado)
+
+            monto_pagado = self._q2(self._to_decimal(pago.get("monto_pagado", 0)))
+            if monto_pagado > saldo_con_interes:
+                monto_pagado = saldo_con_interes
+
+            nuevo_saldo = self._q2(saldo_con_interes - monto_pagado)
+            if nuevo_saldo < Decimal("0.00"):
+                nuevo_saldo = Decimal("0.00")
+
+            self.db.run_query(
+                f"""
+                UPDATE {self.E.TABLE_PAGOS_PRESTAMOS.value}
+                SET
+                    {self.E.PAGO_MONTO_PAGADO.value} = %s,
+                    {self.E.PAGO_INTERES_APLICADO.value} = %s,
+                    {self.E.PAGO_SALDO_RESTANTE.value} = %s
+                WHERE {self.E.ID_PAGO_PRESTAMO.value} = %s
+                """,
+                (float(monto_pagado), float(interes_aplicado), float(nuevo_saldo), id_pago),
+            )
+            saldo_actual = nuevo_saldo
+
+        estado = "terminado" if saldo_actual <= Decimal("0.00") else "pagando"
+        fecha_cierre = "CURDATE()" if estado == "terminado" else "NULL"
+        self.db.run_query(
+            f"""
+            UPDATE {self.P.TABLE_PRESTAMOS.value}
+            SET
+                {self.P.PRESTAMO_SALDO.value} = %s,
+                {self.P.PRESTAMO_ESTADO.value} = %s,
+                {self.P.PRESTAMO_FECHA_CIERRE.value} = {fecha_cierre}
+            WHERE {self.P.PRESTAMO_ID.value} = %s
+            """,
+            (float(saldo_actual), estado, id_prestamo),
+        )
+        return saldo_actual
+
     # ------------------------------------------------------------
     # Utilidades de cálculo
     # ------------------------------------------------------------
@@ -493,12 +584,35 @@ class LoanPaymentModel:
 
     def delete_by_id_pago(self, id_pago: int) -> Dict[str, Any]:
         try:
-            query = f"""
+            pago = self.db.get_data(
+                f"""
+                SELECT {self.E.ID_PRESTAMO.value} AS id_prestamo
+                FROM {self.E.TABLE_PAGOS_PRESTAMOS.value}
+                WHERE {self.E.ID_PAGO_PRESTAMO.value} = %s
+                """,
+                (id_pago,),
+                dictionary=True,
+            )
+            if not pago:
+                return {"status": "error", "message": f"No existe el pago ID {id_pago}."}
+
+            id_prestamo = int(pago["id_prestamo"])
+
+            self.db.run_query(
+                f"""
                 DELETE FROM {self.E.TABLE_PAGOS_PRESTAMOS.value}
                 WHERE {self.E.ID_PAGO_PRESTAMO.value} = %s
-            """
-            self.db.run_query(query, (id_pago,))
-            return {"status": "success", "message": f"Pago ID {id_pago} eliminado correctamente."}
+                """,
+                (id_pago,),
+            )
+
+            saldo_final = self._recalcular_prestamo_y_pagos(id_prestamo)
+            return {
+                "status": "success",
+                "message": f"Pago ID {id_pago} eliminado correctamente.",
+                "id_prestamo": id_prestamo,
+                "saldo_prestamo": float(saldo_final),
+            }
         except Exception as ex:
             return {"status": "error", "message": f"Error al eliminar el pago: {ex}"}
 

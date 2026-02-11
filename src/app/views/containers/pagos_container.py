@@ -295,6 +295,21 @@ class PagosContainer(ft.Container):
                     except Exception:
                         pass
 
+    def _safe_refresh(self):
+        """
+        Evita AssertionError de Flet cuando el control todavia no esta montado.
+        """
+        try:
+            if getattr(self, "page", None) is not None:
+                self.update()
+        except Exception:
+            pass
+        try:
+            if self.page is not None:
+                self.page.update()
+        except Exception:
+            pass
+
     # ------------------------------------------------------------
     # Header / Filtros / Acciones
     # ------------------------------------------------------------
@@ -356,8 +371,7 @@ class PagosContainer(ft.Container):
         self.input_id.border_color = ft.colors.OUTLINE if not texto or texto.isdigit() else ft.colors.RED_400
         self.filters_pend["id_empleado"] = texto if texto.isdigit() else ""
         self.filters_conf["id_empleado"] = texto if texto.isdigit() else ""
-        if self.page:
-            self.page.update()
+        self._safe_refresh()
         self._aplicar_filtros()
 
     def _on_filter_change(self, *, scope: str, key: str, value: str):
@@ -386,8 +400,7 @@ class PagosContainer(ft.Container):
             preserve_expansion=True,
         )
         self._actualizar_resumen()
-        if self.page:
-            self.page.update()
+        self._safe_refresh()
 
     # ---------------- Carga/recarga y resumen ----------------
     def _recargar_todo(self, *, preserve_expansion: bool = True):
@@ -406,8 +419,7 @@ class PagosContainer(ft.Container):
             preserve_expansion=preserve_expansion,
         )
         self._actualizar_resumen()
-        if self.page:
-            self.page.update()
+        self._safe_refresh()
 
     def _on_data_changed(self):
         self._recargar_todo(preserve_expansion=True)
@@ -608,9 +620,13 @@ class PagosContainer(ft.Container):
                     except Exception:
                         res = None
 
-            # Fallback: tu método clásico por rango
+            # Fallback: método clásico por rango
             if res is None:
                 res = self.payment_model.generar_pagos_por_rango(fecha_inicio=fi_s, fecha_fin=ff_s)
+
+            # Refuerzo: generar por empleado con asistencias completas del rango.
+            # Esto cubre casos donde el generador global no produce filas aunque la fecha sea seleccionable.
+            refuerzo = self._reforzar_generacion_por_empleado(fi_s, ff_s)
 
             try:
                 if hasattr(self.assistance_model, "marcar_asistencias_como_generadas"):
@@ -619,7 +635,11 @@ class PagosContainer(ft.Container):
                 pass
 
             if (res or {}).get("status") == "success":
-                ModalAlert.mostrar_info("Nómina", (res or {}).get("message", "Pagos generados."))
+                msg_base = (res or {}).get("message", "Pagos generados.")
+                msg_ref = (refuerzo or {}).get("message", "")
+                msg_sin_sueldo = self._mensaje_sin_sueldo_en_rango(fi_s, ff_s)
+                msg = f"{msg_base}\n{msg_ref}\n{msg_sin_sueldo}".strip()
+                ModalAlert.mostrar_info("Nómina", msg)
             else:
                 ModalAlert.mostrar_info("Nómina", (res or {}).get("message", "Ocurrió un problema."))
         except Exception as ex:
@@ -627,6 +647,96 @@ class PagosContainer(ft.Container):
 
         self._invalidate_caches()
         self._recargar_todo(preserve_expansion=True)
+
+    def _reforzar_generacion_por_empleado(self, fi_s: str, ff_s: str) -> Dict[str, Any]:
+        """
+        Genera/actualiza pendientes por empleado a partir de asistencias completas del rango.
+        Actúa como respaldo cuando el flujo global no crea filas visibles.
+        """
+        try:
+            rows = self.assistance_model.db.get_data_list(
+                """
+                SELECT DISTINCT numero_nomina
+                FROM asistencias
+                WHERE fecha BETWEEN %s AND %s
+                  AND LOWER(IFNULL(estado, '')) = 'completo'
+                """,
+                (fi_s, ff_s),
+                dictionary=True,
+            ) or []
+
+            creados_actualizados = 0
+            errores = 0
+            for r in rows:
+                try:
+                    num = int(r.get("numero_nomina") or 0)
+                    if num <= 0:
+                        continue
+                    out = self.payment_model.generar_pago_por_empleado(num, fi_s, ff_s) or {}
+                    if (out.get("status") == "success"):
+                        creados_actualizados += 1
+                    else:
+                        errores += 1
+                except Exception:
+                    errores += 1
+
+            return {
+                "status": "success",
+                "message": (
+                    f"Refuerzo por empleado: {creados_actualizados} procesados"
+                    f"{', ' + str(errores) + ' con error' if errores else ''}."
+                ),
+            }
+        except Exception as ex:
+            return {"status": "error", "message": f"Refuerzo por empleado falló: {ex}"}
+
+    def _mensaje_sin_sueldo_en_rango(self, fi_s: str, ff_s: str) -> str:
+        """
+        Mensaje contextual para el usuario cuando hay asistencias completas,
+        pero empleados sin sueldo configurado.
+        """
+        try:
+            cols_emp = self.assistance_model.db.get_data_list(
+                """
+                SELECT COLUMN_NAME
+                FROM information_schema.COLUMNS
+                WHERE TABLE_SCHEMA=%s AND TABLE_NAME='empleados'
+                """,
+                (self.assistance_model.db.database,),
+                dictionary=True,
+            ) or []
+            nombres = {str(c.get("COLUMN_NAME") or "").lower() for c in cols_emp}
+            col_sueldo = "sueldo_por_hora" if "sueldo_por_hora" in nombres else ("sueldo_hora" if "sueldo_hora" in nombres else None)
+            if not col_sueldo:
+                return ""
+
+            rows = self.assistance_model.db.get_data_list(
+                f"""
+                SELECT DISTINCT a.numero_nomina, e.nombre_completo
+                FROM asistencias a
+                JOIN empleados e ON e.numero_nomina = a.numero_nomina
+                WHERE a.fecha BETWEEN %s AND %s
+                  AND LOWER(IFNULL(a.estado, '')) = 'completo'
+                  AND IFNULL(e.{col_sueldo}, 0) <= 0
+                ORDER BY a.numero_nomina ASC
+                """,
+                (fi_s, ff_s),
+                dictionary=True,
+            ) or []
+
+            if not rows:
+                return ""
+
+            listado = ", ".join(
+                f"{int(r.get('numero_nomina') or 0)} ({str(r.get('nombre_completo') or '').strip()})"
+                for r in rows
+            )
+            return (
+                "No se generó pago para algunos empleados porque no tienen sueldo por hora configurado.\n"
+                f"Empleados: {listado}"
+            )
+        except Exception:
+            return ""
 
     # ---------------- Grupos 'pagados' ----------------
     def _abrir_modal_grupo_pagado(self):
