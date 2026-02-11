@@ -73,8 +73,8 @@ class DateModalSelector:
         on_dates_confirmed: Callable[[List[date]], None],
         *,
         cell_size: int = 40,
-        dialog_width: int = 480,
-        dialog_height: int = 560,
+        dialog_width: int = 560,
+        dialog_height: int = 640,
         auto_range: bool = True,
     ):
         self.page = AppState().page
@@ -277,7 +277,7 @@ class DateModalSelector:
         )
 
         self.dialog.content = ft.Container(
-            content=ft.Column([grid, leyenda, ft.Divider(), botones], spacing=16),
+            content=ft.Column([grid, leyenda, ft.Divider(), botones], spacing=16, scroll=ft.ScrollMode.AUTO),
             padding=20,
             width=self.dialog_width,
             height=self.dialog_height,

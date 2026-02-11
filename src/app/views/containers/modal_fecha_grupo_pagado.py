@@ -32,8 +32,8 @@ class ModalFechaGrupoPagado:
         on_date_confirmed: Callable[[date], None],
         *,
         cell_size: int = 40,
-        dialog_width: int = 520,
-        dialog_height: int = 560,
+        dialog_width: int = 580,
+        dialog_height: int = 640,
     ):
         self.page = AppState().page
         self.on_date_confirmed = on_date_confirmed
@@ -214,6 +214,7 @@ class ModalFechaGrupoPagado:
                 spacing=12,
                 tight=False,
                 horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
+                scroll=ft.ScrollMode.AUTO,
             ),
             padding=20,
             width=self.dialog_width,

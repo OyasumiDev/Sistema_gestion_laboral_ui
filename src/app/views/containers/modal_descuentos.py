@@ -5,6 +5,8 @@ from typing import Any, Callable, Dict, Optional
 import flet as ft
 
 from app.core.app_state import AppState
+from app.models.discount_model import DiscountModel
+from app.models.payment_model import PaymentModel
 from app.models.descuento_detalles_model import DescuentoDetallesModel
 
 
@@ -27,17 +29,21 @@ class ModalDescuentos(ft.AlertDialog):
         self,
         pago_data: Dict[str, Any],
         *,
+        modo: str = "pendiente",
         on_confirmar: Optional[Callable[[Dict[str, Any]], None]] = None,
         initial_state: Optional[Dict[str, Any]] = None,
     ):
         super().__init__()
 
         self.pago: Dict[str, Any] = pago_data or {}
+        self.modo = str(modo or "pendiente").strip().lower()
         self.on_confirmar = on_confirmar
         self.initial_state = initial_state or {}
 
         self.page: Optional[ft.Page] = None  # se setea en mostrar()
         self.detalles_model = DescuentoDetallesModel()
+        self.discount_model = DiscountModel()
+        self.payment_model = PaymentModel()
 
         self._editable = self._is_editable()
 
@@ -108,6 +114,8 @@ class ModalDescuentos(ft.AlertDialog):
     # Helpers
     # ----------------------------
     def _is_editable(self) -> bool:
+        if self.modo == "confirmado":
+            return True
         est = str(self.pago.get("estado") or "").strip().lower()
         return est != "pagado"
 
@@ -230,6 +238,15 @@ class ModalDescuentos(ft.AlertDialog):
             self._set_state_from_detalle(self.initial_state)
             return
 
+        if self.modo == "confirmado":
+            try:
+                ds = self.discount_model.get_descuentos_por_pago(pid) or []
+                if ds:
+                    self._set_state_from_confirmados(ds)
+                    return
+            except Exception:
+                pass
+
         try:
             det = self.detalles_model.obtener_por_id_pago(pid) or {}
             if det:
@@ -247,6 +264,30 @@ class ModalDescuentos(ft.AlertDialog):
         self._chk_extra.value = bool(int(det.get("aplicado_extra") or 0))
         self._tf_extra_desc.value = str(det.get("descripcion_extra") or "")
         self._tf_extra_monto.value = str(det.get("monto_extra") or "")
+
+    def _set_state_from_confirmados(self, descuentos: list[Dict[str, Any]]) -> None:
+        self._chk_imss.value = False
+        self._tf_imss.value = ""
+        self._chk_transporte.value = False
+        self._tf_transporte.value = ""
+        self._chk_extra.value = False
+        self._tf_extra_desc.value = ""
+        self._tf_extra_monto.value = ""
+
+        for d in descuentos:
+            tipo = str(d.get("tipo") or "").strip().lower()
+            monto = self._parse_money(d.get("monto"))
+            desc = str(d.get("descripcion") or "").strip()
+            if tipo == "retenciones_imss":
+                self._chk_imss.value = True
+                self._tf_imss.value = f"{monto:.2f}"
+            elif tipo == "transporte":
+                self._chk_transporte.value = True
+                self._tf_transporte.value = f"{monto:.2f}"
+            elif tipo == "descuento_extra":
+                self._chk_extra.value = True
+                self._tf_extra_desc.value = desc
+                self._tf_extra_monto.value = f"{monto:.2f}"
 
     # ----------------------------
     # Payload / Resumen
@@ -306,7 +347,72 @@ class ModalDescuentos(ft.AlertDialog):
                 self.on_confirmar()  # type: ignore
 
     def _on_guardar(self, _e=None) -> None:
-        self._guardar_borrador()
+        if self.modo == "confirmado":
+            self._guardar_confirmado()
+        else:
+            self._guardar_borrador()
+
+    def _guardar_confirmado(self) -> None:
+        pid = int(self.pago.get("id_pago_nomina") or self.pago.get("id_pago") or 0)
+        numero_nomina = int(self.pago.get("numero_nomina") or 0)
+
+        if pid <= 0 or numero_nomina <= 0:
+            self._snack("Datos incompletos: id de pago o número de nómina inválido.")
+            return
+
+        payload = self._borrador_payload()
+        try:
+            res = self.discount_model.guardar_descuentos_confirmados(
+                id_pago=pid,
+                numero_nomina=numero_nomina,
+                aplicar_imss=bool(payload.get("aplicado_imss")),
+                monto_imss=float(payload.get("monto_imss") or 0.0),
+                aplicar_transporte=bool(payload.get("aplicado_transporte")),
+                monto_transporte=float(payload.get("monto_transporte") or 0.0),
+                aplicar_extra=bool(payload.get("aplicado_extra")),
+                monto_extra=float(payload.get("monto_extra") or 0.0),
+                descripcion_extra=str(payload.get("descripcion_extra") or ""),
+            )
+            if (res or {}).get("status") not in ("success", "info"):
+                self._snack((res or {}).get("message") or "No se pudieron guardar descuentos confirmados.")
+                return
+        except Exception as ex:
+            self._snack(f"No se pudieron guardar descuentos confirmados: {ex}")
+            return
+
+        try:
+            pago_rs = self.payment_model.get_by_id(pid)
+            if pago_rs.get("status") == "success":
+                p = pago_rs.get("data") or {}
+                total_desc = float(self.discount_model.get_total_descuentos_por_pago(pid) or 0.0)
+                monto_base = self._parse_money(p.get(self.payment_model.E.MONTO_BASE.value))
+                monto_prestamo = self._parse_money(p.get(self.payment_model.P.PRESTAMO_MONTO.value))
+                deposito = self._parse_money(p.get(self.payment_model.E.PAGO_DEPOSITO.value))
+                efectivo = self._parse_money(p.get(self.payment_model.E.PAGO_EFECTIVO.value))
+                total_nuevo = max(0.0, round(monto_base - total_desc - monto_prestamo, 2))
+                saldo_nuevo = round(total_nuevo - deposito - efectivo, 2)
+
+                self.payment_model.update_pago(
+                    pid,
+                    {
+                        self.payment_model.D.MONTO_DESCUENTO.value: total_desc,
+                        self.payment_model.E.MONTO_TOTAL.value: total_nuevo,
+                        self.payment_model.E.SALDO.value: saldo_nuevo,
+                    },
+                    force=True,
+                )
+        except Exception:
+            pass
+
+        self._notify(
+            {
+                "id_pago": pid,
+                "accion": "confirmado_guardado",
+                "detalle": payload,
+            }
+        )
+        self.open = False
+        self._safe_update()
 
     def _guardar_borrador(self) -> None:
         if not self._editable:

@@ -327,12 +327,14 @@ class DiscountModel:
 
             # Extra
             if bool(aplicar_extra):
-                if me > 0 and desc:
+                if me > 0:
+                    if not desc:
+                        desc = "Descuento extra"
                     self.agregar_descuento(
                         numero_nomina, "descuento_extra", desc, me, id_pago, fecha_aplicacion
                     )
                 else:
-                    warnings.append("Extra marcado pero falta monto>0 o descripción: no se insertó.")
+                    warnings.append("Extra marcado pero falta monto>0: no se insertó.")
 
             return {"status": "success", "warnings": warnings}
 
@@ -432,11 +434,15 @@ class DiscountModel:
 
             # ---------- Extra ----------
             if apl_extra:
-                if mon_extra > 0 and desc_extra:
+                if mon_extra > 0:
+                    if not desc_extra:
+                        desc_extra = "Descuento extra"
                     self.agregar_descuento(
                         numero_nomina, "descuento_extra", desc_extra, mon_extra, id_pago, fecha_aplicacion
                     )
-                elif "descuento_extra" in prev_map and desc_extra:
+                elif "descuento_extra" in prev_map:
+                    if not desc_extra:
+                        desc_extra = "Descuento extra"
                     # reusar monto previo si no hubo cambio
                     self.agregar_descuento(
                         numero_nomina,

@@ -605,9 +605,13 @@ class PagosPendientesEditables(ft.UserControl):
                 except Exception:
                     pass
                 try:
-                    self._actualizar_fila(pid, persist=False)
+                    # Persistir para que saldo/efectivo/total queden actualizados en DB tras editar descuentos.
+                    self._actualizar_fila(pid, persist=True)
                 except Exception:
-                    pass
+                    try:
+                        self._actualizar_fila(pid, persist=False)
+                    except Exception:
+                        pass
                 try:
                     if callable(self.on_data_changed):
                         self.on_data_changed()
@@ -641,9 +645,13 @@ class PagosPendientesEditables(ft.UserControl):
             def _on_ok(_):
                 print(f"[PagosPendientesEditables] on_confirmar ModalPrestamosNomina: id_pago={id_pago}")
                 try:
-                    self._actualizar_fila(id_pago, persist=False)
+                    # Persistir para reflejar saldo nuevo del pago al confirmar cambios de préstamos.
+                    self._actualizar_fila(id_pago, persist=True)
                 except Exception:
-                    pass
+                    try:
+                        self._actualizar_fila(id_pago, persist=False)
+                    except Exception:
+                        pass
                 # Evita recarga global inmediata al cerrar modal (puede interferir interacción).
                 # La fila ya se refresca arriba y el resto se actualizará en el siguiente ciclo normal.
 

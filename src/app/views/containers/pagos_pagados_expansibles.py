@@ -222,6 +222,10 @@ class PagosPagadosExpansibles(ft.UserControl):
         tabla = self._table_by_date.get(fecha)
         if not tabla:
             return
+        try:
+            self._invalidate_caches()
+        except Exception:
+            pass
 
         # limpia filas y mapas para esa fecha
         tabla.rows.clear()
@@ -271,6 +275,10 @@ class PagosPagadosExpansibles(ft.UserControl):
         self.push_pago_pagado(pago_row, keep_expanded=keep_expanded)
 
     def open_group(self, fecha: str):
+        try:
+            self._refill_table_for_date(fecha)
+        except Exception:
+            pass
         p = self._panel_by_date.get(fecha)
         if p:
             p.expanded = True
@@ -643,8 +651,9 @@ class PagosPagadosExpansibles(ft.UserControl):
         dep_ui = float(buf.get("deposito", deposito_actual) or 0.0)
         efe_ui = float(buf.get("efectivo", efectivo_actual) or 0.0)
 
-        # saldo desde UI
-        saldo_ui = round(max(0.0, total_vista - (dep_ui + efe_ui)), 2)
+        saldo_db = float(pago.get("saldo") or 0.0)
+        # en edición: preview dinámico; en lectura: reflejar saldo guardado en DB
+        saldo_ui = round(total_vista - (dep_ui + efe_ui), 2) if en_edicion else saldo_db
 
         def money(v: float) -> str:
             return f"${float(v):,.2f}"
@@ -773,7 +782,7 @@ class PagosPagadosExpansibles(ft.UserControl):
         row._id_pago = id_pago
 
         # feedback si dep+efe > total
-        over = (dep_ui + efe_ui) > (total_vista + 1e-9)
+        over = en_edicion and ((dep_ui + efe_ui) > (total_vista + 1e-9))
         self.row_refresh.set_deposito_border_color(row, ft.colors.RED if over else None)
 
         return row
@@ -889,17 +898,14 @@ class PagosPagadosExpansibles(ft.UserControl):
                 p_db = r["data"]
                 calc = self.math.recalc_from_pago_row(p_db, buf.get("deposito", 0.0))
                 total_vista = float(calc.get("total_vista", 0.0))
-                saldo = max(0.0, round(total_vista - (buf.get("deposito", 0.0) + buf.get("efectivo", 0.0)), 2))
+                saldo = round(total_vista - (buf.get("deposito", 0.0) + buf.get("efectivo", 0.0)), 2)
                 row = self.row_refresh.get_row(None, id_pago)
                 if row:
                     self.row_refresh.set_descuentos(row, calc["descuentos_view"])
                     self.row_refresh.set_prestamos(row, calc["prestamos_view"])
                     self.row_refresh.set_total(row, total_vista)
                     self.row_refresh.set_saldo(row, saldo)
-                    self.row_refresh.set_deposito_border_color(
-                        row,
-                        ft.colors.RED if (buf.get("deposito", 0.0) + buf.get("efectivo", 0.0)) > total_vista + 1e-9 else None
-                    )
+                    self.row_refresh.set_deposito_border_color(row, None)
                     row.update()
         except Exception:
             pass
@@ -915,10 +921,7 @@ class PagosPagadosExpansibles(ft.UserControl):
             total_vista = float(calc.get("total_vista", 0.0))
             deposito = float(buf.get("deposito", 0.0))
             efectivo = float(buf.get("efectivo", 0.0))
-            if deposito + efectivo > total_vista + 1e-9:
-                ModalAlert.mostrar_info("Montos inválidos", "Depósito + Efectivo no puede superar el total.")
-                return
-            saldo = max(0.0, round(total_vista - (deposito + efectivo), 2))
+            saldo = round(total_vista - (deposito + efectivo), 2)
 
             payload = {
                 self.payment_model.E.PAGO_DEPOSITO.value: deposito,
@@ -996,6 +999,9 @@ class PagosPagadosExpansibles(ft.UserControl):
             "fecha_pago": str(pago_row.get("fecha_pago") or self._fecha_by_id.get(id_pago) or ""),
             "grupo_pago": str(pago_row.get("grupo_pago") or pago_row.get("grupo") or ""),
             "nombre_empleado": pago_row.get("nombre_completo") or pago_row.get("nombre_empleado") or "",
+            "monto_base": pago_row.get("monto_base") or 0.0,
+            "monto_prestamo": pago_row.get("monto_prestamo", pago_row.get("prestamos", 0.0)) or 0.0,
+            "monto_total": pago_row.get("monto_total") or 0.0,
         }
 
         def on_ok(_):
@@ -1029,10 +1035,19 @@ class PagosPagadosExpansibles(ft.UserControl):
                 efectivo = float(p_db.get(self.payment_model.E.PAGO_EFECTIVO.value) or 0.0)
                 calc = self.math.recalc_from_pago_row(p_db, deposito)
                 total_vista = float(calc.get("total_vista", 0.0))
-                saldo = max(0.0, round(total_vista - (deposito + efectivo), 2))
+                saldo = float(p_db.get(self.payment_model.E.SALDO.value) or round(total_vista - (deposito + efectivo), 2))
 
                 row = self.row_refresh.get_row(None, id_pago)
                 if row:
+                    try:
+                        dep_cell = row.cells[self.IDX["deposito"]].content
+                        if isinstance(dep_cell, ft.TextField):
+                            dep_cell.value = f"{deposito:.2f}"
+                        efe_cell = row.cells[self.IDX["efectivo"]].content
+                        if isinstance(efe_cell, ft.TextField):
+                            efe_cell.value = f"{efectivo:.2f}"
+                    except Exception:
+                        pass
                     self.row_refresh.set_descuentos(row, calc["descuentos_view"])
                     self.row_refresh.set_prestamos(row, calc["prestamos_view"])
                     self.row_refresh.set_total(row, total_vista)
@@ -1228,10 +1243,7 @@ class PagosPagadosExpansibles(ft.UserControl):
                 p_db = r["data"]
                 calc = self.math.recalc_from_pago_row(p_db, deposito)
                 total_vista = float(calc.get("total_vista", 0.0))
-                if deposito + efectivo > total_vista + 1e-9:
-                    ModalAlert.mostrar_info("Montos inválidos", "Depósito + Efectivo no puede superar el total.")
-                    return
-                saldo = max(0.0, round(total_vista - (deposito + efectivo), 2))
+                saldo = round(total_vista - (deposito + efectivo), 2)
                 self.payment_model.update_pago(new_id, {
                     self.payment_model.E.PAGO_DEPOSITO.value: deposito,
                     self.payment_model.E.PAGO_EFECTIVO.value: efectivo,
@@ -1441,11 +1453,20 @@ class PagosPagadosExpansibles(ft.UserControl):
             calc = self.math.recalc_from_pago_row(p_db, deposito)
 
             total_vista = float(calc.get("total_vista", 0.0))
-            saldo = max(0.0, round(total_vista - (deposito + efectivo), 2))
+            saldo = float(p_db.get(self.payment_model.E.SALDO.value) or round(total_vista - (deposito + efectivo), 2))
 
             # Actualiza celdas de la fila
             row = self.row_refresh.get_row(None, id_pago)
             if row:
+                try:
+                    dep_cell = row.cells[self.IDX["deposito"]].content
+                    if isinstance(dep_cell, ft.TextField):
+                        dep_cell.value = f"{deposito:.2f}"
+                    efe_cell = row.cells[self.IDX["efectivo"]].content
+                    if isinstance(efe_cell, ft.TextField):
+                        efe_cell.value = f"{efectivo:.2f}"
+                except Exception:
+                    pass
                 self.row_refresh.set_descuentos(row, total_desc)               # fuerza el nuevo total de descuentos
                 self.row_refresh.set_prestamos(row, calc["prestamos_view"])
                 self.row_refresh.set_total(row, total_vista)

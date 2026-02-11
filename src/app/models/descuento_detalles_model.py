@@ -302,36 +302,109 @@ class DescuentoDetallesModel:
 
     def _sync_monto_descuento_pago(self, *, id_pago_nomina: int, total_descuento: Decimal) -> Dict[str, Any]:
         """
-        Escribe el total del borrador en pagos.monto_descuento y recalcula monto_total
-        para mantener consistencia con la edición de descuentos en pendientes.
-        """
-        total_str = self._to_db_decimal(total_descuento) or "0.00"
-        q = """
-            UPDATE pagos
-            SET monto_descuento = %s,
-                monto_total = GREATEST(
-                    0,
-                    COALESCE(monto_base, 0) - COALESCE(%s, 0) - COALESCE(monto_prestamo, 0)
-                )
-            WHERE id_pago_nomina = %s
+        Escribe el total del borrador en pagos.monto_descuento y recalcula
+        monto_total + pago_efectivo + saldo para mantener consistencia completa
+        tras editar descuentos en pendientes.
         """
         try:
-            self.db.run_query(q, (total_str, total_str, int(id_pago_nomina)))
-            row = self.db.get_data(
-                "SELECT monto_descuento, monto_total FROM pagos WHERE id_pago_nomina=%s",
-                (int(id_pago_nomina),),
+            id_pago_nomina = int(id_pago_nomina)
+            total_desc = float(total_descuento or 0)
+
+            row_cur = self.db.get_data(
+                """
+                SELECT monto_base, monto_prestamo, pago_deposito
+                FROM pagos
+                WHERE id_pago_nomina=%s
+                """,
+                (id_pago_nomina,),
                 dictionary=True,
             ) or {}
-            if not row:
+            if not row_cur:
                 return {"status": "error", "message": f"No existe pago #{id_pago_nomina} para sincronizar."}
+
+            monto_base = float(row_cur.get("monto_base") or 0.0)
+            monto_prestamo = float(row_cur.get("monto_prestamo") or 0.0)
+            deposito = float(row_cur.get("pago_deposito") or 0.0)
+
+            monto_total = round(max(0.0, monto_base - total_desc - monto_prestamo), 2)
+            calc = self._calcular_efectivo_y_saldo(monto_total=monto_total, deposito=deposito)
+            efectivo = float(calc.get("pago_efectivo", 0.0))
+            saldo = float(calc.get("saldo", 0.0))
+
+            q = """
+                UPDATE pagos
+                SET monto_descuento = %s,
+                    monto_total = %s,
+                    pago_efectivo = %s,
+                    saldo = %s
+                WHERE id_pago_nomina = %s
+            """
+            self.db.run_query(
+                q,
+                (
+                    self._to_db_decimal(Decimal(str(total_desc))),
+                    f"{monto_total:.2f}",
+                    f"{efectivo:.2f}",
+                    f"{saldo:.2f}",
+                    id_pago_nomina,
+                ),
+            )
+
+            row = self.db.get_data(
+                "SELECT monto_descuento, monto_total, pago_efectivo, saldo FROM pagos WHERE id_pago_nomina=%s",
+                (id_pago_nomina,),
+                dictionary=True,
+            ) or {}
             return {
                 "status": "success",
-                "id_pago_nomina": int(id_pago_nomina),
+                "id_pago_nomina": id_pago_nomina,
                 "monto_descuento": row.get("monto_descuento"),
                 "monto_total": row.get("monto_total"),
+                "pago_efectivo": row.get("pago_efectivo"),
+                "saldo": row.get("saldo"),
             }
         except Exception as ex:
             return {"status": "error", "message": f"Fallo al sincronizar pago #{id_pago_nomina}: {ex}"}
+
+    @staticmethod
+    def _calcular_efectivo_y_saldo(*, monto_total: float, deposito: float) -> Dict[str, float]:
+        """
+        Regla billetes de $50 (igual a la vista):
+        - resto = monto_total - deposito
+        - resto <= 0: efectivo=0, saldo=resto
+        - resto > 0:
+          residuo = resto % 50
+          residuo >= 25 -> efectivo sube al siguiente 50, saldo negativo
+          residuo < 25  -> saldo positivo por ajustar
+        """
+        try:
+            mt_c = int(round(float(monto_total or 0.0) * 100))
+            dp_c = int(round(float(deposito or 0.0) * 100))
+            resto_c = mt_c - dp_c
+
+            if resto_c <= 0:
+                return {"pago_efectivo": 0.0, "saldo": round(resto_c / 100.0, 2)}
+
+            cincuenta_c = 5000
+            veinticinco_c = 2500
+            residuo_c = resto_c % cincuenta_c
+            efectivo_c = resto_c - residuo_c
+
+            if residuo_c >= veinticinco_c:
+                efectivo_c += cincuenta_c
+                saldo_c = -(cincuenta_c - residuo_c)
+            else:
+                saldo_c = residuo_c
+
+            if efectivo_c < 0:
+                efectivo_c = 0
+
+            return {
+                "pago_efectivo": round(efectivo_c / 100.0, 2),
+                "saldo": round(saldo_c / 100.0, 2),
+            }
+        except Exception:
+            return {"pago_efectivo": 0.0, "saldo": 0.0}
 
     def _money_or_none(self, v) -> Optional[Decimal]:
         """

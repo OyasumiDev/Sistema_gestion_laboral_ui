@@ -49,7 +49,7 @@ class PaymentModel:
 
     B) update_pago:
        - Si solo llega depósito (o solo efectivo), NO fuerza el complemento.
-       - Recalcula saldo = total - (dep + efec) y acota si excede total.
+       - Recalcula saldo = total - (dep + efec) y permite saldo negativo (adelanto).
        - Si el pago ya está 'pagado', bloquea cambios salvo force=True.
 
     Compatibilidad
@@ -803,7 +803,7 @@ class PaymentModel:
         Protecciones:
         - Si el pago ya está 'pagado', se bloquea cualquier modificación salvo force=True.
         - Si llega solo depósito o solo efectivo, NO fuerza complemento.
-        - Recalcula saldo = total - (dep + efec) y acota si excede total.
+        - Recalcula saldo = total - (dep + efec) y permite saldo negativo (adelanto).
 
         Nota:
         - Si estado_nuevo='pendiente' y llega monto_base => monto_total = monto_base.
@@ -858,27 +858,15 @@ class PaymentModel:
         dep_new = _f(cambios.get(self.E.PAGO_DEPOSITO.value, dep_cur))
         efec_new = _f(cambios.get(self.E.PAGO_EFECTIVO.value, efec_cur))
 
-        dep_new = max(0.0, min(dep_new, total))
-        efec_new = max(0.0, min(efec_new, total))
+        dep_new = max(0.0, dep_new)
+        efec_new = max(0.0, efec_new)
 
         if dep_in and not efec_in:
             efec_new = efec_cur
-            if dep_new + efec_new > total:
-                efec_new = max(0.0, round(total - dep_new, 2))
-                cambios[self.E.PAGO_EFECTIVO.value] = efec_new
 
         elif efec_in and not dep_in:
             dep_new = dep_cur
-            if dep_new + efec_new > total:
-                dep_new = max(0.0, round(total - efec_new, 2))
-                cambios[self.E.PAGO_DEPOSITO.value] = dep_new
-
-        else:
-            if dep_new + efec_new > total:
-                efec_new = max(0.0, round(total - dep_new, 2))
-                cambios[self.E.PAGO_EFECTIVO.value] = efec_new
-
-        saldo_new = max(0.0, round(total - dep_new - efec_new, 2))
+        saldo_new = round(total - dep_new - efec_new, 2)
         cambios[self.E.SALDO.value] = saldo_new
 
         if dep_in or dep_new != dep_cur:
@@ -942,11 +930,21 @@ class PaymentModel:
             fecha_real = self._normalize_date(fecha_real_pago or (fecha_guardada if fecha_guardada else self._today_str()))
 
             # 1) aplicar/limpiar borrador descuentos
-            try:
-                if self.detalles_desc_model is not None:
-                    self.detalles_desc_model.aplicar_a_descuentos_y_limpiar(id_pago, self.discount_model)
-            except Exception as _ex:
-                print(f"⚠️ No se pudo aplicar/limpiar borrador de descuentos: {_ex}")
+            if self.detalles_desc_model is not None:
+                try:
+                    res_desc = self.detalles_desc_model.aplicar_a_descuentos_y_limpiar(
+                        id_pago,
+                        self.discount_model,
+                    ) or {}
+                except Exception as _ex:
+                    return {"status": "error", "message": f"No se pudo aplicar descuentos del borrador: {_ex}"}
+
+                # No confirmar silenciosamente si falló la aplicación de descuentos.
+                if isinstance(res_desc, dict) and str(res_desc.get("status") or "").lower() == "error":
+                    return {
+                        "status": "error",
+                        "message": (res_desc.get("message") or "Error al aplicar descuentos del borrador."),
+                    }
 
             # 2) aplicar detalles préstamo -> pagos_prestamo
             self._aplicar_detalles_prestamo_de_pago(
@@ -960,6 +958,13 @@ class PaymentModel:
                 total_desc = float(self.discount_model.get_total_descuentos_por_pago(id_pago) or 0.0)
             except Exception:
                 total_desc = 0.0
+
+            # Respaldo: si no se pudo materializar en tabla descuentos, conserva el monto ya guardado en pagos.
+            if total_desc <= 0:
+                try:
+                    total_desc = float(p.get(self.D.MONTO_DESCUENTO.value) or 0.0)
+                except Exception:
+                    total_desc = 0.0
 
             total_prest = self._get_prestamos_totales_para_pago(
                 id_pago=id_pago, numero_nomina=numero_nomina, fecha_fin=fecha_guardada
@@ -1556,6 +1561,7 @@ class PaymentModel:
 
             pagos_tab = self.E.TABLE.value
             id_col = self.E.ID_PAGO_NOMINA.value
+            prestamos_afectados = self._get_prestamos_relacionados_a_pago(id_pago)
 
             self._safe_delete_by_pago("detalles_pagos_prestamo", id_col, id_pago)
             self._safe_delete_by_pago("pagos_prestamo", id_col, id_pago)
@@ -1568,6 +1574,11 @@ class PaymentModel:
                 pass
 
             self.db.run_query(f"DELETE FROM {pagos_tab} WHERE {id_col}=%s", (id_pago,))
+
+            # Recalcula saldos/estado de préstamos impactados tras eliminar pagos_prestamo.
+            for id_prestamo in prestamos_afectados:
+                self._recalcular_saldo_y_estado_prestamo(id_prestamo)
+
             return {"status": "success", "message": f"Pago #{id_pago} eliminado correctamente."}
         except Exception as ex:
             return {"status": "error", "message": f"No se pudo eliminar el pago: {ex}"}
@@ -1767,6 +1778,101 @@ class PaymentModel:
             return
         try:
             self.db.run_query(f"DELETE FROM {table} WHERE {id_col}=%s", (id_pago,))
+        except Exception:
+            pass
+
+    def _get_prestamos_relacionados_a_pago(self, id_pago: int) -> List[int]:
+        """
+        Obtiene los id_prestamo vinculados a un pago de nómina
+        (confirmados y/o detalles pendientes).
+        """
+        ids: set[int] = set()
+        try:
+            if self._table_exists("pagos_prestamo"):
+                q = f"""
+                    SELECT DISTINCT {self.LP.ID_PRESTAMO.value} AS id_prestamo
+                    FROM pagos_prestamo
+                    WHERE {self.LP.ID_PAGO_NOMINA.value}=%s
+                """
+                rows = self.db.get_data_list(q, (id_pago,), dictionary=True) or []
+                for row in rows:
+                    pid = int(row.get("id_prestamo") or 0)
+                    if pid > 0:
+                        ids.add(pid)
+        except Exception:
+            pass
+
+        try:
+            if self._table_exists("detalles_pagos_prestamo"):
+                q = f"""
+                    SELECT DISTINCT {E_DET.ID_PRESTAMO.value} AS id_prestamo
+                    FROM detalles_pagos_prestamo
+                    WHERE {E_DET.ID_PAGO.value}=%s
+                """
+                rows = self.db.get_data_list(q, (id_pago,), dictionary=True) or []
+                for row in rows:
+                    pid = int(row.get("id_prestamo") or 0)
+                    if pid > 0:
+                        ids.add(pid)
+        except Exception:
+            pass
+
+        return sorted(ids)
+
+    def _recalcular_saldo_y_estado_prestamo(self, id_prestamo: int) -> None:
+        """
+        Ajusta saldo/estado del préstamo tras eliminar pagos:
+        - Si aún hay pagos_prestamo del préstamo, toma el último saldo_restante.
+        - Si no hay pagos, restaura saldo al monto original.
+        """
+        if id_prestamo <= 0:
+            return
+        if not self._table_exists(self.P.TABLE_PRESTAMOS.value):
+            return
+
+        try:
+            q_base = f"""
+                SELECT {self.P.PRESTAMO_MONTO.value} AS monto_base
+                FROM {self.P.TABLE_PRESTAMOS.value}
+                WHERE {self.P.PRESTAMO_ID.value}=%s
+                LIMIT 1
+            """
+            base_row = self.db.get_data(q_base, (id_prestamo,), dictionary=True) or {}
+            monto_base = float(base_row.get("monto_base") or 0.0)
+        except Exception:
+            return
+
+        saldo_nuevo = monto_base
+        try:
+            if self._table_exists("pagos_prestamo"):
+                q_last = f"""
+                    SELECT {self.LP.PAGO_SALDO_RESTANTE.value} AS saldo_restante
+                    FROM pagos_prestamo
+                    WHERE {self.LP.ID_PRESTAMO.value}=%s
+                    ORDER BY {self.LP.PAGO_FECHA_REAL.value} DESC,
+                             {self.LP.PAGO_FECHA_PAGO.value} DESC,
+                             {self.LP.ID_PAGO_PRESTAMO.value} DESC
+                    LIMIT 1
+                """
+                last_row = self.db.get_data(q_last, (id_prestamo,), dictionary=True) or {}
+                if last_row and last_row.get("saldo_restante") is not None:
+                    saldo_nuevo = float(last_row.get("saldo_restante") or 0.0)
+        except Exception:
+            pass
+
+        saldo_nuevo = round(max(0.0, saldo_nuevo), 2)
+        estado_nuevo = "terminado" if saldo_nuevo <= 0 else "pagando"
+        fecha_cierre = datetime.today().strftime("%Y-%m-%d") if estado_nuevo == "terminado" else None
+
+        try:
+            q_upd = f"""
+                UPDATE {self.P.TABLE_PRESTAMOS.value}
+                SET {self.P.PRESTAMO_SALDO.value}=%s,
+                    {self.P.PRESTAMO_ESTADO.value}=%s,
+                    {self.P.PRESTAMO_FECHA_CIERRE.value}=%s
+                WHERE {self.P.PRESTAMO_ID.value}=%s
+            """
+            self.db.run_query(q_upd, (saldo_nuevo, estado_nuevo, fecha_cierre, id_prestamo))
         except Exception:
             pass
 
